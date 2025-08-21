@@ -91,19 +91,15 @@ def main():
     def bce_iou_loss(pred, target):
         return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
 
-    scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available())
     start_epoch, best_mIoU = 0, 0.0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if os.path.exists(latest_checkpoint_path):
         logging.info(f"Resuming from checkpoint: {latest_checkpoint_path}")
-        # --- THIS IS THE CORRECTED LINE ---
         ckpt = torch.load(latest_checkpoint_path, map_location=device, weights_only=False)
-        # --- END OF CORRECTION ---
         net.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         start_epoch = ckpt['epoch'] + 1
         best_mIoU = ckpt.get('best_mIoU', 0.0)
-        if 'scaler_state_dict' in ckpt: scaler.load_state_dict(ckpt['scaler_state_dict'])
 
     patience_counter = 0
     total_iterations = len(train_loader) * args.epochs
@@ -122,8 +118,8 @@ def main():
             inputs, labels = data['image'].to(device), data['label'].to(device)
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.amp.autocast(device_type='cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
-                p4, p3, p2, p1, p0 = net(inputs)
+            # --- TRAINING IS NOW DONE IN STANDARD FLOAT32 ---
+            p4, p3, p2, p1, p0 = net(inputs)
 
             loss_1 = bce_iou_loss(p1, labels.unsqueeze(1).float())
             loss_2 = structure_loss_fn(p2, labels.unsqueeze(1).float())
@@ -132,9 +128,9 @@ def main():
             loss_0 = ce_loss_fn(p0, labels.long())
             total_loss = loss_1 + loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
 
-            scaler.scale(total_loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            total_loss.backward()
+            optimizer.step()
+            # --- END OF CHANGE: No GradScaler needed ---
 
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg, lr=optimizer.param_groups[1]['lr'])
@@ -147,12 +143,14 @@ def main():
             best_mIoU = current_mIoU
             patience_counter = 0
             torch.save(net.state_dict(), os.path.join(exp_path, 'best_checkpoint.pth'))
-            logging.info(f"Epoch {epoch+1} | New best model saved with mIoU: {best_mIoU:.4f}")
+            logging.info(f"✅ Epoch {epoch+1}: New best mIoU: {best_mIoU:.4f}. Saving checkpoint...")
         else:
             patience_counter += 1
-            logging.info(f"Epoch {epoch+1} | mIoU did not improve. Patience: {patience_counter}/{args.patience}")
+            logging.info(f"⚠️ Epoch {epoch+1}: No improvement in mIoU for {patience_counter} epoch(s). Best mIoU remains {best_mIoU:.4f}.")
 
-        torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'scaler_state_dict': scaler.state_dict(), 'best_mIoU': best_mIoU}, latest_checkpoint_path)
+        # Save latest checkpoint without scaler state
+        torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, latest_checkpoint_path)
+        
         if patience_counter >= args.patience:
             logging.info("Early stopping triggered.")
             break
@@ -165,11 +163,11 @@ def validate(net, test_loader, device):
     with torch.no_grad():
         for data in test_iterator:
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            with torch.amp.autocast(device_type='cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
-                _, _, _, _, pred = net(inputs)
+            # No autocast needed for validation either
+            _, _, _, _, pred = net(inputs)
             confmat.update(labels.flatten(), pred.argmax(1).flatten())
             
-    global_acc, class_acc, class_iou, fwiou, _ = confmat.compute()
+    global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
     logging.info("\n--- Validation Results ---")
@@ -178,6 +176,7 @@ def validate(net, test_loader, device):
     logging.info(f"class_iou  = {class_iou}")
     logging.info(f"mIoU       = {mIoU:.4f}")
     logging.info(f"FWIoU      = {fwiou.item():.4f}")
+    logging.info(f"mDice      = {mDice:.4f}")
     logging.info("--------------------------")
     
     return mIoU
