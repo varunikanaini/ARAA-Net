@@ -56,7 +56,6 @@ def main():
     logging.info(f"Starting training with arguments: {args}")
     logging.info(f"Using device: {device}")
 
-    # --- CORRECTED DATA TRANSFORMS using original files ---
     joint_transform = joint_transforms.Compose([
         joint_transforms.RandomHorizontallyFlip(),
         joint_transforms.Resize((args.scale_h, args.scale_w)),
@@ -97,7 +96,9 @@ def main():
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if os.path.exists(latest_checkpoint_path):
         logging.info(f"Resuming from checkpoint: {latest_checkpoint_path}")
-        ckpt = torch.load(latest_checkpoint_path, map_location=device)
+        # --- THIS IS THE CORRECTED LINE ---
+        ckpt = torch.load(latest_checkpoint_path, map_location=device, weights_only=False)
+        # --- END OF CORRECTION ---
         net.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         start_epoch = ckpt['epoch'] + 1
