@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# train.py
+# train.py (Final Corrected Version)
 
 import os
 import time
@@ -11,8 +11,10 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+import numpy as np
 
-from model import ARAA_Net
+# These imports now point to the correct, original files
+from daseg import daseg
 from config import cod_training_root, test_path, CKPT_ROOT
 from datasets import ImageFolder
 import joint_transforms
@@ -22,6 +24,7 @@ from misc import AvgMeter, check_mkdir
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with original logic')
+    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16'], help='Choose the backbone model')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=5, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
@@ -30,10 +33,7 @@ def get_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to')
-    # --- THIS IS THE CORRECTED LINE ---
     parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to')
-    # --- END OF CORRECTION ---
-    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose the backbone model')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
     return parser.parse_args()
@@ -61,7 +61,7 @@ def main():
     joint_transform = joint_transforms.Compose([
         joint_transforms.RandomHorizontallyFlip(),
         joint_transforms.Resize((args.scale_h, args.scale_w)),
-        joint_transforms.RandomCrop((576, 576), pad_if_needed=True, lbl_fill=255)
+        joint_transforms.RandomCrop((576, 576), pad_if_needed=True, lbl_fill=0) # Use 0 for background fill
     ])
     val_joint_transform = joint_transforms.Compose([joint_transforms.Resize((args.scale_h, args.scale_w))])
     img_transform = transforms.Compose([
@@ -78,7 +78,7 @@ def main():
 
     logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images.")
 
-    net = ARAA_Net(backbone_name=args.backbone, pretrained=True).to(device)
+    net = daseg(backbone_name=args.backbone).to(device)
     
     if args.optimizer == 'Adam':
         optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if 'bias' in n], 'lr': 2 * args.lr}, {'params': [p for n, p in net.named_parameters() if 'bias' not in n], 'lr': args.lr, 'weight_decay': args.weight_decay}])
@@ -88,7 +88,7 @@ def main():
     structure_loss_fn = loss.structure_loss().to(device)
     bce_loss_fn = nn.BCEWithLogitsLoss().to(device)
     iou_loss_fn = loss.IOU().to(device)
-    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device)
+    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device) # ignore_index is not used for binary, but good practice
 
     def bce_iou_loss(pred, target):
         return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
@@ -126,11 +126,16 @@ def main():
 
             p4, p3, p2, p1, p0 = net(inputs)
 
-            loss_1 = bce_iou_loss(p1, labels.unsqueeze(1).float())
-            loss_2 = structure_loss_fn(p2, labels.unsqueeze(1).float())
-            loss_3 = structure_loss_fn(p3, labels.unsqueeze(1).float())
-            loss_4 = structure_loss_fn(p4, labels.unsqueeze(1).float())
-            loss_0 = ce_loss_fn(p0, labels.long())
+            # Labels for binary losses must be float
+            binary_labels = labels.unsqueeze(1).float()
+            # Labels for CrossEntropyLoss must be long
+            ce_labels = labels.long()
+
+            loss_1 = bce_iou_loss(p1, binary_labels)
+            loss_2 = structure_loss_fn(p2, binary_labels)
+            loss_3 = structure_loss_fn(p3, binary_labels)
+            loss_4 = structure_loss_fn(p4, binary_labels)
+            loss_0 = ce_loss_fn(p0, ce_labels)
             total_loss = loss_1 + loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
 
             total_loss.backward()
