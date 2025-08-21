@@ -14,9 +14,9 @@ class CA_Block(nn.Module):
         super(CA_Block, self).__init__()
         self.gamma = nn.Parameter(torch.zeros(1))
         self.softmax = nn.Softmax(dim=-1)
-        self.query_conv = nn.Conv2d(in_dim, in_dim, 1)
-        self.key_conv = nn.Conv2d(in_dim, in_dim, 1)
-        self.value_conv = nn.Conv2d(in_dim, in_dim, 1)
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
 
     def forward(self, x):
         m_batchsize, C, height, width = x.size()
@@ -26,7 +26,10 @@ class CA_Block(nn.Module):
         attention = self.softmax(energy)
         proj_value = self.value_conv(x).view(m_batchsize, C, -1)
 
-        out = torch.bmm(proj_value, attention)
+        # --- THIS IS THE CORRECTED LINE ---
+        out = torch.bmm(attention, proj_value)
+        # --- END OF CORRECTION ---
+
         out = out.view(m_batchsize, C, height, width)
 
         out = self.gamma * out + x
@@ -36,9 +39,9 @@ class SA_Block(nn.Module):
     """Spatial Attention Block"""
     def __init__(self, in_dim):
         super(SA_Block, self).__init__()
-        self.query_conv = nn.Conv2d(in_dim, in_dim // 8, 1)
-        self.key_conv = nn.Conv2d(in_dim, in_dim // 8, 1)
-        self.value_conv = nn.Conv2d(in_dim, in_dim, 1)
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
         self.gamma = nn.Parameter(torch.zeros(1))
         self.softmax = nn.Softmax(dim=-1)
 
@@ -185,7 +188,6 @@ class ARAA_Net(nn.Module):
             ])
 
         elif self.backbone_name == 'inception_v3':
-            # Note: InceptionV3 expects input size of (3, 299, 299)
             weights = models.Inception_V3_Weights.DEFAULT if pretrained else None
             inception = models.inception_v3(weights=weights, aux_logits=False)
             self.layer0 = nn.Sequential(inception.Conv2d_1a_3x3, inception.Conv2d_2a_3x3, inception.Conv2d_2b_3x3, nn.MaxPool2d(3, 2))
@@ -209,11 +211,11 @@ class ARAA_Net(nn.Module):
         l3 = self.layer3(l2)
         l4 = self.layer4(l3)
         
-        cr4 = self.adapters[0](l4) if not isinstance(self.adapters[0], nn.Identity) else l4
-        cr3 = self.adapters[1](l3) if not isinstance(self.adapters[1], nn.Identity) else l3
-        cr2 = self.adapters[2](l2) if not isinstance(self.adapters[2], nn.Identity) else l2
-        cr1 = self.adapters[3](l1) if not isinstance(self.adapters[3], nn.Identity) else l1
-        cr0 = self.adapters[4](l0) if not isinstance(self.adapters[4], nn.Identity) else l0
+        cr4 = self.adapters[0](l4)
+        cr3 = self.adapters[1](l3)
+        cr2 = self.adapters[2](l2)
+        cr1 = self.adapters[3](l1)
+        cr0 = self.adapters[4](l0)
         
         pos_feat, pred4 = self.positioning(cr4)
         f3_feat, pred3 = self.focus3(cr3, pos_feat, pred4)
@@ -221,10 +223,11 @@ class ARAA_Net(nn.Module):
         f1_feat, pred1 = self.focus1(cr1, f2_feat, pred2)
         _, pred0 = self.focus0(cr0, f1_feat, pred1)
 
-        pred4 = F.interpolate(pred4, size=x.size()[2:], mode='bilinear', align_corners=True)
-        pred3 = F.interpolate(pred3, size=x.size()[2:], mode='bilinear', align_corners=True)
-        pred2 = F.interpolate(pred2, size=x.size()[2:], mode='bilinear', align_corners=True)
-        pred1 = F.interpolate(pred1, size=x.size()[2:], mode='bilinear', align_corners=True)
-        pred0 = F.interpolate(pred0, size=x.size()[2:], mode='bilinear', align_corners=True)
+        original_size = x.size()[2:]
+        pred4 = F.interpolate(pred4, size=original_size, mode='bilinear', align_corners=True)
+        pred3 = F.interpolate(pred3, size=original_size, mode='bilinear', align_corners=True)
+        pred2 = F.interpolate(pred2, size=original_size, mode='bilinear', align_corners=True)
+        pred1 = F.interpolate(pred1, size=original_size, mode='bilinear', align_corners=True)
+        pred0 = F.interpolate(pred0, size=original_size, mode='bilinear', align_corners=True)
 
         return pred4, pred3, pred2, pred1, pred0

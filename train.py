@@ -30,7 +30,7 @@ def get_args():
     parser.add_argument('--batch-size', type=int, default=5, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
-    parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers')
+    parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
     return parser.parse_args()
 
 def setup_logging(log_dir):
@@ -58,7 +58,6 @@ def main():
     logging.info(f"Starting training with arguments: {args}")
     logging.info(f"Using device: {device}")
 
-    # Note: InceptionV3 expects 299x299 inputs. Training transform is handled inside the model.
     img_size = (576, 576)
     joint_transform = joint_transforms.Compose([
         joint_transforms.RandomHorizontallyFlip(),
@@ -96,7 +95,9 @@ def main():
     def bce_iou_loss(pred, target):
         return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+    # --- THIS IS THE CORRECTED AMP USAGE ---
+    scaler = torch.amp.GradScaler(device_type='cuda', enabled=torch.cuda.is_available())
+    # --- END OF CORRECTION ---
 
     start_epoch, best_mIoU = 0, 0.0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
@@ -107,7 +108,8 @@ def main():
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         start_epoch = ckpt['epoch'] + 1
         best_mIoU = ckpt.get('best_mIoU', 0.0)
-        scaler.load_state_dict(ckpt['scaler_state_dict'])
+        if 'scaler_state_dict' in ckpt:
+            scaler.load_state_dict(ckpt['scaler_state_dict'])
 
     patience_counter = 0
     total_iterations = len(train_loader) * args.epochs
@@ -127,7 +129,8 @@ def main():
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            # --- THIS IS THE CORRECTED AMP USAGE ---
+            with torch.amp.autocast(device_type='cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
                 p4, p3, p2, p1, p0 = net(inputs)
                 loss_1 = bce_iou_loss(p1, labels.unsqueeze(1))
                 loss_2 = structure_loss_fn(p2, labels.unsqueeze(1))
@@ -135,6 +138,7 @@ def main():
                 loss_4 = structure_loss_fn(p4, labels.unsqueeze(1))       
                 loss_0 = ce_loss_fn(p0, labels.long())
                 total_loss = loss_1 + loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
+            # --- END OF CORRECTION ---
 
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
@@ -177,7 +181,7 @@ def validate(net, test_loader, device, criterion):
         for data in test_iterator:
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            with torch.amp.autocast(device_type='cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
                 _, _, _, _, pred = net(inputs)
                 loss = criterion(pred, labels.long())
 
@@ -185,7 +189,7 @@ def validate(net, test_loader, device, criterion):
             confmat.update(labels.flatten(), pred.argmax(1).flatten())
             
     _, _, class_iou, fwiou, _ = confmat.compute()
-    mIoU = class_iou.mean()
+    mIoU = class_iou.cpu().numpy().mean()
     
     logging.info(f"Validation | Loss: {val_loss.avg:.4f}, mIoU: {mIoU:.4f}, FWIoU: {fwiou.item():.4f}")
     
