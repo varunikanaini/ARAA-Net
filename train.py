@@ -26,11 +26,11 @@ def get_args():
     parser.add_argument('--backbone', type=str, default='resnet50',
                         choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'],
                         help='Choose the backbone model')
-    parser.add_argument('--epochs', type=int, default=200, help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=8, help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--batch-size', type=int, default=5, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
-    parser.add_argument('--num-workers', type=int, default=4, help='Number of data loader workers')
+    parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers')
     return parser.parse_args()
 
 def setup_logging(log_dir):
