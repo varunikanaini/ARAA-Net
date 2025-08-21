@@ -30,7 +30,7 @@ def get_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to')
-    parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to')
+    parser.add_argument('--scale-w', type=int, default=576, ahelp='Width to resize images to')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose the backbone model')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
@@ -95,11 +95,16 @@ def main():
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if os.path.exists(latest_checkpoint_path):
         logging.info(f"Resuming from checkpoint: {latest_checkpoint_path}")
-        ckpt = torch.load(latest_checkpoint_path, map_location=device, weights_only=False)
-        net.load_state_dict(ckpt['model_state_dict'])
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        start_epoch = ckpt['epoch'] + 1
-        best_mIoU = ckpt.get('best_mIoU', 0.0)
+        try:
+            ckpt = torch.load(latest_checkpoint_path, map_location=device, weights_only=False)
+            net.load_state_dict(ckpt['model_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            start_epoch = ckpt['epoch'] + 1
+            best_mIoU = ckpt.get('best_mIoU', 0.0)
+        except Exception as e:
+            logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
+            start_epoch, best_mIoU = 0, 0.0
+
 
     patience_counter = 0
     total_iterations = len(train_loader) * args.epochs
@@ -118,7 +123,6 @@ def main():
             inputs, labels = data['image'].to(device), data['label'].to(device)
             optimizer.zero_grad(set_to_none=True)
 
-            # --- TRAINING IS NOW DONE IN STANDARD FLOAT32 ---
             p4, p3, p2, p1, p0 = net(inputs)
 
             loss_1 = bce_iou_loss(p1, labels.unsqueeze(1).float())
@@ -130,7 +134,6 @@ def main():
 
             total_loss.backward()
             optimizer.step()
-            # --- END OF CHANGE: No GradScaler needed ---
 
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg, lr=optimizer.param_groups[1]['lr'])
@@ -148,7 +151,6 @@ def main():
             patience_counter += 1
             logging.info(f"⚠️ Epoch {epoch+1}: No improvement in mIoU for {patience_counter} epoch(s). Best mIoU remains {best_mIoU:.4f}.")
 
-        # Save latest checkpoint without scaler state
         torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, latest_checkpoint_path)
         
         if patience_counter >= args.patience:
@@ -163,7 +165,6 @@ def validate(net, test_loader, device):
     with torch.no_grad():
         for data in test_iterator:
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            # No autocast needed for validation either
             _, _, _, _, pred = net(inputs)
             confmat.update(labels.flatten(), pred.argmax(1).flatten())
             
