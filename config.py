@@ -1,16 +1,13 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on 2022-12-13 09:54:12
+# config.py
 
-@author: XuWang
-
-"""
 import os
 
-backbone_path = './backbone/resnet/resnet50-19c8e357.pth'
+DATA_ROOT = './data'
 
-datasets_root = './data/TSRS_RSNA-Epiphysis'
+CKPT_ROOT = './ckpt'
 
-cod_training_root = os.path.join(datasets_root, 'train')
-chameleon_path = os.path.join(datasets_root, 'test')
+DATASET_NAME = 'TSRS_RSNA-Epiphysis'
+
+dataset_path = os.path.join(DATA_ROOT, DATASET_NAME)
+cod_training_root = os.path.join(dataset_path, 'train')
+test_path = os.path.join(dataset_path, 'test')

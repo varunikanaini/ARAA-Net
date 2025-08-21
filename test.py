@@ -1,260 +1,94 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on 2022-12-13 09:54:12
+# test.py
 
-@author: XuWang
-
-"""
-import time
-import datetime
 import os
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
-from config import cod_training_root,chameleon_path
+import time
+import logging
+import argparse
+import datetime
 
 import torch
-from torch import nn
-from torch import optim
-from torch.autograd import Variable
-from torch.backends import cudnn
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import numpy as np
-from torchvision import utils as vutils
 
-import joint_transforms
-from config import cod_training_root,chameleon_path
-from config import backbone_path
+from model import ARAA_Net
+from config import test_path, CKPT_ROOT
 from datasets import ImageFolder
-from misc import AvgMeter, check_mkdir
-from daseg import daseg
-from dar import DARConv2d
-import loss
-import numpy as np
-import matplotlib.pyplot as plt
-
+import joint_transforms
 from seg_utils import ConfusionMatrix
 
-cudnn.benchmark = True
+def get_args():
+    parser = argparse.ArgumentParser(description='Test ARAA-Net')
+    parser.add_argument('--backbone', type=str, default='resnet50',
+                        choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'],
+                        help='Choose the backbone of the trained model')
+    parser.add_argument('--batch-size', type=int, default=1, help='Batch size for testing')
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of data loader workers')
+    return parser.parse_args()
 
-
-
-
-
-import torch
-from PIL import Image
-from torch.autograd import Variable
-from torchvision import transforms
-from collections import OrderedDict
-from numpy import mean
-
-from config import *
-from misc import *
-from daseg import daseg
-
-torch.manual_seed(2021)
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-
-ckpt_path = './ckpt'
-exp_name = 'TASNet'
-
-args = {
-    'epoch_num': 2000,
-    'train_batch_size': 2,
-    'last_epoch': 0,
-    'lr': 5e-4,
-    'lr_decay': 0.9,
-    'weight_decay': 5e-4,
-    'momentum': 0.9,
-    'snapshot': '',
-    'scale_w': 576,
-    'scale_h': 896,
-    'save_point': [0,50,80,100,120,135,180,260,300,500,700,900,1000,1200,1300,1400,1500,1600,1700,1800,1900,1999],
-    'poly_train': True,
-    'optimizer': 'Adam',
-}
-
-# Path.
-check_mkdir(ckpt_path)
-check_mkdir(os.path.join(ckpt_path, exp_name))
-vis_path = os.path.join(ckpt_path, exp_name, 'log')
-check_mkdir(vis_path)
-log_path = os.path.join(ckpt_path, exp_name,'log.txt')
-writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
-
-
-results_path = './results'
-check_mkdir(results_path)
-exp_name = 'TASNet'
-args = {
-    'scale_w': 576,
-    'scale_h': 896,
-    'save_results': True
-}
-
-print(torch.__version__)
-
-# img_transform = transforms.Compose([
-#     transforms.Resize((args['scale_w'], args['scale_h']))
-# ])
-
-joint_transform_val = joint_transforms.Compose([
-    joint_transforms.Resize((args['scale_w'], args['scale_h']))
-])
-
-
-img_transform = transforms.Compose([
-    transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),  
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-])
-target_transform = transforms.ToTensor()
-
-to_pil = transforms.ToPILImage()
-
-
-to_test = OrderedDict([
-                       ('DAGM', chameleon_path)
-                       ])
-results = OrderedDict()
-
-structure_loss = loss.structure_loss().to(device)
-bce_loss = nn.BCEWithLogitsLoss().to(device)
-iou_loss = loss.IOU().to(device)
-last_criterion = nn.CrossEntropyLoss(ignore_index=255)
-
-def bce_iou_loss(pred, target):
-    bce_out = bce_loss(pred, target)
-    iou_out = iou_loss(pred, target)
-
-    loss = bce_out + iou_out
-
-    return loss
-
-
-
-test_set = ImageFolder(chameleon_path, joint_transform_val, img_transform, target_transform,split='test')
-print("Test set: {}".format(test_set.__len__()))
-test_loader = DataLoader(test_set, batch_size=1, num_workers=0, shuffle=False)
-
-
-
-
-def sample_images(epoch, batch_i, MECG, FECG_reconstr, FECG, sample_path):
-
-    r, c = 1, 3
-    gen_imgs = [MECG, FECG_reconstr,FECG]
-    titles = ['Image', 'Image_rec','Label']
-    
-    fig, axs = plt.subplots(r, c,figsize=(15, 5))
-    cnt = 0
-    for i in range(r):
-        for j in range(c):
-            for bias in range(1):
-                tt = gen_imgs[cnt]
-                A = tt.cpu().detach().numpy()
-                A = A[bias].squeeze(0)
-                axs[j].imshow(A)
-            axs[j].set_title(titles[j])
-            cnt += 1
-    fig.savefig("%s/%d_%d.png" % (sample_path, epoch,batch_i),dpi=500,bbox_inches = 'tight')
-    plt.close()
-
-
-def validate(net):
-    net.eval()
-    curr_iter = 1
-    start_time = time.time()
-
-    confmat = ConfusionMatrix(num_classes=2)
-    loss_record, loss_1_record, loss_2_record, loss_3_record, loss_4_record, loss_0_record = AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter()
-
-    test_iterator = tqdm(test_loader, total=len(test_loader))
-    for data in test_iterator:
-
-        inputs, labels,name = data['image'], data['label'],  data['name']
-        
-        batch_size = inputs.size(0)
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-        
-        with torch.no_grad():
-            predict_1, predict_2, predict_3, predict_4, predict0 = net(inputs)
-            
-            
-            pred = predict0.argmax(1)
-            # target = labels.cpu().numpy()
-            # pred = np.argmax(pred, axis=1)
-            # Add batch sample into evaluator
-            
-            
-            confmat.update(labels.flatten(), predict0.argmax(1).flatten() if predict0.dim() == 4 else predict0.flatten())
-        
-            class_color = [(0, 0, 0),(255, 255, 255)]          
-            lla = pred.long().cpu().clone()
-            lla = np.uint8(lla.squeeze(0).squeeze(0))
-            label_index = np.full(inputs.squeeze(0).shape, 255, dtype='uint8')
-            for ik, color in enumerate(class_color):
-                for ig in range(label_index.shape[0]):
-                    label_index[ig][lla == ik] = color[ig]
-                    
-            image = torch.from_numpy(label_index).float()
-            pname = name[0][0].split('/')[-1]
-            path = 'data/segment/results/' + pname
-            vutils.save_image(image, path)    
-        
-        
-            # sample_images(1, curr_iter, inputs, pred, labels, './results/TASNet/DAGM')
-        
-
-            global_acc, class_acc, class_iou,FWIoU,mDice = confmat.compute()
-            class_iou = class_iou.cpu().numpy()
-            
-            log = '[%3d], [%6f], [%.5f]' % \
-                  (curr_iter, np.mean(class_iou), loss_0_record.avg)
-            test_iterator.set_description(log)
-            open(log_path, 'a').write(log + '\n')
-    
-            curr_iter += 1
-
-
-    global_acc, class_acc, class_iou,FWIoU,mDice = confmat.compute()
-    global_acc = global_acc.item()
-    class_acc = class_acc.cpu().numpy()
-    class_iou = class_iou.cpu().numpy()
-    FWIoU = FWIoU.cpu().numpy()
-    
-    
-    print(f'global_acc={global_acc}')
-    print(f'class_acc={class_acc}')
-    print(f'class_iou={class_iou}')
-    print(f'mIoU={np.mean(class_iou)}')
-    print(f'FWIoU={FWIoU}')
-    print(f'mDice={mDice}')
-    
-    return np.mean(class_iou)
-
-
-
-
+def setup_logging(log_dir):
+    log_file = os.path.join(log_dir, 'testing.log')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler()]
+    )
 
 def main():
-    net = daseg(backbone_path).to(device)
+    args = get_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    exp_name = args.backbone
+    exp_path = os.path.join(CKPT_ROOT, exp_name)
+    setup_logging(exp_path)
+    
+    checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
+    if not os.path.exists(checkpoint_path):
+        logging.error(f"Best checkpoint not found at {checkpoint_path}")
+        return
 
-    #net.load_state_dict(torch.load('TASNet.pth'))
-    net.load_state_dict(torch.load('ckpt/TASNet/223.pth'))
+    logging.info(f"Loading best model from {checkpoint_path} for testing.")
+    logging.info(f"Using device: {device}")
 
+    test_transform = joint_transforms.Compose([joint_transforms.Resize((896, 576))])
+    img_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    target_transform = transforms.ToTensor()
+    
+    test_set = ImageFolder(test_path, test_transform, img_transform, target_transform)
+    test_loader = DataLoader(test_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+    logging.info(f"Found {len(test_set)} testing images.")
+
+    net = ARAA_Net(backbone_name=args.backbone, pretrained=False).to(device)
+    net.load_state_dict(torch.load(checkpoint_path, map_location=device))
     net.eval()
-    with torch.no_grad():
-        start = time.time()
-        validate(net)
 
-    end = time.time()
-    print("Total Testing Time: {}".format(str(datetime.timedelta(seconds=int(end - start)))))
+    confmat = ConfusionMatrix(num_classes=2)
+    test_iterator = tqdm(test_loader, desc="Testing")
+    
+    start_time = time.time()
+    with torch.no_grad():
+        for data in test_iterator:
+            inputs, labels = data['image'].to(device), data['label'].to(device)
+            _, _, _, _, pred = net(inputs)
+            confmat.update(labels.flatten(), pred.argmax(1).flatten())
+    end_time = time.time()
+    
+    global_acc, _, class_iou, fwiou, mDice = confmat.compute()
+    mIoU = class_iou.mean()
+
+    logging.info("------ Test Results ------")
+    logging.info(f"Overall Accuracy (OA): {global_acc.item():.4f}")
+    logging.info(f"Mean IoU (mIoU): {mIoU:.4f}")
+    logging.info(f"FWIoU: {fwiou.item():.4f}")
+    logging.info(f"Mean Dice: {mDice:.4f}")
+    logging.info(f"Class-wise IoU: {class_iou}")
+    logging.info(f"Total Testing Time: {str(datetime.timedelta(seconds=int(end_time - start_time)))}")
+    logging.info("--------------------------")
 
 if __name__ == '__main__':
     main()
