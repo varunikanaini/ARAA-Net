@@ -30,7 +30,9 @@ def get_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to')
-    parser.add_argument('--scale-w', type=int, default=576, ahelp='Width to resize images to')
+    # --- THIS IS THE CORRECTED LINE ---
+    parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to')
+    # --- END OF CORRECTION ---
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose the backbone model')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
@@ -104,7 +106,6 @@ def main():
         except Exception as e:
             logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
             start_epoch, best_mIoU = 0, 0.0
-
 
     patience_counter = 0
     total_iterations = len(train_loader) * args.epochs
