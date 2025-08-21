@@ -95,8 +95,8 @@ def main():
     def bce_iou_loss(pred, target):
         return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
 
-    # --- THIS IS THE CORRECTED AMP USAGE ---
-    scaler = torch.amp.GradScaler(device_type='cuda', enabled=torch.cuda.is_available())
+    # --- THIS IS THE CORRECTED LINE ---
+    scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available())
     # --- END OF CORRECTION ---
 
     start_epoch, best_mIoU = 0, 0.0
@@ -129,7 +129,6 @@ def main():
 
             optimizer.zero_grad(set_to_none=True)
 
-            # --- THIS IS THE CORRECTED AMP USAGE ---
             with torch.amp.autocast(device_type='cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
                 p4, p3, p2, p1, p0 = net(inputs)
                 loss_1 = bce_iou_loss(p1, labels.unsqueeze(1))
@@ -138,7 +137,6 @@ def main():
                 loss_4 = structure_loss_fn(p4, labels.unsqueeze(1))       
                 loss_0 = ce_loss_fn(p0, labels.long())
                 total_loss = loss_1 + loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
-            # --- END OF CORRECTION ---
 
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
