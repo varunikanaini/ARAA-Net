@@ -1,4 +1,4 @@
-# daseg.py (Corrected and Final)
+# daseg.py (Final Corrected Version)
 
 import torch
 import torch.nn as nn
@@ -6,39 +6,39 @@ import torch.nn.functional as F
 import torchvision.models as models
 from dar import DARConv2d # Assumes dar.py is in the same directory
 
-# --- HELPER TO GET BACKBONE LAYERS ---
+# --- HELPER TO GET BACKBONE LAYERS (Corrected to return a plain dict) ---
 def get_backbone(backbone_name):
     if backbone_name == 'resnet50':
         resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        return nn.ModuleDict({
+        # Returns a standard Python dictionary
+        return {
             'layer0': nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu),
             'layer1': nn.Sequential(resnet.maxpool, resnet.layer1),
             'layer2': resnet.layer2,
             'layer3': resnet.layer3,
             'layer4': resnet.layer4,
             'channels': {'c0': 64, 'c1': 256, 'c2': 512, 'c3': 1024, 'c4': 2048}
-        })
+        }
     elif backbone_name == 'resnet101':
         resnet = models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
-        return nn.ModuleDict({
+        return {
             'layer0': nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu),
             'layer1': nn.Sequential(resnet.maxpool, resnet.layer1),
             'layer2': resnet.layer2,
             'layer3': resnet.layer3,
             'layer4': resnet.layer4,
             'channels': {'c0': 64, 'c1': 256, 'c2': 512, 'c3': 1024, 'c4': 2048}
-        })
+        }
     elif backbone_name == 'vgg16':
-        # Using VGG16 with BatchNorm as it's more stable
         vgg = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).features
-        return nn.ModuleDict({
+        return {
             'layer0': vgg[:6],
             'layer1': vgg[6:13],
             'layer2': vgg[13:23],
             'layer3': vgg[23:33],
             'layer4': vgg[33:43],
             'channels': {'c0': 64, 'c1': 128, 'c2': 256, 'c3': 512, 'c4': 512}
-        })
+        }
     else:
         raise NotImplementedError(f"Backbone '{backbone_name}' not supported.")
 
@@ -126,15 +126,21 @@ class Focus(nn.Module):
         output_map = self.output_map(refine)
         return refine, output_map
 
-# --- MAIN DASEG CLASS ---
+# --- MAIN DASEG CLASS (Corrected __init__) ---
 class daseg(nn.Module):
     def __init__(self, backbone_name='resnet50'):
         super(daseg, self).__init__()
         
         backbone_data = get_backbone(backbone_name)
-        self.backbone = backbone_data
         
-        ch = self.backbone['channels']
+        # Correctly assign layers as submodules
+        self.layer0 = backbone_data['layer0']
+        self.layer1 = backbone_data['layer1']
+        self.layer2 = backbone_data['layer2']
+        self.layer3 = backbone_data['layer3']
+        self.layer4 = backbone_data['layer4']
+        
+        ch = backbone_data['channels']
         
         # Decoder layers
         self.positioning = Positioning(ch['c4'])
@@ -145,11 +151,11 @@ class daseg(nn.Module):
 
     def forward(self, x):
         # Backbone forward pass
-        l0 = self.backbone['layer0'](x)
-        l1 = self.backbone['layer1'](l0)
-        l2 = self.backbone['layer2'](l1)
-        l3 = self.backbone['layer3'](l2)
-        l4 = self.backbone['layer4'](l3)
+        l0 = self.layer0(x)
+        l1 = self.layer1(l0)
+        l2 = self.layer2(l1)
+        l3 = self.layer3(l2)
+        l4 = self.layer4(l3)
 
         # Decoder forward pass
         pos_feat, pred4 = self.positioning(l4)

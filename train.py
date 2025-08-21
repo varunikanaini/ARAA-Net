@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# train.py (Final Corrected Version)
+# train.py
 
 import os
 import time
@@ -11,9 +11,7 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
-import numpy as np
 
-# These imports now point to the correct, original files
 from daseg import daseg
 from config import cod_training_root, test_path, CKPT_ROOT
 from datasets import ImageFolder
@@ -61,7 +59,7 @@ def main():
     joint_transform = joint_transforms.Compose([
         joint_transforms.RandomHorizontallyFlip(),
         joint_transforms.Resize((args.scale_h, args.scale_w)),
-        joint_transforms.RandomCrop((576, 576), pad_if_needed=True, lbl_fill=0) # Use 0 for background fill
+        joint_transforms.RandomCrop((576, 576), pad_if_needed=True, lbl_fill=0)
     ])
     val_joint_transform = joint_transforms.Compose([joint_transforms.Resize((args.scale_h, args.scale_w))])
     img_transform = transforms.Compose([
@@ -88,7 +86,7 @@ def main():
     structure_loss_fn = loss.structure_loss().to(device)
     bce_loss_fn = nn.BCEWithLogitsLoss().to(device)
     iou_loss_fn = loss.IOU().to(device)
-    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device) # ignore_index is not used for binary, but good practice
+    ce_loss_fn = nn.CrossEntropyLoss().to(device)
 
     def bce_iou_loss(pred, target):
         return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
@@ -126,9 +124,7 @@ def main():
 
             p4, p3, p2, p1, p0 = net(inputs)
 
-            # Labels for binary losses must be float
             binary_labels = labels.unsqueeze(1).float()
-            # Labels for CrossEntropyLoss must be long
             ce_labels = labels.long()
 
             loss_1 = bce_iou_loss(p1, binary_labels)
