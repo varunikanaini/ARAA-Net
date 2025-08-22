@@ -24,7 +24,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with original logic')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16'], help='Choose the backbone model')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=5, help='Batch size for training')
+    parser.add_argument('--batch-size', type=int, default=5, help='Batch size for training') #change to 3 for vgg
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
