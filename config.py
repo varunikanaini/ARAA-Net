@@ -2,9 +2,9 @@
 
 import os
 
-DATA_ROOT = './data'
+DATA_ROOT = 'kaggle/working/ARAA-Net/data'
 
-CKPT_ROOT = '/content/drive/MyDrive/araa/ARAA-Net/ckpt'
+CKPT_ROOT = '/kaggle/working/araa/ckpt'
 
 DATASET_NAME = 'TSRS_RSNA-Epiphysis'
 # DATASET_NAME = 'TSRS_RSNA-Articular-Surface'
