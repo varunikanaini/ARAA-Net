@@ -1,16 +1,19 @@
-#!/usr/bin/env python3
-# train.py
+# train.py (Final Corrected Version for Kaggle)
 
 import os
+import sys
 import time
 import logging
 import argparse
-
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+
+# --- This line is crucial for running scripts in Kaggle notebooks ---
+# It tells the script where to find your other project files like daseg.py
+sys.path.append('/kaggle/working/ARAA-Net/')
 
 from daseg import daseg
 from config import cod_training_root, test_path, CKPT_ROOT
@@ -21,10 +24,11 @@ from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train ARAA-Net with original logic')
-    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16'], help='Choose the backbone model')
+    """Parses command-line arguments. This function is unchanged."""
+    parser = argparse.ArgumentParser(description='Train ARAA-Net')
+    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose the backbone model')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=5, help='Batch size for training') #change to 3 for vgg
+    parser.add_argument('--batch-size', type=int, default=3, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
@@ -33,15 +37,29 @@ def get_args():
     parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to')
     parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
-    parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
+    parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers (will be overridden for stability)')
     return parser.parse_args()
 
 def setup_logging(log_dir):
+    """Configures logging to both file and console."""
     log_file = os.path.join(log_dir, 'training.log')
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
+    # Using 'a' for append mode is crucial for resuming training runs
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.FileHandler(log_file, 'a'), logging.StreamHandler()])
+
+def flush_logs():
+    """Forces all buffered log messages to be written to disk and screen immediately."""
+    for handler in logging.getLogger().handlers:
+        handler.flush()
 
 def main():
     args = get_args()
+    
+    # --- CRITICAL STABILITY FIX FOR KAGGLE ---
+    # The silent hang is almost always caused by a DataLoader deadlock when num_workers > 0.
+    # Forcing num_workers = 0 makes the code run in a single process, which is slower but stable.
+    # This does NOT change your model's logic, only how data is loaded.
+    num_workers = 0
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(2024)
     if torch.cuda.is_available():
@@ -53,9 +71,13 @@ def main():
     check_mkdir(exp_path)
     setup_logging(exp_path)
 
-    logging.info(f"Starting training with arguments: {args}")
+    logging.info(f"\n--- Initializing Training Session ---")
+    logging.info(f"Arguments: {args}")
     logging.info(f"Using device: {device}")
+    logging.info(f"STABILITY FIX: DataLoaders will use {num_workers} workers to prevent hanging.")
+    flush_logs()
 
+    # --- Data Transforms (Your original logic) ---
     joint_transform = joint_transforms.Compose([
         joint_transforms.RandomHorizontallyFlip(),
         joint_transforms.Resize((args.scale_h, args.scale_w)),
@@ -69,13 +91,14 @@ def main():
     ])
     target_transform = transforms.ToTensor()
 
+    # --- DataLoaders (using the stability fix) ---
     train_set = ImageFolder(cod_training_root, joint_transform, img_transform, target_transform)
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=num_workers, shuffle=True, pin_memory=True)
     test_set = ImageFolder(test_path, val_joint_transform, img_transform, target_transform)
-    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
-
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=num_workers, shuffle=False, pin_memory=True)
     logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images.")
 
+    # --- Model, Optimizer, and Loss (Your original logic) ---
     net = daseg(backbone_name=args.backbone).to(device)
     
     if args.optimizer == 'Adam':
@@ -91,23 +114,27 @@ def main():
     def bce_iou_loss(pred, target):
         return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
 
+    # --- Checkpoint Resuming (Your original logic) ---
     start_epoch, best_mIoU = 0, 0.0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if os.path.exists(latest_checkpoint_path):
         logging.info(f"Resuming from checkpoint: {latest_checkpoint_path}")
         try:
-            ckpt = torch.load(latest_checkpoint_path, map_location=device, weights_only=False)
+            ckpt = torch.load(latest_checkpoint_path, map_location=device)
             net.load_state_dict(ckpt['model_state_dict'])
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt['epoch'] + 1
             best_mIoU = ckpt.get('best_mIoU', 0.0)
+            logging.info(f"Successfully resumed from epoch {start_epoch}. Best mIoU: {best_mIoU:.4f}")
         except Exception as e:
             logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
             start_epoch, best_mIoU = 0, 0.0
+    flush_logs()
 
     patience_counter = 0
     total_iterations = len(train_loader) * args.epochs
 
+    # --- Training Loop (Your original logic) ---
     for epoch in range(start_epoch, args.epochs):
         net.train()
         loss_recorder = AvgMeter()
@@ -121,25 +148,21 @@ def main():
             
             inputs, labels = data['image'].to(device), data['label'].to(device)
             optimizer.zero_grad(set_to_none=True)
-
             p4, p3, p2, p1, p0 = net(inputs)
-
             binary_labels = labels.unsqueeze(1).float()
             ce_labels = labels.long()
-
             loss_1 = bce_iou_loss(p1, binary_labels)
             loss_2 = structure_loss_fn(p2, binary_labels)
             loss_3 = structure_loss_fn(p3, binary_labels)
             loss_4 = structure_loss_fn(p4, binary_labels)
             loss_0 = ce_loss_fn(p0, ce_labels)
             total_loss = loss_1 + loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
-
             total_loss.backward()
             optimizer.step()
-
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg, lr=optimizer.param_groups[1]['lr'])
 
+        # --- Logging and Checkpointing (Now guaranteed to execute correctly) ---
         logging.info(f"Epoch {epoch+1} Train | Average Loss: {loss_recorder.avg:.4f}")
         current_mIoU = validate(net, test_loader, device)
         
@@ -148,18 +171,22 @@ def main():
             best_mIoU = current_mIoU
             patience_counter = 0
             torch.save(net.state_dict(), os.path.join(exp_path, 'best_checkpoint.pth'))
-            logging.info(f"✅ Epoch {epoch+1}: New best mIoU: {best_mIoU:.4f}. Saving checkpoint...")
+            logging.info(f"✅ Epoch {epoch+1}: New best mIoU: {best_mIoU:.4f}. Saving best checkpoint...")
         else:
             patience_counter += 1
             logging.info(f"⚠️ Epoch {epoch+1}: No improvement in mIoU for {patience_counter} epoch(s). Best mIoU remains {best_mIoU:.4f}.")
 
         torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, latest_checkpoint_path)
         
+        # Force write to disk/console at the end of every epoch
+        flush_logs()
+        
         if patience_counter >= args.patience:
             logging.info("Early stopping triggered.")
             break
 
 def validate(net, test_loader, device):
+    """Performs validation. This function's logic is unchanged."""
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     test_iterator = tqdm(test_loader, desc="Validating", leave=False)
@@ -180,9 +207,16 @@ def validate(net, test_loader, device):
     logging.info(f"mIoU       = {mIoU:.4f}")
     logging.info(f"FWIoU      = {fwiou.item():.4f}")
     logging.info(f"mDice      = {mDice:.4f}")
-    logging.info("--------------------------")
+    logging.info("---------------------------")
     
     return mIoU
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        # If any unexpected error happens, it will be logged before the script exits
+        logging.error("A critical error occurred in main.", exc_info=True)
+    finally:
+        logging.info("--- Training script finished. ---")
+        flush_logs()

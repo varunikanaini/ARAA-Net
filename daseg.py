@@ -1,4 +1,4 @@
-# daseg.py (Final Corrected Version)
+# daseg.py
 
 import torch
 import torch.nn as nn
@@ -6,11 +6,10 @@ import torch.nn.functional as F
 import torchvision.models as models
 from dar import DARConv2d # Assumes dar.py is in the same directory
 
-# --- HELPER TO GET BACKBONE LAYERS (Corrected to return a plain dict) ---
+# --- HELPER TO GET BACKBONE LAYERS (With InceptionV3) ---
 def get_backbone(backbone_name):
     if backbone_name == 'resnet50':
         resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        # Returns a standard Python dictionary
         return {
             'layer0': nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu),
             'layer1': nn.Sequential(resnet.maxpool, resnet.layer1),
@@ -38,6 +37,40 @@ def get_backbone(backbone_name):
             'layer3': vgg[23:33],
             'layer4': vgg[33:43],
             'channels': {'c0': 64, 'c1': 128, 'c2': 256, 'c3': 512, 'c4': 512}
+        }
+    elif backbone_name == 'inception_v3':
+        inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
+        inception.aux_logits = False # We don't need the auxiliary output
+        return {
+            'layer0': nn.Sequential(
+                inception.Conv2d_1a_32,
+                inception.Conv2d_2a_32,
+                inception.Conv2d_2b_64,
+            ),
+            'layer1': nn.Sequential(
+                nn.MaxPool2d(kernel_size=3, stride=2),
+                inception.Conv2d_3b_1x1,
+                inception.Conv2d_4a_192,
+            ),
+            'layer2': nn.Sequential(
+                nn.MaxPool2d(kernel_size=3, stride=2),
+                inception.Mixed_5b,
+                inception.Mixed_5c,
+                inception.Mixed_5d,
+            ),
+            'layer3': nn.Sequential(
+                inception.Mixed_6a,
+                inception.Mixed_6b,
+                inception.Mixed_6c,
+                inception.Mixed_6d,
+                inception.Mixed_6e,
+            ),
+            'layer4': nn.Sequential(
+                inception.Mixed_7a,
+                inception.Mixed_7b,
+                inception.Mixed_7c,
+            ),
+            'channels': {'c0': 64, 'c1': 192, 'c2': 288, 'c3': 768, 'c4': 2048}
         }
     else:
         raise NotImplementedError(f"Backbone '{backbone_name}' not supported.")
@@ -126,14 +159,13 @@ class Focus(nn.Module):
         output_map = self.output_map(refine)
         return refine, output_map
 
-# --- MAIN DASEG CLASS (Corrected __init__) ---
+# --- MAIN DASEG CLASS ---
 class daseg(nn.Module):
     def __init__(self, backbone_name='resnet50'):
         super(daseg, self).__init__()
         
         backbone_data = get_backbone(backbone_name)
         
-        # Correctly assign layers as submodules
         self.layer0 = backbone_data['layer0']
         self.layer1 = backbone_data['layer1']
         self.layer2 = backbone_data['layer2']
