@@ -27,7 +27,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # All paths point to your /kaggle/working/ directory
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
-DATA_ROOT = '/kaggle/working/ARAA-Net/data'
+DATA_ROOT = '/kaggle/working/araa/ARAA-Net/data'
 
 # --- STEP 3: PREPARE FOR LOGGING ---
 log_dir = os.path.join(CKPT_ROOT, BACKBONE_TO_TEST)
