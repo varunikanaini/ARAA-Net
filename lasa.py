@@ -1,4 +1,4 @@
-# /kaggle/working/araa/ARAA-Net/lasa.py (FINAL CORRECTED VERSION 2)
+# /kaggle/working/araa/ARAA-Net/lasa.py (FINAL CORRECTED VERSION 3)
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,8 @@ import torch.nn.functional as F
 class LASA(nn.Module):
     """
     Local Axial Scale-Attention Module.
-    This version uses a vectorized approach (torch.unfold) and corrects the tensor split logic.
+    This version uses a vectorized approach and corrects the broadcasting error
+    for positional encoding.
     """
     def __init__(self, in_channels, M=4, L_list=[5, 7, 9, 11]):
         super(LASA, self).__init__()
@@ -21,7 +22,12 @@ class LASA(nn.Module):
         self.k_convs = nn.ModuleList([nn.Conv2d(self.group_channels, self.group_channels, 1, bias=False) for _ in range(M)])
 
         self.r_q = nn.Parameter(torch.randn(1, in_channels, 1, 1), requires_grad=True)
-        self.r_ks = nn.ParameterList([nn.Parameter(torch.randn(1, self.group_channels, 2 * L - 1, 1), requires_grad=True) for L in L_list])
+        
+        # --- THIS IS THE FIX ---
+        # The positional encoding must be broadcastable to (B, C/M, 2L-1, H, W).
+        # We define its shape as (1, C/M, 2L-1, 1, 1) so the last two dimensions can be stretched.
+        self.r_ks = nn.ParameterList([nn.Parameter(torch.randn(1, self.group_channels, 2 * L - 1, 1, 1), requires_grad=True) for L in L_list])
+        # --- END OF FIX ---
 
         self.fusion_conv = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 1, bias=False),
@@ -49,16 +55,10 @@ class LASA(nn.Module):
             k_h = k_unfolded[:, :, :, pad, :, :]
             k_w = k_unfolded[:, :, pad, :, :, :]
 
-            # --- THIS IS THE FIX ---
-            # The split must account for the center pixel.
-            # We split into three parts: [before_center, center, after_center]
-            # The split sizes will be [pad, 1, L - pad - 1], which sum to L.
             k_w_pre, _, k_w_post = k_w.split([pad, 1, L - pad - 1], dim=2)
-            
-            # Now we concatenate the vertical axis and the two outer parts of the horizontal axis
             k_axial = torch.cat((k_h, k_w_pre, k_w_post), dim=2)
-            # --- END OF FIX ---
             
+            # The addition now works because r_ks[i] has the correct shape for broadcasting
             k_axial = k_axial + self.r_ks[i]
             
             q_flat = q.reshape(B, self.group_channels, 1, H * W)
