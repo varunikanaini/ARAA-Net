@@ -65,16 +65,21 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                         handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()])
     logging.info(f"--- Starting Training with {args.backbone} ---")
+    # REPLACE with this
+    train_set = ImageFolder(cod_training_root, split='train')
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
+    test_set = ImageFolder(test_path, split='val')
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False)
 
     # Data Transformations & Dataloaders
-    joint_transform = joint_transforms.Compose([joint_transforms.RandomHorizontallyFlip(), joint_transforms.Resize((576, 576))])
-    val_joint_transform = joint_transforms.Compose([joint_transforms.Resize((576, 576))])
-    img_transform = transforms.Compose([
-        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    target_transform = transforms.ToTensor()
+    # joint_transform = joint_transforms.Compose([joint_transforms.RandomHorizontallyFlip(), joint_transforms.Resize((576, 576))])
+    # val_joint_transform = joint_transforms.Compose([joint_transforms.Resize((576, 576))])
+    # img_transform = transforms.Compose([
+    #     transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    # ])
+    # target_transform = transforms.ToTensor()
     train_set = ImageFolder(cod_training_root, joint_transform=joint_transform, transform=img_transform, target_transform=target_transform)
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
     test_set = ImageFolder(test_path, joint_transform=val_joint_transform, transform=img_transform, target_transform=target_transform)
