@@ -1,88 +1,93 @@
-# --- FINAL EVALUATION WORKFLOW (DEFINITIVE & CORRECTED) ---
+# /kaggle/working/araa/ARAA-Net/test.py (FINAL VERSION FOR LASA MODEL)
 
-# --- STEP 1: SETUP THE ENVIRONMENT ---
 import sys
 import os
 import torch
 from torch.utils.data import DataLoader
-from torchvision import transforms
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 import numpy as np
-import numpy as np
+import datetime
+import argparse
+
+# --- Add project path to run script from anywhere ---
+project_path = '/kaggle/working/ARAA-Net'
+if project_path not in sys.path:
+    sys.path.insert(0, project_path)
+print(f"Project path set to: {project_path}")
+
 from daseg import daseg
 from datasets import ImageFolder
-import joint_transforms
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir
 
-# Add the project's code to the Python path
-project_path = '/kaggle/working/ARAA-Net/'
-if project_path not in sys.path:
-    sys.path.insert(0, project_path)
-
 print("✅ Environment setup complete.")
 
-# --- STEP 2: DEFINE PARAMETERS ---
-BACKBONE_TO_TEST = 'resnet50' # Or 'resnet50', etc.
+# --- STEP 1: DEFINE PARAMETERS ---
+BACKBONE_TO_TEST = 'resnet50' # Or 'resnet101', 'vgg16', etc.
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# --- RESTORED: CORRECTED PATHS ---
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
-# This matches the structure shown in your file tree screenshot
 DATA_ROOT = '/kaggle/working/araa/ARAA-Net/data'
+EXP_NAME = BACKBONE_TO_TEST + "_with_LASA" # This MUST match the experiment name from train.py
 
-# --- STEP 3: PREPARE FOR LOGGING ---
-log_dir = os.path.join(CKPT_ROOT, BACKBONE_TO_TEST)
+# --- STEP 2: PREPARE FOR LOGGING ---
+log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
 check_mkdir(log_dir)
-log_file_path = os.path.join(log_dir, 'testing_results.log')
-print(f"Results will be saved to: {log_file_path}")
+log_file_path = os.path.join(log_dir, 'final_testing_results.log')
+print(f"Results will be appended to: {log_file_path}")
 
-# --- STEP 4: LOAD THE DATA (WITH ORIGINAL PATH LOGIC) ---
+# --- STEP 3: LOAD THE DATA ---
 print("\n--- Loading Test Data ---")
 TEST_DATASET_NAME = 'TSRS_RSNA-Epiphysis'
 dataset_path = os.path.join(DATA_ROOT, TEST_DATASET_NAME)
-
-# --- RESTORED: LOOKING FOR 'val' SUBFOLDER ---
-test_data_path = os.path.join(dataset_path, 'val')
+test_data_path = os.path.join(dataset_path, 'val') # Using the validation set for testing
 
 if not os.path.exists(test_data_path):
     print(f"❌ ERROR: Test data not found at '{test_data_path}'")
-    print("Please make sure the 'val' subfolder exists inside your dataset directory.")
 else:
-    # --- RESTORED: ORIGINAL TRANSFORM LOGIC ---
-    test_joint_transform = joint_transforms.Compose([joint_transforms.Resize((896, 576))])
-    img_transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-    target_transform = transforms.ToTensor()
-
-    test_set = ImageFolder(test_data_path, joint_transform=test_joint_transform, transform=img_transform, target_transform=target_transform)
+    # We need a dummy args object to pass to the dataset, matching the train script's defaults
+    dataset_args = argparse.Namespace(scale_h=896, scale_w=576)
+    
+    # The new ImageFolder call is much simpler
+    test_set = ImageFolder(test_data_path, args=dataset_args, split='val')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False)
     print(f"Found {len(test_set)} testing images in '{test_data_path}'.")
 
-    # Add a check to prevent crashing if no images are found
     if len(test_set) == 0:
         print("❌ ERROR: The dataloader found 0 images. Cannot proceed with evaluation.")
     else:
-        # --- STEP 5: LOAD THE TRAINED MODEL ---
-        print(f"\n--- Loading Trained {BACKBONE_TO_TEST} Model ---")
-        checkpoint_path = os.path.join(CKPT_ROOT, BACKBONE_TO_TEST, 'best_checkpoint.pth')
-
-        if not os.path.exists(checkpoint_path):
-            print(f"❌ ERROR: Checkpoint not found at '{checkpoint_path}'")
+        # --- STEP 4: LOAD THE TRAINED MODEL (ROBUST LOGIC) ---
+        print(f"\n--- Loading Trained {EXP_NAME} Model ---")
+        best_checkpoint_path = os.path.join(log_dir, 'best_checkpoint.pth')
+        latest_checkpoint_path = os.path.join(log_dir, 'latest_checkpoint.pth')
+        
+        checkpoint_to_load = None
+        if os.path.exists(best_checkpoint_path):
+            print(f"Found 'best_checkpoint.pth'. Loading this version for final evaluation.")
+            checkpoint_to_load = best_checkpoint_path
+        elif os.path.exists(latest_checkpoint_path):
+            print(f"Could not find 'best_checkpoint.pth'.")
+            print(f"Falling back to 'latest_checkpoint.pth'. Note: This may not be the best performing model.")
+            checkpoint_to_load = latest_checkpoint_path
         else:
+            print(f"❌ ERROR: No checkpoint found at all in '{log_dir}'")
+            print("Please run the training script first.")
+
+        if checkpoint_to_load:
             net = daseg(backbone_name=BACKBONE_TO_TEST).to(DEVICE)
-            state_dict = torch.load(checkpoint_path, map_location=DEVICE)
             
-            if list(state_dict.keys())[0].startswith('module.'):
-                from collections import OrderedDict
-                new_state_dict = OrderedDict([(k[7:], v) for k, v in state_dict.items()])
-                net.load_state_dict(new_state_dict)
+            state_dict_or_ckpt = torch.load(checkpoint_to_load, map_location=DEVICE)
+
+            # Handle both formats: latest checkpoint (dict) and best checkpoint (state_dict only)
+            if 'model_state_dict' in state_dict_or_ckpt:
+                state_dict = state_dict_or_ckpt['model_state_dict']
             else:
-                net.load_state_dict(state_dict)
+                state_dict = state_dict_or_ckpt
             
+            net.load_state_dict(state_dict)
             net.eval()
             print("✅ Model loaded successfully.")
 
-            # --- STEP 6: RUN EVALUATION ---
+            # --- STEP 5: RUN EVALUATION ---
             print("\n--- Running Evaluation ---")
             confmat = ConfusionMatrix(num_classes=2)
             with torch.no_grad():
@@ -91,25 +96,29 @@ else:
                     _, _, _, _, pred = net(inputs)
                     confmat.update(labels.flatten(), pred.argmax(1).flatten())
                     
-            # --- STEP 7: COMPUTE, PRINT, AND SAVE RESULTS (WITH ORIGINAL FORMAT) ---
+            # --- STEP 6: COMPUTE, PRINT, AND SAVE RESULTS ---
             print("\n--- Final Test Results ---")
             global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
             mIoU = class_iou.mean().item()
 
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
             results_text = (
-                f"------ Final Test Results for {BACKBONE_TO_TEST} on {TEST_DATASET_NAME} ------\\n"
-                f"global_acc = {global_acc.item():.4f}\\n"
-                f"class_acc  = {class_acc}\\n"
-                f"class_iou  = {class_iou}\\n"
-                f"mIoU       = {mIoU:.4f}\\n"
-                f"FWIoU      = {fwiou.item():.4f}\\n"
-                f"mDice      = {mDice:.4f}\\n"
-                f"--------------------------------------------------------------------\\n"
+                f"\n\n------ Test run at: {timestamp} ------\n"
+                f"Model evaluated: {os.path.basename(checkpoint_to_load)}\n"
+                f"Dataset: {TEST_DATASET_NAME}\n"
+                f"--------------------------------------------------\n"
+                f"Global Accuracy = {global_acc.item():.4f}\n"
+                f"Mean IoU        = {mIoU:.4f}\n"
+                f"Mean Dice       = {mDice:.4f}\n"
+                f"FWIoU           = {fwiou.item():.4f}\n"
+                f"Class IoU       = {class_iou}\n"
+                f"--------------------------------------------------\n"
             )
             
-            # Print to screen and save to file
-            print(results_text.replace('\\n', '\\n'))
-            with open(log_file_path, 'w') as f:
-                f.write(results_text.replace('\\n', '\\n'))
-            print(f"✅ Results successfully saved to: {log_file_path}")
-
+            print(results_text)
+            
+            # --- APPEND TO FILE INSTEAD OF OVERWRITING ---
+            with open(log_file_path, 'a') as f:
+                f.write(results_text)
+            print(f"✅ Results successfully appended to: {log_file_path}")
