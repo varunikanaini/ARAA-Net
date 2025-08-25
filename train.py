@@ -15,7 +15,7 @@ try:
     project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 except NameError:
     # Fallback for interactive environments like Kaggle notebooks
-    project_path = '/kaggle/working/araa/ARAA-Net'
+    project_path = '/kaggle/working/ARAA-Net'
 
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
