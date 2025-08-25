@@ -36,7 +36,7 @@ print(f"Results will be saved to: {log_file_path}")
 
 # --- STEP 4: LOAD THE DATA (WITH ORIGINAL PATH LOGIC) ---
 print("\n--- Loading Test Data ---")
-TEST_DATASET_NAME = 'TSRS_RSNA-Epiphysis'
+TEST_DATASET_NAME = 'TSRS_RSNA-Articular-Surface'
 dataset_path = os.path.join(DATA_ROOT, TEST_DATASET_NAME)
 
 # --- RESTORED: LOOKING FOR 'val' SUBFOLDER ---
