@@ -43,7 +43,7 @@ def validate(net, test_loader, device):
 
     # --- THIS SECTION NOW USES LOGGING FOR EVERYTHING ---
     # This will print to console AND save to the log file.
-    logging.info("\\n--- Validation Results ---")
+    logging.info("\\n--- validation Results ---")
     logging.info(f"global_acc = {global_acc.item():.4f}")
     logging.info(f"class_acc  = {class_acc.cpu().numpy()}")
     logging.info(f"class_iou  = {class_iou.cpu().numpy()}")
