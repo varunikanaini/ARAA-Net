@@ -37,7 +37,7 @@ print(f"Results will be appended to: {log_file_path}")
 
 # --- STEP 3: LOAD THE DATA ---
 print("\n--- Loading Test Data ---")
-TEST_DATASET_NAME = 'TSRS_RSNA-Epiphysis'
+TEST_DATASET_NAME = 'TSRS_RSNA-Articular-Surface'
 dataset_path = os.path.join(DATA_ROOT, TEST_DATASET_NAME)
 test_data_path = os.path.join(dataset_path, 'val') # Using the validation set for testing
 

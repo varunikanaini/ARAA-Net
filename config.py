@@ -7,7 +7,7 @@ DATA_ROOT = '/kaggle/working/ARAA-Net/data'
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
 
 # The specific dataset to use
-DATASET_NAME = 'TSRS_RSNA-Epiphysis'
+DATASET_NAME = 'TSRS_RSNA-Articular-Surface'
 
 # --- Construct the final, absolute paths for train and validation ---
 dataset_path = os.path.join(DATA_ROOT, DATASET_NAME)
