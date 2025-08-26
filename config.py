@@ -1,7 +1,7 @@
 import os
 
 # READ data from the original, read-only INPUT directory
-DATA_ROOT = '/kaggle/working/araa/ARAA-Net/data'
+DATA_ROOT = '/kaggle/working/ARAA-Net/data'
 
 # WRITE checkpoints to the new, writable WORKING directory
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'

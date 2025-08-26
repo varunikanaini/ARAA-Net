@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 # Make sure this project path is correct for your environment
-project_path = '/kaggle/working/araa/ARAA-Net'
+project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 

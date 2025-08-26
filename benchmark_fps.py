@@ -1,4 +1,4 @@
-# /kaggle/working/araa/ARAA-Net/benchmark_fps.py
+# /kaggle/working/ARAA-Net/benchmark_fps.py
 # !python benchmark_fps.py
 import torch
 import argparse
@@ -6,7 +6,7 @@ import time
 
 # --- Add project path to run script from anywhere ---
 import sys
-project_path = '/kaggle/working/araa/ARAA-Net'
+project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 

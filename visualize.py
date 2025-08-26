@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 # --- Add project path to run script from anywhere ---
 import sys
-project_path = '/kaggle/working/araa/ARAA-Net'
+project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
@@ -29,7 +29,7 @@ def main():
     exp_name = args.backbone + "_with_LASA"
     
     # --- 1. Load the Model ---
-    model_path = os.path.join('/kaggle/working/araa/ARAA-Net/ckpt', exp_name, args.ckpt_name)
+    model_path = os.path.join('/kaggle/working/ARAA-Net/ckpt', exp_name, args.ckpt_name)
     if not os.path.exists(model_path):
         print(f"❌ ERROR: Checkpoint not found at {model_path}")
         return
@@ -92,7 +92,7 @@ def main():
     axes[2].axis('off')
 
     # Save the figure
-    output_dir = os.path.join('/kaggle/working/araa/ARAA-Net/visual_results', exp_name)
+    output_dir = os.path.join('/kaggle/working/ARAA-Net/visual_results', exp_name)
     check_mkdir(output_dir)
     save_path = os.path.join(output_dir, f"result_index_{args.image_index}.png")
     plt.savefig(save_path, bbox_inches='tight')

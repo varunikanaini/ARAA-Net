@@ -26,7 +26,7 @@ print("✅ Environment setup complete.")
 BACKBONE_TO_TEST = 'resnet50' # Or 'resnet101', 'vgg16', etc.
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
-DATA_ROOT = '/kaggle/working/araa/ARAA-Net/data'
+DATA_ROOT = '/kaggle/working/ARAA-Net/data'
 EXP_NAME = BACKBONE_TO_TEST + "_with_LASA" # This MUST match the experiment name from train.py
 
 # --- STEP 2: PREPARE FOR LOGGING ---
