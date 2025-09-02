@@ -27,13 +27,19 @@ import torch.nn.functional as F
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
-    parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--train-batch-size', type=int, default=5, help='Batch size for training') 
+    parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
+    parser.add_argument('--train-batch-size', type=int, default=2, help='Batch size for training') 
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
-    parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming (relative to ckpt_path)')
+    # --- ADDED: patience for early stopping ---
+    parser.add_argument('--patience', type=int, default=20, help='Number of epochs to wait for improvement before early stopping')
+    # --- MODIFIED: snapshot now implies loading only model weights (e.g., for pre-training) ---
+    parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot (model weights only, relative to exp_path)')
+    # --- ADDED: explicit resume flag for full training state ---
+    parser.add_argument('--resume', action='store_true', help='Resume full training state (optimizer, epoch, best_mIoU) from latest checkpoint')
+    
     parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers') 
     return parser.parse_args()
 
@@ -57,7 +63,6 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
-    # --- These logging.info calls will now go to stderr and be visible ---
     logging.info("\n--- Validation Results ---")
     logging.info(f"global_acc = {global_acc.item():.4f}")
     logging.info(f"class_acc  = {class_acc}")
@@ -95,9 +100,7 @@ def main():
     check_mkdir(vis_path)
     writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
     
-    # --- MODIFIED: Explicitly configure StreamHandler to sys.stderr ---
     log_file_path = os.path.join(exp_path, 'training.log')
-    # Clear existing handlers to prevent duplicate logs in notebooks or multiple runs
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
     
@@ -106,10 +109,9 @@ def main():
         format='%(asctime)s [%(levelname)s] %(message)s',
         handlers=[
             logging.FileHandler(log_file_path),
-            logging.StreamHandler(sys.stderr) # Direct console output to stderr
+            logging.StreamHandler(sys.stderr) 
         ]
     )
-    # --- END MODIFIED LOGGING SETUP ---
 
     logging.info(f"Starting Training with Teacher-Student framework, Backbone: {args.backbone}, Arguments: {args}")
     logging.info(f"Using device: {device}")
@@ -169,42 +171,72 @@ def main():
 
     start_epoch = 0
     best_mIoU = 0.0
-    latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
+    patience_counter = 0 # Initialize patience counter
+
+    # --- ENHANCED CHECKPOINT LOADING LOGIC ---
+    exp_latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
+    kaggle_working_latest_ckpt_path = '/kaggle/working/latest_checkpoint.pth' # Kaggle persistence path
+    
+    # 1. Prioritize loading explicit snapshot for pre-training (model weights only)
     if args.snapshot:
-        snapshot_path = os.path.join(ckpt_path, exp_name, args.snapshot + '.pth')
-        if os.path.exists(snapshot_path):
-            logging.info(f"Resuming from snapshot: {snapshot_path}")
+        snapshot_full_path = os.path.join(ckpt_path, exp_name, args.snapshot + '.pth')
+        if not os.path.exists(snapshot_full_path):
+            logging.warning(f"Snapshot '{snapshot_full_path}' not found. Starting from scratch (or attempting resume).")
+        else:
+            logging.info(f"Loading model weights from snapshot: {snapshot_full_path}")
             try:
-                ckpt = torch.load(snapshot_path, map_location=device, weights_only=False)
-                state_dict = ckpt if args.snapshot else ckpt['model_state_dict']
+                state_dict_to_load = torch.load(snapshot_full_path, map_location=device, weights_only=True)
+                if 'module.' in list(state_dict_to_load.keys())[0]:
+                    state_dict_to_load = {k.replace('module.', ''): v for k, v in state_dict_to_load.items()}
+                net_student.load_state_dict(state_dict_to_load)
+                net_teacher.load_state_dict(state_dict_to_load)
+                logging.info("Snapshot loaded successfully. Training will start from epoch 0 with new optimizer state.")
+            except Exception as e:
+                logging.error(f"Error loading snapshot '{snapshot_full_path}': {e}. Starting from scratch.")
+    
+    # 2. Then, attempt to resume full training state (optimizer, epoch, best_mIoU)
+    # This happens if '--resume' is specified, OR if no snapshot was loaded AND a latest checkpoint exists.
+    # It prioritizes the experiment-specific path, then the Kaggle-persisted root path.
+    if args.resume or (not args.snapshot and (os.path.exists(exp_latest_ckpt_path) or os.path.exists(kaggle_working_latest_ckpt_path))):
+        
+        checkpoint_to_load_path = None
+        if os.path.exists(exp_latest_ckpt_path):
+            checkpoint_to_load_path = exp_latest_ckpt_path
+            logging.info(f"Attempting to resume from primary checkpoint: {exp_latest_ckpt_path}")
+        elif os.path.exists(kaggle_working_latest_ckpt_path):
+            checkpoint_to_load_path = kaggle_working_latest_ckpt_path
+            logging.info(f"Attempting to resume from Kaggle-persisted fallback checkpoint: {kaggle_working_latest_ckpt_path}")
+            
+            # If loaded from fallback, copy it to the experiment dir for consistency
+            try:
+                if not os.path.exists(exp_latest_ckpt_path): # Only copy if not already there
+                    shutil.copy(kaggle_working_latest_ckpt_path, exp_latest_ckpt_path)
+                    logging.info(f"Copied fallback checkpoint to experiment path: {exp_latest_ckpt_path}")
+            except Exception as e:
+                logging.warning(f"Could not copy fallback checkpoint to experiment path: {e}")
+
+        if checkpoint_to_load_path and os.path.exists(checkpoint_to_load_path): # Check again if path exists after potential copy
+            try:
+                ckpt = torch.load(checkpoint_to_load_path, map_location=device, weights_only=False)
+                state_dict = ckpt['model_state_dict']
                 if 'module.' in list(state_dict.keys())[0]:
                     state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
                 net_student.load_state_dict(state_dict)
-                net_teacher.load_state_dict(state_dict) 
-                if not args.snapshot:
-                    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-                    start_epoch = ckpt['epoch'] + 1
-                    best_mIoU = ckpt.get('best_mIoU', 0.0)
-                logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}")
+                net_teacher.load_state_dict(state_dict)
+                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+                start_epoch = ckpt['epoch'] + 1
+                best_mIoU = ckpt.get('best_mIoU', 0.0)
+                patience_counter = ckpt.get('patience_counter', 0) # Load patience counter if exists
+                logging.info(f"Resumed training from epoch: {start_epoch}, best_mIoU: {best_mIoU:.4f}, patience_counter: {patience_counter}")
             except Exception as e:
-                logging.error(f"Could not load snapshot: {e}. Starting from scratch.")
-                start_epoch, best_mIoU = 0, 0.0
-    elif os.path.exists(latest_ckpt_path):
-        logging.info(f"Resuming from checkpoint: {latest_ckpt_path}")
-        try:
-            ckpt = torch.load(latest_ckpt_path, map_location=device, weights_only=False)
-            state_dict = ckpt['model_state_dict']
-            if 'module.' in list(state_dict.keys())[0]:
-                    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-            net_student.load_state_dict(state_dict)
-            net_teacher.load_state_dict(state_dict) 
-            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-            start_epoch = ckpt['epoch'] + 1
-            best_mIoU = ckpt.get('best_mIoU', 0.0)
-            logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}")
-        except Exception as e:
-            logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
-            start_epoch, best_mIoU = 0, 0.0
+                logging.error(f"Error resuming full training state from '{checkpoint_to_load_path}': {e}. Starting from scratch.")
+                start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
+        else:
+            logging.info("No valid checkpoint found for resuming. Starting training from scratch.")
+    else: # If no snapshot and no resume was intended
+        logging.info("No snapshot or resume specified. Starting training from scratch.")
+    # --- END ENHANCED CHECKPOINT LOADING ---
+
 
     total_iterations = len(train_loader) * args.epoch_num
     loss_recorder = AvgMeter()
@@ -273,19 +305,10 @@ def main():
 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{current_lr:.6f}")
                 
-                # --- REMOVED IN-EPOCH VALIDATION ---
-                # This block is removed to avoid frequent validation calls,
-                # relying on epoch-end validation instead.
-                # if (i + 1) % 100 == 0: 
-                #     current_mIoU = validate(net_student, test_loader, device, writer, curr_iter)
-                #     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
-                #     net_student.train() 
-
-            # --- EPOCH-END VALIDATION (This will now consistently print to screen) ---
             current_mIoU = validate(net_student, test_loader, device, writer, curr_iter) 
             
             # --- Saving Checkpoints and Early Stopping ---
-            is_best = current_mIoU > best_mIoU # Check if current model is the best
+            is_best = current_mIoU > best_mIoU 
             if is_best:
                 best_mIoU = current_mIoU
                 patience_counter = 0 # Reset patience if improvement
@@ -295,7 +318,7 @@ def main():
                 else:
                     torch.save(net_student.state_dict(), checkpoint_path)
                 logging.info(f"✅ Epoch {epoch+1}: New best mIoU: {best_mIoU:.4f}. Saving best model.")
-                # Also copy to /kaggle/working/ for easy access
+                # Also copy to /kaggle/working/ for easy access and persistence
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth') 
             else:
                 patience_counter += 1
@@ -306,7 +329,8 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': (net_student.module.state_dict() if isinstance(net_student, nn.DataParallel) else net_student.state_dict()),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'best_mIoU': best_mIoU
+                'best_mIoU': best_mIoU,
+                'patience_counter': patience_counter # Save patience counter for resuming
             }
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save(latest_checkpoint_data, checkpoint_path)
@@ -314,7 +338,7 @@ def main():
             shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth') 
             
             # Check for early stopping
-            if patience_counter >= args.patience: # You'll need to add patience to get_args if not there
+            if patience_counter >= args.patience: 
                 logging.info("Early stopping triggered due to no improvement.")
                 break # Exit the training loop
 
