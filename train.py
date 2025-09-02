@@ -260,10 +260,10 @@ def main():
 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{current_lr:.6f}")
                 
-                if (i + 1) % 100 == 0: 
-                    current_mIoU = validate(net_student, test_loader, device, writer, curr_iter)
-                    logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
-                    net_student.train() 
+                # if (i + 1) % 100 == 0: 
+                #     current_mIoU = validate(net_student, test_loader, device, writer, curr_iter)
+                #     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
+                #     net_student.train() 
 
             current_mIoU = validate(net_student, test_loader, device, writer, curr_iter) # Validate at epoch end
             
