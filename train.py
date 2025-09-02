@@ -17,8 +17,8 @@ sys.path.append('/kaggle/working/ARAA-Net/')
 
 from daseg import daseg
 from config import cod_training_root, test_path, PSEUDO_LABEL_CONF_THRESHOLD, EMA_DECAY_RATE 
-from datasets import ImageFolder # Ensure datasets.py has been modified as above
-import joint_transforms # Not directly used in ImageFolder methods now, but might be needed elsewhere
+from datasets import ImageFolder 
+import joint_transforms 
 import loss
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
@@ -28,7 +28,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--train-batch-size', type=int, default=3, help='Batch size for training') 
+    parser.add_argument('--train-batch-size', type=int, default=5, help='Batch size for training') 
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
@@ -39,7 +39,7 @@ def get_args():
 
 def validate(net, test_loader, device, writer=None, curr_iter=None):
     net.eval()
-    confmat = ConfusionMatrix(num_classes=2) # Assuming binary segmentation
+    confmat = ConfusionMatrix(num_classes=2) 
     loss_recorder = AvgMeter()
     with torch.no_grad():
         for data in tqdm(test_loader, desc="Validating", leave=False):
@@ -57,6 +57,7 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
+    # --- These logging.info calls will now go to stderr and be visible ---
     logging.info("\n--- Validation Results ---")
     logging.info(f"global_acc = {global_acc.item():.4f}")
     logging.info(f"class_acc  = {class_acc}")
@@ -85,9 +86,7 @@ def main():
         torch.cuda.manual_seed(2021)
         torch.backends.cudnn.benchmark = True
 
-    # --- MODIFIED LINE HERE ---
     ckpt_path = '/kaggle/working/ARAA-Net/ckpt' # Corrected base path for checkpoints
-
     exp_name = args.backbone + "_teacher_student" 
     exp_path = os.path.join(ckpt_path, exp_name)
     check_mkdir(exp_path)
@@ -96,8 +95,22 @@ def main():
     check_mkdir(vis_path)
     writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
     
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
-                        handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()])
+    # --- MODIFIED: Explicitly configure StreamHandler to sys.stderr ---
+    log_file_path = os.path.join(exp_path, 'training.log')
+    # Clear existing handlers to prevent duplicate logs in notebooks or multiple runs
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler(log_file_path),
+            logging.StreamHandler(sys.stderr) # Direct console output to stderr
+        ]
+    )
+    # --- END MODIFIED LOGGING SETUP ---
+
     logging.info(f"Starting Training with Teacher-Student framework, Backbone: {args.backbone}, Arguments: {args}")
     logging.info(f"Using device: {device}")
     logging.info(f"Pseudo-label confidence threshold: {PSEUDO_LABEL_CONF_THRESHOLD}")
@@ -182,7 +195,7 @@ def main():
             ckpt = torch.load(latest_ckpt_path, map_location=device, weights_only=False)
             state_dict = ckpt['model_state_dict']
             if 'module.' in list(state_dict.keys())[0]:
-                state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+                    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
             net_student.load_state_dict(state_dict)
             net_teacher.load_state_dict(state_dict) 
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
@@ -260,23 +273,35 @@ def main():
 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{current_lr:.6f}")
                 
+                # --- REMOVED IN-EPOCH VALIDATION ---
+                # This block is removed to avoid frequent validation calls,
+                # relying on epoch-end validation instead.
                 # if (i + 1) % 100 == 0: 
                 #     current_mIoU = validate(net_student, test_loader, device, writer, curr_iter)
                 #     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
                 #     net_student.train() 
 
-            current_mIoU = validate(net_student, test_loader, device, writer, curr_iter) # Validate at epoch end
+            # --- EPOCH-END VALIDATION (This will now consistently print to screen) ---
+            current_mIoU = validate(net_student, test_loader, device, writer, curr_iter) 
             
-            if current_mIoU > best_mIoU:
+            # --- Saving Checkpoints and Early Stopping ---
+            is_best = current_mIoU > best_mIoU # Check if current model is the best
+            if is_best:
                 best_mIoU = current_mIoU
+                patience_counter = 0 # Reset patience if improvement
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 if isinstance(net_student, nn.DataParallel):
                     torch.save(net_student.module.state_dict(), checkpoint_path)
                 else:
                     torch.save(net_student.state_dict(), checkpoint_path)
-                logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
+                logging.info(f"✅ Epoch {epoch+1}: New best mIoU: {best_mIoU:.4f}. Saving best model.")
+                # Also copy to /kaggle/working/ for easy access
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth') 
+            else:
+                patience_counter += 1
+                logging.info(f"⚠️ Epoch {epoch+1}: No improvement for {patience_counter} epoch(s). Best mIoU: {best_mIoU:.4f}.")
             
+            # Always save the latest checkpoint
             latest_checkpoint_data = {
                 'epoch': epoch,
                 'model_state_dict': (net_student.module.state_dict() if isinstance(net_student, nn.DataParallel) else net_student.state_dict()),
@@ -285,9 +310,14 @@ def main():
             }
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save(latest_checkpoint_data, checkpoint_path)
-            logging.info(f"Saved checkpoint to {checkpoint_path}")
+            logging.info(f"Saved latest checkpoint to {checkpoint_path}")
             shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth') 
             
+            # Check for early stopping
+            if patience_counter >= args.patience: # You'll need to add patience to get_args if not there
+                logging.info("Early stopping triggered due to no improvement.")
+                break # Exit the training loop
+
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")
         writer.close()
