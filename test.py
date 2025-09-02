@@ -1,5 +1,3 @@
-# In /kaggle/working/ARAA-Net/test.py (FINAL VERSION FOR TEACHER-STUDENT MODEL - ALIGNED)
-
 import sys
 import os
 import torch
@@ -9,7 +7,6 @@ import numpy as np
 import datetime
 import argparse 
 
-# --- Add project path to run script from anywhere ---
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
@@ -22,14 +19,12 @@ from misc import check_mkdir
 
 print("✅ Environment setup complete.")
 
-# --- STEP 1: DEFINE PARAMETERS ---
 BACKBONE_TO_TEST = 'resnet50' # Default value if not overridden by CLI args
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
 DATA_ROOT = '/kaggle/working/ARAA-Net/data'
 EXP_NAME = BACKBONE_TO_TEST + "_teacher_student" 
 
-# --- Define argparse for test script to match train.py's image scaling defaults ---
 def get_test_args_parser(): 
     parser = argparse.ArgumentParser(description='Test ARAA-Net model')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone (must match trained model)')
@@ -38,27 +33,21 @@ def get_test_args_parser():
     parser.add_argument('--crop-size', type=int, default=576, help='Crop size used during training/testing (square)') 
     return parser
 
-# --- CRITICAL FIX: Handle kernel arguments for argparse ---
 try:
     test_args = get_test_args_parser().parse_args()
 except SystemExit:
     test_args = get_test_args_parser().parse_args([])
-# --- END CRITICAL FIX ---
 
 
-# Override BACKBONE_TO_TEST to ensure consistency if run with command-line arg
 BACKBONE_TO_TEST = test_args.backbone
 
-# Dynamically set EXP_NAME based on the (potentially updated) backbone
 EXP_NAME = BACKBONE_TO_TEST + "_teacher_student" 
 
-# --- STEP 2: PREPARE FOR LOGGING ---
 log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
 check_mkdir(log_dir)
 log_file_path = os.path.join(log_dir, 'final_testing_results.log')
 print(f"Results will be appended to: {log_file_path}")
 
-# --- STEP 3: LOAD THE DATA ---
 print("\n--- Loading Test Data ---")
 TEST_DATASET_NAME = 'TSRS_RSNA-Articular-Surface'
 dataset_path = os.path.join(DATA_ROOT, TEST_DATASET_NAME)
@@ -69,12 +58,10 @@ if not os.path.exists(test_data_path):
     print(f"❌ ERROR: Test data not found at '{test_data_path}'")
     print("Please make sure the 'test' subfolder exists inside your dataset directory.")
 else:
-    # --- Use test_args for image dimensions ---
     scale_h_val = test_args.scale_h
     scale_w_val = test_args.scale_w
     crop_size_val = test_args.crop_size 
     
-    # Add a warning for InceptionV3 if it's not set to 299x299
     if BACKBONE_TO_TEST == 'inception_v3' and (scale_h_val != 299 or scale_w_val != 299 or crop_size_val != 299):
         print(f"⚠️ Warning: Using InceptionV3 with scale ({scale_h_val}, {scale_w_val}) and crop {crop_size_val}. "
               "Inception models often expect 299x299 input. Ensure these match training settings.")
@@ -94,7 +81,6 @@ else:
     if len(test_set) == 0:
         print("❌ ERROR: The dataloader found 0 images. Cannot proceed with evaluation.")
     else:
-        # --- STEP 4: LOAD THE TRAINED MODEL (ROBUST LOGIC) ---
         print(f"\n--- Loading Trained {EXP_NAME} Model ---")
         best_checkpoint_path = os.path.join(log_dir, 'best_checkpoint.pth')
         latest_checkpoint_path = os.path.join(log_dir, 'latest_checkpoint.pth')
@@ -126,7 +112,6 @@ else:
                 new_state_dict = OrderedDict([(k[7:], v) for k, v in state_dict.items()])
                 net.load_state_dict(new_state_dict)
             else:
-                # --- CORRECTED TYPO HERE ---
                 net.load_state_dict(state_dict) 
 
             net.eval() 
