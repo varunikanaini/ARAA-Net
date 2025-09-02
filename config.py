@@ -14,6 +14,8 @@ dataset_path = os.path.join(DATA_ROOT, DATASET_NAME)
 cod_training_root = os.path.join(dataset_path, 'train')
 test_path = os.path.join(dataset_path, 'val')
 
-# --- NEW: Teacher-Student Specific Hyperparameters ---
-PSEUDO_LABEL_CONF_THRESHOLD = 0.9  # Confidence threshold for teacher's predictions to be considered pseudo-labels
-EMA_DECAY_RATE = 0.999            # Exponential Moving Average decay rate for teacher model
+
+# Original was 0.9. Trying 0.75 to make the teacher slightly less conservative,
+# which might help it mine more "missing" lesions at lower resolutions.
+PSEUDO_LABEL_CONF_THRESHOLD = 0.75 
+EMA_DECAY_RATE = 0.999            

@@ -33,13 +33,12 @@ def get_args():
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
-    # --- ADDED: patience for early stopping ---
     parser.add_argument('--patience', type=int, default=20, help='Number of epochs to wait for improvement before early stopping')
-    # --- MODIFIED: snapshot now implies loading only model weights (e.g., for pre-training) ---
     parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot (model weights only, relative to exp_path)')
-    # --- ADDED: explicit resume flag for full training state ---
     parser.add_argument('--resume', action='store_true', help='Resume full training state (optimizer, epoch, best_mIoU) from latest checkpoint')
-    
+    parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to for training/validation')
+    parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to for training/validation')
+    parser.add_argument('--crop-size', type=int, default=576, help='Size for random crop during training (square)') 
     parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers') 
     return parser.parse_args()
 
@@ -91,7 +90,7 @@ def main():
         torch.cuda.manual_seed(2021)
         torch.backends.cudnn.benchmark = True
 
-    ckpt_path = '/kaggle/working/ARAA-Net/ckpt' # Corrected base path for checkpoints
+    ckpt_path = '/kaggle/working/ARAA-Net/ckpt' 
     exp_name = args.backbone + "_teacher_student" 
     exp_path = os.path.join(ckpt_path, exp_name)
     check_mkdir(exp_path)
@@ -118,21 +117,25 @@ def main():
     logging.info(f"Pseudo-label confidence threshold: {PSEUDO_LABEL_CONF_THRESHOLD}")
     logging.info(f"EMA decay rate: {EMA_DECAY_RATE}")
 
-    scale_h_target = 256 
-    scale_w_target = 256 
-    crop_size_target = 256 
-    
+    # --- RESTORED ORIGINAL SCALING LOGIC ---
+    scale_h_target = args.scale_h
+    scale_w_target = args.scale_w
+    crop_size_target = args.crop_size 
+
+    # Note: If args.backbone is 'inception_v3', you should explicitly
+    # pass --scale-h 299 --scale-w 299 --crop-size 299 when running the script
+    # or change the get_args() defaults for inception_v3.
     if args.backbone == 'inception_v3':
-        scale_h_target = 256 
-        scale_w_target = 256 
-        crop_size_target = 256 
+        logging.warning(f"Using InceptionV3. Default scale is ({args.scale_h}, {args.scale_w}), crop is {args.crop_size}. "
+                        "Inception models often expect 299x299 input. Consider setting --scale-h 299 --scale-w 299 --crop-size 299.")
+    # --- END RESTORATION ---
 
     train_set = ImageFolder(cod_training_root, split='train', 
                             scale_h=scale_h_target, scale_w=scale_w_target, crop_size=crop_size_target) 
     train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
     
     test_set = ImageFolder(test_path, split='val',
-                           scale_h=scale_h_target, scale_w=scale_w_target, crop_size=scale_h_target) 
+                           scale_h=scale_h_target, scale_w=scale_w_target, crop_size=crop_size_target) 
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
     
     logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images.")
@@ -171,13 +174,11 @@ def main():
 
     start_epoch = 0
     best_mIoU = 0.0
-    patience_counter = 0 # Initialize patience counter
+    patience_counter = 0 
 
-    # --- ENHANCED CHECKPOINT LOADING LOGIC ---
     exp_latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
-    kaggle_working_latest_ckpt_path = '/kaggle/working/latest_checkpoint.pth' # Kaggle persistence path
+    kaggle_working_latest_ckpt_path = '/kaggle/working/latest_checkpoint.pth' 
     
-    # 1. Prioritize loading explicit snapshot for pre-training (model weights only)
     if args.snapshot:
         snapshot_full_path = os.path.join(ckpt_path, exp_name, args.snapshot + '.pth')
         if not os.path.exists(snapshot_full_path):
@@ -194,9 +195,6 @@ def main():
             except Exception as e:
                 logging.error(f"Error loading snapshot '{snapshot_full_path}': {e}. Starting from scratch.")
     
-    # 2. Then, attempt to resume full training state (optimizer, epoch, best_mIoU)
-    # This happens if '--resume' is specified, OR if no snapshot was loaded AND a latest checkpoint exists.
-    # It prioritizes the experiment-specific path, then the Kaggle-persisted root path.
     if args.resume or (not args.snapshot and (os.path.exists(exp_latest_ckpt_path) or os.path.exists(kaggle_working_latest_ckpt_path))):
         
         checkpoint_to_load_path = None
@@ -207,15 +205,14 @@ def main():
             checkpoint_to_load_path = kaggle_working_latest_ckpt_path
             logging.info(f"Attempting to resume from Kaggle-persisted fallback checkpoint: {kaggle_working_latest_ckpt_path}")
             
-            # If loaded from fallback, copy it to the experiment dir for consistency
             try:
-                if not os.path.exists(exp_latest_ckpt_path): # Only copy if not already there
+                if not os.path.exists(exp_latest_ckpt_path): 
                     shutil.copy(kaggle_working_latest_ckpt_path, exp_latest_ckpt_path)
                     logging.info(f"Copied fallback checkpoint to experiment path: {exp_latest_ckpt_path}")
             except Exception as e:
                 logging.warning(f"Could not copy fallback checkpoint to experiment path: {e}")
 
-        if checkpoint_to_load_path and os.path.exists(checkpoint_to_load_path): # Check again if path exists after potential copy
+        if checkpoint_to_load_path and os.path.exists(checkpoint_to_load_path): 
             try:
                 ckpt = torch.load(checkpoint_to_load_path, map_location=device, weights_only=False)
                 state_dict = ckpt['model_state_dict']
@@ -226,16 +223,13 @@ def main():
                 optimizer.load_state_dict(ckpt['optimizer_state_dict'])
                 start_epoch = ckpt['epoch'] + 1
                 best_mIoU = ckpt.get('best_mIoU', 0.0)
-                patience_counter = ckpt.get('patience_counter', 0) # Load patience counter if exists
+                patience_counter = ckpt.get('patience_counter', 0) 
                 logging.info(f"Resumed training from epoch: {start_epoch}, best_mIoU: {best_mIoU:.4f}, patience_counter: {patience_counter}")
             except Exception as e:
                 logging.error(f"Error resuming full training state from '{checkpoint_to_load_path}': {e}. Starting from scratch.")
                 start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
         else:
             logging.info("No valid checkpoint found for resuming. Starting training from scratch.")
-    else: # If no snapshot and no resume was intended
-        logging.info("No snapshot or resume specified. Starting training from scratch.")
-    # --- END ENHANCED CHECKPOINT LOADING ---
 
 
     total_iterations = len(train_loader) * args.epoch_num
@@ -307,40 +301,36 @@ def main():
                 
             current_mIoU = validate(net_student, test_loader, device, writer, curr_iter) 
             
-            # --- Saving Checkpoints and Early Stopping ---
             is_best = current_mIoU > best_mIoU 
             if is_best:
                 best_mIoU = current_mIoU
-                patience_counter = 0 # Reset patience if improvement
+                patience_counter = 0 
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 if isinstance(net_student, nn.DataParallel):
                     torch.save(net_student.module.state_dict(), checkpoint_path)
                 else:
                     torch.save(net_student.state_dict(), checkpoint_path)
                 logging.info(f"✅ Epoch {epoch+1}: New best mIoU: {best_mIoU:.4f}. Saving best model.")
-                # Also copy to /kaggle/working/ for easy access and persistence
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth') 
             else:
                 patience_counter += 1
                 logging.info(f"⚠️ Epoch {epoch+1}: No improvement for {patience_counter} epoch(s). Best mIoU: {best_mIoU:.4f}.")
             
-            # Always save the latest checkpoint
             latest_checkpoint_data = {
                 'epoch': epoch,
                 'model_state_dict': (net_student.module.state_dict() if isinstance(net_student, nn.DataParallel) else net_student.state_dict()),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_mIoU': best_mIoU,
-                'patience_counter': patience_counter # Save patience counter for resuming
+                'patience_counter': patience_counter 
             }
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save(latest_checkpoint_data, checkpoint_path)
             logging.info(f"Saved latest checkpoint to {checkpoint_path}")
             shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth') 
             
-            # Check for early stopping
             if patience_counter >= args.patience: 
                 logging.info("Early stopping triggered due to no improvement.")
-                break # Exit the training loop
+                break 
 
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")

@@ -1,4 +1,4 @@
-# In /kaggle/working/ARAA-Net/test.py
+# In /kaggle/working/ARAA-Net/test.py (FINAL VERSION FOR TEACHER-STUDENT MODEL - ALIGNED)
 
 import sys
 import os
@@ -23,10 +23,33 @@ from misc import check_mkdir
 print("✅ Environment setup complete.")
 
 # --- STEP 1: DEFINE PARAMETERS ---
-BACKBONE_TO_TEST = 'resnet50' 
+BACKBONE_TO_TEST = 'resnet50' # Default value if not overridden by CLI args
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
 DATA_ROOT = '/kaggle/working/ARAA-Net/data'
+EXP_NAME = BACKBONE_TO_TEST + "_teacher_student" 
+
+# --- Define argparse for test script to match train.py's image scaling defaults ---
+def get_test_args_parser(): 
+    parser = argparse.ArgumentParser(description='Test ARAA-Net model')
+    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone (must match trained model)')
+    parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to for testing')
+    parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to for testing')
+    parser.add_argument('--crop-size', type=int, default=576, help='Crop size used during training/testing (square)') 
+    return parser
+
+# --- CRITICAL FIX: Handle kernel arguments for argparse ---
+try:
+    test_args = get_test_args_parser().parse_args()
+except SystemExit:
+    test_args = get_test_args_parser().parse_args([])
+# --- END CRITICAL FIX ---
+
+
+# Override BACKBONE_TO_TEST to ensure consistency if run with command-line arg
+BACKBONE_TO_TEST = test_args.backbone
+
+# Dynamically set EXP_NAME based on the (potentially updated) backbone
 EXP_NAME = BACKBONE_TO_TEST + "_teacher_student" 
 
 # --- STEP 2: PREPARE FOR LOGGING ---
@@ -40,28 +63,33 @@ print("\n--- Loading Test Data ---")
 TEST_DATASET_NAME = 'TSRS_RSNA-Articular-Surface'
 dataset_path = os.path.join(DATA_ROOT, TEST_DATASET_NAME)
 
-# --- CRITICAL CHANGE HERE: Use 'test' subfolder instead of 'val' ---
-test_data_path = os.path.join(dataset_path, 'test') # Changed from 'val' to 'test'
-# --- END CRITICAL CHANGE ---
+test_data_path = os.path.join(dataset_path, 'test') 
 
 if not os.path.exists(test_data_path):
     print(f"❌ ERROR: Test data not found at '{test_data_path}'")
     print("Please make sure the 'test' subfolder exists inside your dataset directory.")
 else:
-    # Determine image dimensions based on backbone, consistent with train.py
-    scale_h_val = 299 if BACKBONE_TO_TEST == 'inception_v3' else 256 # Use the same size as training (256x256)
-    scale_w_val = 299 if BACKBONE_TO_TEST == 'inception_v3' else 256 # Use the same size as training (256x256)
-    crop_size_val = 299 if BACKBONE_TO_TEST == 'inception_v3' else 256 # Use the same size as training (256x256)
+    # --- Use test_args for image dimensions ---
+    scale_h_val = test_args.scale_h
+    scale_w_val = test_args.scale_w
+    crop_size_val = test_args.crop_size 
     
+    # Add a warning for InceptionV3 if it's not set to 299x299
+    if BACKBONE_TO_TEST == 'inception_v3' and (scale_h_val != 299 or scale_w_val != 299 or crop_size_val != 299):
+        print(f"⚠️ Warning: Using InceptionV3 with scale ({scale_h_val}, {scale_w_val}) and crop {crop_size_val}. "
+              "Inception models often expect 299x299 input. Ensure these match training settings.")
+
     test_set = ImageFolder(
         test_data_path,
-        split='val', # The split parameter in ImageFolder is just a label, 'val' for test here means using val transforms
+        split='val', # Uses transform_val from ImageFolder
         scale_h=scale_h_val,
         scale_w=scale_w_val,
         crop_size=crop_size_val 
     )
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False)
     print(f"Found {len(test_set)} testing images in '{test_data_path}'.")
+    print(f"Test image dimensions (H, W): ({scale_h_val}, {scale_w_val}), Crop size: {crop_size_val}")
+
 
     if len(test_set) == 0:
         print("❌ ERROR: The dataloader found 0 images. Cannot proceed with evaluation.")
@@ -98,7 +126,8 @@ else:
                 new_state_dict = OrderedDict([(k[7:], v) for k, v in state_dict.items()])
                 net.load_state_dict(new_state_dict)
             else:
-                net.load_state_dict(state_dict)
+                # --- CORRECTED TYPO HERE ---
+                net.load_state_dict(state_dict) 
 
             net.eval() 
             print("✅ Model loaded successfully.")
@@ -124,7 +153,8 @@ else:
                 f"Model evaluated: {os.path.basename(checkpoint_to_load)}\n"
                 f"Backbone: {BACKBONE_TO_TEST}\n"
                 f"Experiment Name: {EXP_NAME}\n"
-                f"Dataset: {TEST_DATASET_NAME} (evaluated on 'test' split)\n" # Clarify dataset split
+                f"Dataset: {TEST_DATASET_NAME} (evaluated on 'test' split)\n" 
+                f"Image scale for test: ({scale_h_val}, {scale_w_val}), Crop: {crop_size_val}\n" 
                 f"--------------------------------------------------\n"
                 f"Global Accuracy = {global_acc.item():.4f}\n"
                 f"Mean IoU        = {mIoU:.4f}\n"
