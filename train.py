@@ -12,7 +12,7 @@ from tensorboardX import SummaryWriter
 import sys
 sys.path.append('/kaggle/working/ARAA-Net/')
 from daseg import daseg
-from config import DATA_ROOT, CKPT_ROOT 
+from config import DATA_ROOT, CKPT_ROOT # Import DATA_ROOT and CKPT_ROOT
 from datasets import ImageFolder
 import joint_transforms
 import loss
@@ -20,12 +20,20 @@ from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 import shutil
 
+# Declare loss functions as global here so they can be accessed by validate()
+# Their initialization will happen within main().
+structure_loss_fn = None
+bce_loss_fn = None
+iou_loss_fn = None
+focal_loss_fn = None
+bce_iou_loss = None # This will hold the combined BCE+IoU loss function
+
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', help='Name of the dataset to use (e.g., TSRS_RSNA-Epiphysis, TSRS_RSNA-Articular-Surface)') # Added dataset-name arg
-    parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--train-batch-size', type=int, default=5, help='Batch size for training')
+    parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
+    parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
@@ -45,9 +53,13 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     with torch.no_grad():
         for data in tqdm(test_loader, desc="Validating", leave=False):
             inputs, labels = data['image'].to(device), data['label'].to(device)
+            # Fetch predictions (need to execute the model to get them)
+            predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs) # <--- Added this line
+            
             binary_labels = labels.unsqueeze(1).float()
             ce_labels = labels.long()
             
+            # These global variables are now accessible
             loss_1 = bce_iou_loss(predict_1, binary_labels)
             loss_2 = structure_loss_fn(predict_2, binary_labels)
             loss_3 = structure_loss_fn(predict_3, binary_labels)
@@ -138,14 +150,15 @@ def main():
             {'params': [p for n, p in net.named_parameters() if 'bias' not in n], 'lr': args.lr, 'weight_decay': args.weight_decay}
         ], momentum=args.momentum)
 
-    # Loss Functions
-    global structure_loss_fn, bce_loss_fn, iou_loss_fn, focal_loss_fn
+    # Loss Functions: Assign to global variables
+    global structure_loss_fn, bce_loss_fn, iou_loss_fn, focal_loss_fn, bce_iou_loss
     structure_loss_fn = loss.structure_loss().to(device)
     bce_loss_fn = nn.BCEWithLogitsLoss().to(device)
     iou_loss_fn = loss.IOU().to(device)
     focal_loss_fn = loss.FocalLoss(alpha=1, gamma=2, reduction='mean', ignore_index=255).to(device)
     
-    def bce_iou_loss(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
+    # Define the combined loss function globally after its components are global
+    bce_iou_loss = lambda pred, target: bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
 
     # Checkpoint Resuming Logic
     start_epoch = 0
