@@ -39,7 +39,8 @@ def get_args():
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
-    parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming (relative to ckpt_path)')
+    parser.add_argument('--patience', type=int, default=20, help='Number of epochs to wait for improvement before early stopping') # Added patience arg
+    parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming (relative to exp_path)') # Corrected comment
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
     parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to for training')
     parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to for training')
@@ -54,7 +55,7 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
         for data in tqdm(test_loader, desc="Validating", leave=False):
             inputs, labels = data['image'].to(device), data['label'].to(device)
             # Fetch predictions (need to execute the model to get them)
-            predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs) # <--- Added this line
+            predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs) 
             
             binary_labels = labels.unsqueeze(1).float()
             ce_labels = labels.long()
@@ -73,6 +74,7 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
+    # Print validation results to screen (and log file)
     logging.info("\n--- Validation Results ---")
     logging.info(f"global_acc = {global_acc.item():.4f}")
     logging.info(f"class_acc  = {class_acc}")
@@ -100,7 +102,7 @@ def main():
     # Construct dataset paths dynamically based on args.dataset_name
     dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
     cod_training_root = os.path.join(dataset_path, 'train')
-    test_path_val = os.path.join(dataset_path, 'val') # Renamed to avoid conflict with imported test_path if it existed
+    test_path_val = os.path.join(dataset_path, 'val') 
 
     # Set Kaggle-compatible checkpoint path
     exp_name = f"{args.backbone}_{args.dataset_name}" # Include dataset name in experiment name
@@ -163,9 +165,11 @@ def main():
     # Checkpoint Resuming Logic
     start_epoch = 0
     best_mIoU = 0.0
+    epochs_no_improve = 0 # Initialize counter for early stopping
+    
     latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if args.snapshot:
-        snapshot_path = os.path.join(exp_path, args.snapshot + '.pth') # Fixed path to use exp_path
+        snapshot_path = os.path.join(exp_path, args.snapshot + '.pth') 
         if os.path.exists(snapshot_path):
             logging.info(f"Resuming from snapshot: {snapshot_path}")
             try:
@@ -178,10 +182,11 @@ def main():
                     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
                     start_epoch = ckpt['epoch'] + 1
                     best_mIoU = ckpt.get('best_mIoU', 0.0)
-                logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}")
+                    epochs_no_improve = ckpt.get('epochs_no_improve', 0) # Load epochs_no_improve
+                logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}, epochs_no_improve: {epochs_no_improve}")
             except Exception as e:
                 logging.error(f"Could not load snapshot: {e}. Starting from scratch.")
-                start_epoch, best_mIoU = 0, 0.0
+                start_epoch, best_mIoU, epochs_no_improve = 0, 0.0, 0
     elif os.path.exists(latest_ckpt_path):
         logging.info(f"Resuming from checkpoint: {latest_ckpt_path}")
         try:
@@ -193,10 +198,11 @@ def main():
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt['epoch'] + 1
             best_mIoU = ckpt.get('best_mIoU', 0.0)
-            logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}")
+            epochs_no_improve = ckpt.get('epochs_no_improve', 0) # Load epochs_no_improve
+            logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}, epochs_no_improve: {epochs_no_improve}")
         except Exception as e:
             logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
-            start_epoch, best_mIoU = 0, 0.0
+            start_epoch, best_mIoU, epochs_no_improve = 0, 0.0, 0
 
     # Training Loop
     total_iterations = len(train_loader) * args.epoch_num
@@ -238,23 +244,36 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                if (i + 1) % 10 == 0: 
-                    current_mIoU = validate(net, test_loader, device, writer, curr_iter)
-                    logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
+                # Original: Validate every 10 iterations. Removed this for validation at epoch end.
+                # if (i + 1) % 10 == 0: 
+                #     current_mIoU = validate(net, test_loader, device, writer, curr_iter)
+                #     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
 
+            # Validate at the end of each epoch
             current_mIoU = validate(net, test_loader, device, writer, curr_iter)
             
+            # Early stopping logic
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
+                epochs_no_improve = 0 # Reset counter
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth')
-            
+            else:
+                epochs_no_improve += 1
+                logging.info(f"No improvement in mIoU for {epochs_no_improve} epochs.")
+                
+            # Save latest checkpoint with early stopping state
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
-            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
+            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 
+                        'best_mIoU': best_mIoU, 'epochs_no_improve': epochs_no_improve}, checkpoint_path)
             logging.info(f"Saved checkpoint to {checkpoint_path}")
             shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
+
+            if epochs_no_improve >= args.patience:
+                logging.info(f"Early stopping triggered after {args.patience} epochs without improvement.")
+                break
             
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")
