@@ -1,5 +1,5 @@
 # /kaggle/working/ARAA-Net/visualize.py
-# !python visualize.py --image_index 25 --backbone resnet50
+# Example usage: !python visualize.py --image_index 25 --backbone resnet50 --split test
 
 import torch
 import argparse
@@ -7,6 +7,8 @@ import os
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+import torchvision.transforms as transforms 
+
 
 # --- Add project path to run script from anywhere ---
 import sys
@@ -16,23 +18,29 @@ if project_path not in sys.path:
 
 from daseg import daseg
 from datasets import ImageFolder
-from config import test_path # Assuming test_path points to the 'val' directory inside the dataset
+from config import DATA_ROOT 
 from misc import check_mkdir
+
+# Define default normalization parameters (must match training/validation)
+NORM_MEAN = [0.485, 0.456, 0.406]
+NORM_STD = [0.229, 0.224, 0.225]
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize model predictions')
-    parser.add_argument('--backbone', type=str, default='resnet50', help='Backbone used for training')
-    parser.add_argument('--image_index', type=int, default=15, help='Index of the validation image to test')
+    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Backbone used for training')
+    parser.add_argument('--image_index', type=int, default=15, help='Index of the validation/test image to visualize')
     parser.add_argument('--ckpt_name', type=str, default='best_checkpoint.pth', help='Name of the checkpoint file to use (e.g., best_checkpoint.pth or latest_checkpoint.pth)')
-    args = parser.parse_args() # Use parse_args() here as all args are known
+    parser.add_argument('--split', type=str, default='test', choices=['train', 'val', 'test'], help='Which dataset split to visualize from') # <--- CHANGED DEFAULT TO 'test'
+    parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to for visualization')
+    parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to for visualization')
+    args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # exp_name should match how it's saved in train.py (which is just args.backbone)
     exp_name = args.backbone 
     
     # --- 1. Load the Model ---
-    model_dir = os.path.join('/kaggle/working/ckpt', exp_name) # Adjusted base path for checkpoints
+    model_dir = os.path.join('/kaggle/working/ARAA-Net/ckpt', exp_name) 
     model_path = os.path.join(model_dir, args.ckpt_name)
 
     if not os.path.exists(model_path):
@@ -41,17 +49,13 @@ def main():
         return
 
     net = daseg(backbone_name=args.backbone).to(device)
-    state_dict = torch.load(model_path, map_location=device)
+    state_dict_or_ckpt = torch.load(model_path, map_location=device)
     
-    # Handle both checkpoint formats (full dict or just state_dict)
-    if 'model_state_dict' in state_dict:
-        # If saved with 'model_state_dict', extract it
-        loaded_state_dict = state_dict['model_state_dict']
+    if 'model_state_dict' in state_dict_or_ckpt:
+        loaded_state_dict = state_dict_or_ckpt['model_state_dict']
     else:
-        # Otherwise, assume state_dict is the model's state_dict directly
-        loaded_state_dict = state_dict
+        loaded_state_dict = state_dict_or_ckpt
 
-    # Handle DataParallel prefix if present
     if list(loaded_state_dict.keys())[0].startswith('module.'):
         from collections import OrderedDict
         new_state_dict = OrderedDict([(k[7:], v) for k, v in loaded_state_dict.items()])
@@ -63,9 +67,19 @@ def main():
     print(f"✅ Model loaded from {model_path}")
 
     # --- 2. Load the Dataset and a Specific Image ---
-    # ImageFolder's transform_val handles fixed resizing and normalization internally.
-    # No need for dummy args object.
-    test_set = ImageFolder(test_path, split='val')
+    dataset_base_path = os.path.join(DATA_ROOT, 'TSRS_RSNA-Epiphysis', args.split)
+    
+    if not os.path.exists(dataset_base_path):
+        print(f"❌ ERROR: Dataset split '{args.split}' not found at '{dataset_base_path}'.")
+        print("Please ensure the specified split folder exists.")
+        return
+
+    test_set = ImageFolder(
+        dataset_base_path,
+        split=args.split, # <--- Uses the split specified in argparse
+        scale_h=args.scale_h,
+        scale_w=args.scale_w
+    )
 
     if args.image_index >= len(test_set) or args.image_index < 0:
         print(f"❌ ERROR: Image index {args.image_index} is out of bounds. Dataset has {len(test_set)} images (indices 0 to {len(test_set)-1}).")
@@ -75,27 +89,24 @@ def main():
     image_tensor = sample['image'].unsqueeze(0).to(device) # Add batch dimension
     label_tensor = sample['label']
     
-    # image_name is a tuple (img_path, gt_path), extract base filename
     original_img_path = sample['name'][0]
     image_base_name = os.path.basename(original_img_path)
 
-    print(f"✅ Visualizing image: {image_base_name} (index {args.image_index})")
+    print(f"✅ Visualizing image: {image_base_name} (index {args.image_index}) from '{args.split}' split")
 
     # --- 3. Run Inference ---
     with torch.no_grad():
         _, _, _, _, pred_logits = net(image_tensor)
     
-    # Process prediction: apply argmax and move to CPU
-    # Squeeze the batch dimension and convert to numpy
     prediction_mask = pred_logits.argmax(1).squeeze(0).cpu().numpy().astype(np.uint8)
     
     # --- 4. Prepare Images for Display ---
     # Un-normalize the original image tensor for viewing
     img_np = image_tensor.squeeze(0).cpu().numpy().transpose(1, 2, 0)
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
+    mean = np.array(NORM_MEAN)
+    std = np.array(NORM_STD)
     img_np = std * img_np + mean
-    img_np = np.clip(img_np, 0, 1) # Clip values to [0, 1] for correct display
+    img_np = np.clip(img_np, 0, 1) 
 
     ground_truth_mask = label_tensor.numpy().astype(np.uint8)
 
@@ -114,10 +125,11 @@ def main():
     axes[2].set_title("Model's Prediction")
     axes[2].axis('off')
 
-    # Save the figure
-    output_dir = os.path.join('/kaggle/working/visual_results', exp_name) # Changed output dir for Kaggle persistence
+    fig.suptitle(f"Prediction for {image_base_name} (Index {args.image_index}, Split: {args.split})", fontsize=16)
+
+    output_dir = os.path.join('/kaggle/working/visual_results', exp_name) 
     check_mkdir(output_dir)
-    save_path = os.path.join(output_dir, f"result_index_{args.image_index}_{image_base_name}")
+    save_path = os.path.join(output_dir, f"{args.split}_index_{args.image_index}_{image_base_name}")
     plt.savefig(save_path, bbox_inches='tight')
     print(f"✅ Visualization saved to {save_path}")
     plt.show()
