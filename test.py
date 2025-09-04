@@ -16,34 +16,32 @@ from daseg import daseg
 from datasets import ImageFolder 
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir
+from config import DATA_ROOT, CKPT_ROOT # Import DATA_ROOT and CKPT_ROOT
 
 print("✅ Environment setup complete.")
 
 BACKBONE_TO_TEST = 'resnet50' # Default value if not overridden by CLI args
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
-DATA_ROOT = '/kaggle/working/ARAA-Net/data'
 
 def get_test_args_parser(): 
     parser = argparse.ArgumentParser(description='Test ARAA-Net model')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone (must match trained model)')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', help='Name of the dataset to use (e.g., TSRS_RSNA-Epiphysis, TSRS_RSNA-Articular-Surface)') # Added dataset-name arg
     parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to for testing')
     parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to for testing')
-    parser.add_argument('--crop-size', type=int, default=576, help='Crop size used during training/testing (square)') # This is mostly for train.py, but kept for consistency
+    parser.add_argument('--crop-size', type=int, default=576, help='Crop size used during training/testing (square)') 
     return parser
 
 try:
     test_args = get_test_args_parser().parse_args()
-except SystemExit: # This handles cases where parse_args() might exit, e.g., in notebooks
+except SystemExit: 
     test_args = get_test_args_parser().parse_args([])
 
 
 BACKBONE_TO_TEST = test_args.backbone
 
-# EXP_NAME should reflect the training experiment name, which is just the backbone in train.py (without _teacher_student)
-# If you trained with '_teacher_student', please ensure this matches your training script.
-# Assuming here it's just the backbone name as per train.py's exp_name = args.backbone
-EXP_NAME = BACKBONE_TO_TEST 
+# EXP_NAME should reflect the training experiment name
+EXP_NAME = f"{BACKBONE_TO_TEST}_{test_args.dataset_name}" 
 
 log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
 check_mkdir(log_dir)
@@ -51,8 +49,7 @@ log_file_path = os.path.join(log_dir, 'final_testing_results.log')
 print(f"Results will be appended to: {log_file_path}")
 
 print("\n--- Loading Test Data ---")
-TEST_DATASET_NAME = 'TSRS_RSNA-Epiphysis'
-dataset_path = os.path.join(DATA_ROOT, TEST_DATASET_NAME)
+dataset_path = os.path.join(DATA_ROOT, test_args.dataset_name) # Use args.dataset_name
 
 # Explicitly use the 'test' subfolder
 test_data_path = os.path.join(dataset_path, 'test') 
@@ -63,21 +60,21 @@ if not os.path.exists(test_data_path):
 else:
     scale_h_val = test_args.scale_h
     scale_w_val = test_args.scale_w
-    crop_size_val = test_args.crop_size 
+    # Adjust input size for inception_v3 if not explicitly overridden by args
+    if BACKBONE_TO_TEST == 'inception_v3' and (scale_h_val == 896 or scale_w_val == 576): # Check current defaults
+        print("InceptionV3 detected, overriding scale to 299x299 for testing as per common practice.")
+        scale_h_val = 299
+        scale_w_val = 299
     
-    if BACKBONE_TO_TEST == 'inception_v3' and (scale_h_val != 299 or scale_w_val != 299): 
-        print(f"⚠️ Warning: Using InceptionV3 with scale ({scale_h_val}, {scale_w_val}). "
-              "Inception models often expect 299x299 input. Ensure these match training settings.")
-
     test_set = ImageFolder(
         test_data_path,
-        split='test', # <--- CHANGED FROM 'val' TO 'test'
+        split='test', 
         scale_h=scale_h_val,
         scale_w=scale_w_val,
-        crop_size=crop_size_val 
+        crop_size=test_args.crop_size 
     )
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False)
-    print(f"Found {len(test_set)} testing images in '{test_data_path}'.")
+    print(f"Found {len(test_set)} testing images in '{test_data_path}' for dataset '{test_args.dataset_name}'.")
     print(f"Test image dimensions (H, W) used for resize: ({scale_h_val}, {scale_w_val})")
 
 
@@ -141,7 +138,7 @@ else:
                 f"Model evaluated: {os.path.basename(checkpoint_to_load)}\n"
                 f"Backbone: {BACKBONE_TO_TEST}\n"
                 f"Experiment Name: {EXP_NAME}\n"
-                f"Dataset: {TEST_DATASET_NAME} (evaluated on 'test' split)\n" 
+                f"Dataset: {test_args.dataset_name} (evaluated on 'test' split)\n" 
                 f"Image scale for test: ({scale_h_val}, {scale_w_val})\n" 
                 f"--------------------------------------------------\n"
                 f"Global Accuracy = {global_acc.item():.4f}\n"

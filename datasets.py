@@ -27,8 +27,8 @@ from torchvision.datasets.folder import is_image_file
 
 
 def make_dataset(root):
-    mask_path = root + '_labels'
-    image_path = root
+    mask_path = os.path.join(root, 'GT') # Ensure GT path is correctly formed
+    image_path = root # Assume images are directly in root
     
     img_list = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.endswith('.jpg')]
     return [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_list]
@@ -77,22 +77,33 @@ class ImageFolder(data.Dataset):
         return len(self.imgs)
     
     def transform_tr(self, sample):
-        composed_transforms = transforms.Compose([
-            tr.RandomHorizontalFlip(),
-            tr.FixedResize(self.scale_w, self.scale_h), # Use passed scale_w, scale_h
-            tr.RandomCrop((self.crop_size, self.crop_size)), # Use passed crop_size
-            tr.RandomGaussianBlur(),
-            tr.RandomGaussianNoise(mean=0., std=0.03, p=0.5),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+        # Apply custom transforms sequentially. Each custom transform expects
+        # a dictionary and returns a dictionary.
+        sample = tr.RandomHorizontalFlip()(sample)
+        sample = tr.FixedResize(self.scale_w, self.scale_h)(sample) # Use passed scale_w, scale_h
+        sample = tr.RandomCrop((self.crop_size, self.crop_size))(sample) # Use passed crop_size
+        sample = tr.RandomGaussianBlur()(sample)
+        sample = tr.RandomGaussianNoise(mean=0., std=0.03, p=0.5)(sample)
+
+        # Handle torchvision.transforms.ColorJitter explicitly:
+        # It expects a PIL Image, so apply it directly to sample['image']
+        img = sample['image']
+        color_jitter_transform = transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1)
+        img = color_jitter_transform(img)
+        sample['image'] = img # Update the image in the dictionary
+
+        # Now apply the final transforms which are designed to handle the dictionary
+        composed_final_transforms = transforms.Compose([
             tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             tr.ToTensor()])
-        return composed_transforms(sample)
+        
+        return composed_final_transforms(sample)
  
     def transform_val(self, sample):
-        composed_transforms = transforms.Compose([
-            tr.FixedResize(self.scale_w, self.scale_h), # Use passed scale_w, scale_h
-            # The original transform_val did not include FixScaleCrop or RandomCrop,
-            # so we maintain that, only resizing.
+        # For validation, apply FixedResize and then Normalize/ToTensor
+        sample = tr.FixedResize(self.scale_w, self.scale_h)(sample) # Use passed scale_w, scale_h
+        
+        composed_final_transforms = transforms.Compose([
             tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             tr.ToTensor()])
-        return composed_transforms(sample)
+        return composed_final_transforms(sample)

@@ -12,7 +12,7 @@ from tensorboardX import SummaryWriter
 import sys
 sys.path.append('/kaggle/working/ARAA-Net/')
 from daseg import daseg
-from config import cod_training_root, test_path
+from config import DATA_ROOT, CKPT_ROOT 
 from datasets import ImageFolder
 import joint_transforms
 import loss
@@ -23,6 +23,7 @@ import shutil
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', help='Name of the dataset to use (e.g., TSRS_RSNA-Epiphysis, TSRS_RSNA-Articular-Surface)') # Added dataset-name arg
     parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
@@ -32,6 +33,9 @@ def get_args():
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming (relative to ckpt_path)')
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
+    parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to for training')
+    parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to for training')
+    parser.add_argument('--crop-size', type=int, default=576, help='Crop size used during training (square)')
     return parser.parse_args()
 
 def validate(net, test_loader, device, writer=None, curr_iter=None):
@@ -41,16 +45,13 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     with torch.no_grad():
         for data in tqdm(test_loader, desc="Validating", leave=False):
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
             binary_labels = labels.unsqueeze(1).float()
             ce_labels = labels.long()
             
-            # Using the same loss components as in training for validation loss reporting
             loss_1 = bce_iou_loss(predict_1, binary_labels)
             loss_2 = structure_loss_fn(predict_2, binary_labels)
             loss_3 = structure_loss_fn(predict_3, binary_labels)
             loss_4 = structure_loss_fn(predict_4, binary_labels)
-            # Use Focal Loss for loss_0 in validation too, for consistency
             loss_0 = focal_loss_fn(predict_0, ce_labels) 
             total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
             
@@ -84,10 +85,14 @@ def main():
         torch.cuda.manual_seed(2021)
         torch.backends.cudnn.benchmark = True
 
+    # Construct dataset paths dynamically based on args.dataset_name
+    dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
+    cod_training_root = os.path.join(dataset_path, 'train')
+    test_path_val = os.path.join(dataset_path, 'val') # Renamed to avoid conflict with imported test_path if it existed
+
     # Set Kaggle-compatible checkpoint path
-    ckpt_path = '/kaggle/working/ckpt'
-    exp_name = args.backbone
-    exp_path = os.path.join(ckpt_path, exp_name)
+    exp_name = f"{args.backbone}_{args.dataset_name}" # Include dataset name in experiment name
+    exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     
     # Initialize TensorBoard
@@ -100,21 +105,21 @@ def main():
     logging.info(f"Starting Training with Arguments: {args}")
     logging.info(f"Using device: {device}")
 
-    # Adjust input size for inception_v3
-    scale_h = 299 if args.backbone == 'inception_v3' else 896
-    scale_w = 299 if args.backbone == 'inception_v3' else 576
+    # Adjust input size for inception_v3 if not explicitly overridden by args
+    if args.backbone == 'inception_v3' and (args.scale_h == 896 or args.scale_w == 576 or args.crop_size == 576):
+        logging.info("InceptionV3 detected, overriding scale/crop to 299x299 as per common practice.")
+        args.scale_h = 299
+        args.scale_w = 299
+        args.crop_size = 299
     
     # Data Transformations & Dataloaders
-    # Note: The img_transform and target_transform passed here are currently not used by ImageFolder
-    # if its internal transform_tr/transform_val methods are defined, which they are.
-    # The actual augmentations for training are handled within datasets.py's transform_tr.
-    train_set = ImageFolder(cod_training_root, split='train') # Use default transforms within ImageFolder
+    train_set = ImageFolder(cod_training_root, split='train', scale_h=args.scale_h, scale_w=args.scale_w, crop_size=args.crop_size)
     train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
     
-    test_set = ImageFolder(test_path, split='val') # Use default transforms within ImageFolder
+    test_set = ImageFolder(test_path_val, split='val', scale_h=args.scale_h, scale_w=args.scale_w, crop_size=args.crop_size)
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
     
-    logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images.")
+    logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images for dataset '{args.dataset_name}'.")
     
     net = daseg(backbone_name=args.backbone).to(device)
     if torch.cuda.device_count() > 1:
@@ -138,7 +143,6 @@ def main():
     structure_loss_fn = loss.structure_loss().to(device)
     bce_loss_fn = nn.BCEWithLogitsLoss().to(device)
     iou_loss_fn = loss.IOU().to(device)
-    # Replaced CrossEntropyLoss with FocalLoss for final segmentation
     focal_loss_fn = loss.FocalLoss(alpha=1, gamma=2, reduction='mean', ignore_index=255).to(device)
     
     def bce_iou_loss(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
@@ -148,7 +152,7 @@ def main():
     best_mIoU = 0.0
     latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if args.snapshot:
-        snapshot_path = os.path.join(ckpt_path, exp_name, args.snapshot + '.pth')
+        snapshot_path = os.path.join(exp_path, args.snapshot + '.pth') # Fixed path to use exp_path
         if os.path.exists(snapshot_path):
             logging.info(f"Resuming from snapshot: {snapshot_path}")
             try:
@@ -197,7 +201,7 @@ def main():
             
                 inputs, labels = data['image'].to(device), data['label'].to(device)
                 binary_labels = labels.unsqueeze(1).float()
-                ce_labels = labels.long() # Labels for CrossEntropy/Focal Loss
+                ce_labels = labels.long() 
                 optimizer.zero_grad(set_to_none=True)
                 predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
                 
@@ -205,7 +209,6 @@ def main():
                 loss_2 = structure_loss_fn(predict_2, binary_labels)
                 loss_3 = structure_loss_fn(predict_3, binary_labels)
                 loss_4 = structure_loss_fn(predict_4, binary_labels)
-                # Use Focal Loss for the final segmentation output (predict_0)
                 loss_0 = focal_loss_fn(predict_0, ce_labels) 
                 
                 total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
@@ -222,28 +225,22 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # Validate every 10 iterations (or other frequency)
-                if (i + 1) % 10 == 0: # Adjusted to validate after every 10 iterations
+                if (i + 1) % 10 == 0: 
                     current_mIoU = validate(net, test_loader, device, writer, curr_iter)
                     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
 
-            # Final validation at the end of epoch
             current_mIoU = validate(net, test_loader, device, writer, curr_iter)
             
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
-                # Save only model state_dict for best_checkpoint
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
-                # Persist to Kaggle output
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth')
             
-            # Save latest checkpoint with full state for resuming
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
             logging.info(f"Saved checkpoint to {checkpoint_path}")
-            # Persist to Kaggle output
             shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
             
     finally:
