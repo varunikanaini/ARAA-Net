@@ -32,8 +32,8 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', help='Name of the dataset to use (e.g., TSRS_RSNA-Epiphysis, TSRS_RSNA-Articular-Surface)') # Added dataset-name arg
-    parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--train-batch-size', type=int, default=5, help='Batch size for training')
+    parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
+    parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
@@ -52,6 +52,7 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
     with torch.no_grad():
+        # tqdm for validation to show progress, but separate from epoch train tqdm
         for data in tqdm(test_loader, desc="Validating", leave=False):
             inputs, labels = data['image'].to(device), data['label'].to(device)
             # Fetch predictions (need to execute the model to get them)
@@ -74,22 +75,27 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
-    # Print validation results to screen (and log file)
-    logging.info("\n--- Validation Results ---")
-    logging.info(f"global_acc = {global_acc.item():.4f}")
-    logging.info(f"class_acc  = {class_acc}")
-    logging.info(f"class_iou  = {class_iou}")
-    logging.info(f"mIoU       = {mIoU:.4f}")
-    logging.info(f"FWIoU      = {fwiou.item():.4f}")
-    logging.info(f"mDice      = {mDice:.4f}")
-    logging.info(f"Validation Loss = {loss_recorder.avg:.4f}")
-    logging.info("--------------------------")
+    # Format validation results as a string to be printed and logged
+    results_string = (
+        f"\n--- Validation Results (mIoU: {mIoU:.4f}) ---\n"
+        f"global_acc = {global_acc.item():.4f}\n"
+        f"class_acc  = {class_acc}\n"
+        f"class_iou  = {class_iou}\n"
+        f"mIoU       = {mIoU:.4f}\n"
+        f"FWIoU      = {fwiou.item():.4f}\n"
+        f"mDice      = {mDice:.4f}\n"
+        f"Validation Loss = {loss_recorder.avg:.4f}\n"
+        f"--------------------------"
+    )
+    
+    # Log results
+    logging.info(results_string)
     
     if writer and curr_iter is not None:
         writer.add_scalar('validation/mIoU', mIoU, curr_iter)
         writer.add_scalar('validation/loss', loss_recorder.avg, curr_iter)
     
-    return mIoU
+    return mIoU, results_string # Return both mIoU and the formatted string
 
 def main():
     args = get_args()
@@ -105,7 +111,8 @@ def main():
     test_path_val = os.path.join(dataset_path, 'val') 
 
     # Set Kaggle-compatible checkpoint path
-    exp_name = f"{args.backbone}_{args.dataset_name}" # Include dataset name in experiment name
+    # New experiment name format: backbone_name_ULD_datasetname
+    exp_name = f"{args.backbone}_ULD_{args.dataset_name}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     
@@ -114,8 +121,12 @@ def main():
     check_mkdir(vis_path)
     writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
     
+    # Setup logging to file and console
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
-                        handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()])
+                        handlers=[
+                            logging.FileHandler(os.path.join(exp_path, 'training.log')),
+                            logging.StreamHandler(sys.stdout) # Explicitly set stream handler to stdout
+                        ])
     logging.info(f"Starting Training with Arguments: {args}")
     logging.info(f"Using device: {device}")
 
@@ -244,25 +255,24 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # Original: Validate every 10 iterations. Removed this for validation at epoch end.
-                # if (i + 1) % 10 == 0: 
-                #     current_mIoU = validate(net, test_loader, device, writer, curr_iter)
-                #     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
-
             # Validate at the end of each epoch
-            current_mIoU = validate(net, test_loader, device, writer, curr_iter)
+            current_mIoU, validation_results_string = validate(net, test_loader, device, writer, curr_iter)
             
+            # Print validation results string directly to console
+            print(validation_results_string)
+
             # Early stopping logic
             if current_mIoU > best_mIoU:
+                logging.info(f"✅ Epoch {epoch+1}: mIoU improved from {best_mIoU:.4f} to {current_mIoU:.4f}. Resetting patience.")
                 best_mIoU = current_mIoU
                 epochs_no_improve = 0 # Reset counter
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 torch.save(net.state_dict(), checkpoint_path)
-                logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth')
             else:
                 epochs_no_improve += 1
-                logging.info(f"No improvement in mIoU for {epochs_no_improve} epochs.")
+                print(f"⚠️ Epoch {epoch+1}: No improvement in mIoU for {epochs_no_improve} epoch(s). Best mIoU remains {best_mIoU:.4f}.") # Print to screen
+                logging.warning(f"Epoch {epoch+1}: No improvement in mIoU for {epochs_no_improve} epoch(s). Best mIoU remains {best_mIoU:.4f}.") # Log to file
                 
             # Save latest checkpoint with early stopping state
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
@@ -272,6 +282,7 @@ def main():
             shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
 
             if epochs_no_improve >= args.patience:
+                print(f"🛑 Early stopping triggered after {args.patience} epochs without improvement. Training finished.") # Print to screen
                 logging.info(f"Early stopping triggered after {args.patience} epochs without improvement.")
                 break
             

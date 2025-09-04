@@ -40,8 +40,8 @@ except SystemExit:
 
 BACKBONE_TO_TEST = test_args.backbone
 
-# EXP_NAME should reflect the training experiment name
-EXP_NAME = f"{BACKBONE_TO_TEST}_{test_args.dataset_name}" 
+# New experiment name format: backbone_name_ULD_datasetname
+EXP_NAME = f"{BACKBONE_TO_TEST}_ULD_{test_args.dataset_name}" 
 
 log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
 check_mkdir(log_dir)

@@ -73,8 +73,11 @@ def main():
     input_h_bench = args.input_h
     input_w_bench = args.input_w
 
+    # For consistent naming in printouts, derive EXP_NAME
+    exp_name_for_print = f"{args.backbone}_ULD_{args.dataset_name}" if args.dataset_name != 'N/A' else args.backbone
+
     # --- 1. Benchmark Your Model WITH MFR ---
-    print(f"--- Benchmarking Model with MultiscaleFeatureRefinement (MFR) module ({args.backbone}) on dataset '{args.dataset_name}' ---")
+    print(f"--- Benchmarking Model with MultiscaleFeatureRefinement (MFR) module ({args.backbone}) on experiment '{exp_name_for_print}' ---")
     model_with_mfr = daseg(backbone_name=args.backbone)
     fps_mfr, time_mfr = benchmark(model_with_mfr, device, args.backbone, input_h_bench, input_w_bench)
     
@@ -102,7 +105,7 @@ def main():
         pred0 = F.interpolate(pred0, size=original_size, mode='bilinear', align_corners=True)
         return pred4, pred3, pred2, pred1, pred0
 
-    print(f"\n--- Benchmarking Baseline Model WITHOUT MultiscaleFeatureRefinement (MFR) module ({args.backbone}) on dataset '{args.dataset_name}' ---")
+    print(f"\n--- Benchmarking Baseline Model WITHOUT MultiscaleFeatureRefinement (MFR) module ({args.backbone}) on experiment '{exp_name_for_print}' ---")
     daseg.forward = forward_no_mfr
     
     model_no_mfr = daseg(backbone_name=args.backbone)
@@ -113,7 +116,7 @@ def main():
     # --- 3. Print Results ---
     print("\n\n--- FPS Benchmark Results ---")
     print(f"Backbone: {args.backbone}")
-    print(f"Dataset (for context): {args.dataset_name}")
+    print(f"Experiment Name: {exp_name_for_print}")
     print(f"Input Size for Benchmark: {input_h_bench}x{input_w_bench}")
     print(f"Baseline (No MFR):   {fps_no_mfr:.2f} FPS ({time_no_mfr*1000:.2f} ms/frame)")
     print(f"Your Model (With MFR): {fps_mfr:.2f} FPS ({time_mfr*1000:.2f} ms/frame)")

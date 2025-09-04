@@ -31,15 +31,15 @@ def main():
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', help='Name of the dataset to use') # Added dataset-name arg
     parser.add_argument('--image_index', type=int, default=15, help='Index of the validation/test image to visualize')
     parser.add_argument('--ckpt_name', type=str, default='best_checkpoint.pth', help='Name of the checkpoint file to use (e.g., best_checkpoint.pth or latest_checkpoint.pth)')
-    parser.add_argument('--split', type=str, default='test', choices=['train', 'val', 'test'], help='Which dataset split to visualize from')
+    parser.add_argument('--split', type=str, default='test', choices=['train', 'val', 'test'], help='Which dataset split to visualize from') # Changed default to 'test'
     parser.add_argument('--scale-h', type=int, default=896, help='Height to resize images to for visualization')
     parser.add_argument('--scale-w', type=int, default=576, help='Width to resize images to for visualization')
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # exp_name should reflect the training experiment name
-    exp_name = f"{args.backbone}_{args.dataset_name}" 
+    # New experiment name format: backbone_name_ULD_datasetname
+    exp_name = f"{args.backbone}_ULD_{args.dataset_name}" 
     
     # --- 1. Load the Model ---
     model_dir = os.path.join(CKPT_ROOT, exp_name) 
