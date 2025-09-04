@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 from dar import DARConv2d
 
+# Existing backbone definitions remain unchanged
 def get_backbone(backbone_name):
     if backbone_name == 'resnet50':
         resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
@@ -27,6 +28,7 @@ def get_backbone(backbone_name):
         }
     else: raise NotImplementedError(f"Backbone '{backbone_name}' not supported.")
 
+# Existing CA_Block, SA_Block, Context_Exploration_Block, Positioning, Focus remain unchanged
 class CA_Block(nn.Module):
     def __init__(self, in_dim):
         super(CA_Block, self).__init__(); self.gamma = nn.Parameter(torch.zeros(1)); self.softmax = nn.Softmax(dim=-1); self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1); self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1); self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
@@ -57,8 +59,132 @@ class Focus(nn.Module):
     def forward(self, x, y, in_map):
         target_size = x.size()[2:]; up_y = F.interpolate(y, size=target_size, mode='bilinear', align_corners=True); up_y = self.up(up_y); input_map_scaled = F.interpolate(in_map, size=target_size, mode='bilinear', align_corners=True); input_map_scaled = self.input_map_process(input_map_scaled); fp = self.fp(x * input_map_scaled); fn = self.fn(x * (1 - input_map_scaled)); refine = up_y - (self.alpha * fp) + (self.beta * fn); output_map = self.output_map(refine); return refine, output_map
 
+# New Multiscale Feature Refinement Module with Spatial Gating
+class MultiscaleFeatureRefinement(nn.Module):
+    def __init__(self, c2_in, c3_in, c4_in, dropout_rate=0.2):
+        super(MultiscaleFeatureRefinement, self).__init__()
+        # c2_in: channels of l2
+        # c3_in: channels of l3
+        # c4_in: channels of pos_feat (output of positioning on l4)
+
+        # Upsampling and channel adjustment for pos_feat to l3
+        self.upsample_c4_to_c3 = nn.Sequential(
+            nn.Conv2d(c4_in, c3_in, kernel_size=1, bias=False), # Reduce channels to match l3
+            nn.BatchNorm2d(c3_in),
+            nn.ReLU(inplace=True)
+        )
+        # Spatial attention for l3, informed by the fusion of l3 and upsampled pos_feat
+        # Takes concatenated features and outputs a spatial attention map
+        self.spatial_attention_l3 = nn.Sequential(
+            nn.Conv2d(c3_in * 2, 1, kernel_size=7, padding=3, bias=False), # Example kernel size and padding
+            nn.Sigmoid()
+        )
+        self.l3_refinement = nn.Sequential(
+            nn.Conv2d(c3_in * 2, c3_in, kernel_size=3, padding=1, bias=False), # Concatenate l3_attended and upsampled pos_feat
+            nn.BatchNorm2d(c3_in),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c3_in, c3_in, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c3_in),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate) # Add dropout for regularization
+        )
+
+        # Upsampling and channel adjustment for refined_l3 to l2
+        self.upsample_c3_to_c2 = nn.Sequential(
+            nn.Conv2d(c3_in, c2_in, kernel_size=1, bias=False), # Reduce channels to match l2
+            nn.BatchNorm2d(c2_in),
+            nn.ReLU(inplace=True)
+        )
+        # Spatial attention for l2, informed by the fusion of l2 and upsampled refined_l3
+        self.spatial_attention_l2 = nn.Sequential(
+            nn.Conv2d(c2_in * 2, 1, kernel_size=7, padding=3, bias=False),
+            nn.Sigmoid()
+        )
+        self.l2_refinement = nn.Sequential(
+            nn.Conv2d(c2_in * 2, c2_in, kernel_size=3, padding=1, bias=False), # Concatenate l2_attended and upsampled refined_l3
+            nn.BatchNorm2d(c2_in),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c2_in, c2_in, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c2_in),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate) # Add dropout for regularization
+        )
+
+    def forward(self, l2_in, l3_in, pos_feat_in):
+        # Refine l3 using pos_feat (from l4 through Positioning)
+        pos_feat_upsampled_to_l3 = F.interpolate(pos_feat_in, size=l3_in.size()[2:], mode='bilinear', align_corners=True)
+        pos_feat_upsampled_to_l3 = self.upsample_c4_to_c3(pos_feat_upsampled_to_l3)
+        
+        # Spatial attention for l3_in, informed by both l3_in and pos_feat
+        l3_fused_for_attention = torch.cat([l3_in, pos_feat_upsampled_to_l3], dim=1)
+        attention_map_l3 = self.spatial_attention_l3(l3_fused_for_attention)
+        
+        # Apply attention to l3_in, then fuse with the higher-level feature
+        l3_in_attended = l3_in * attention_map_l3
+        l3_fused = torch.cat([l3_in_attended, pos_feat_upsampled_to_l3], dim=1)
+        l3_refined = self.l3_refinement(l3_fused)
+
+        # Refine l2 using l3_refined
+        l3_refined_upsampled_to_l2 = F.interpolate(l3_refined, size=l2_in.size()[2:], mode='bilinear', align_corners=True)
+        l3_refined_upsampled_to_l2 = self.upsample_c3_to_c2(l3_refined_upsampled_to_l2)
+        
+        # Spatial attention for l2_in, informed by both l2_in and refined_l3
+        l2_fused_for_attention = torch.cat([l2_in, l3_refined_upsampled_to_l2], dim=1)
+        attention_map_l2 = self.spatial_attention_l2(l2_fused_for_attention)
+        
+        # Apply attention to l2_in, then fuse with the higher-level feature
+        l2_in_attended = l2_in * attention_map_l2
+        l2_fused = torch.cat([l2_in_attended, l3_refined_upsampled_to_l2], dim=1)
+        l2_refined = self.l2_refinement(l2_fused)
+
+        return l2_refined, l3_refined
+
+
 class daseg(nn.Module):
     def __init__(self, backbone_name='resnet50'):
-        super(daseg, self).__init__(); backbone_data = get_backbone(backbone_name); self.layer0 = backbone_data['layer0']; self.layer1 = backbone_data['layer1']; self.layer2 = backbone_data['layer2']; self.layer3 = backbone_data['layer3']; self.layer4 = backbone_data['layer4']; ch = backbone_data['channels']; self.positioning = Positioning(ch['c4']); self.focus3 = Focus(ch['c3'], ch['c4']); self.focus2 = Focus(ch['c2'], ch['c3']); self.focus1 = Focus(ch['c1'], ch['c2']); self.focus0 = Focus(ch['c0'], ch['c1'], is_last=True)
+        super(daseg, self).__init__(); 
+        backbone_data = get_backbone(backbone_name); 
+        self.layer0 = backbone_data['layer0']; 
+        self.layer1 = backbone_data['layer1']; 
+        self.layer2 = backbone_data['layer2']; 
+        self.layer3 = backbone_data['layer3']; 
+        self.layer4 = backbone_data['layer4']; 
+        ch = backbone_data['channels']; 
+        
+        self.positioning = Positioning(ch['c4']); 
+        
+        # Initialize the new MultiscaleFeatureRefinement module
+        # It refines l2 and l3 using pos_feat (from l4)
+        self.mfr_module = MultiscaleFeatureRefinement(ch['c2'], ch['c3'], ch['c4'], dropout_rate=0.2)
+        
+        self.focus3 = Focus(ch['c3'], ch['c4']); 
+        self.focus2 = Focus(ch['c2'], ch['c3']); 
+        self.focus1 = Focus(ch['c1'], ch['c2']); 
+        self.focus0 = Focus(ch['c0'], ch['c1'], is_last=True)
     def forward(self, x):
-        original_size = x.size()[2:]; l0 = self.layer0(x); l1 = self.layer1(l0); l2 = self.layer2(l1); l3 = self.layer3(l2); l4 = self.layer4(l3); pos_feat, pred4 = self.positioning(l4); f3_feat, pred3 = self.focus3(l3, pos_feat, pred4); f2_feat, pred2 = self.focus2(l2, f3_feat, pred3); f1_feat, pred1 = self.focus1(l1, f2_feat, pred2); _, pred0 = self.focus0(l0, f1_feat, pred1); pred4 = F.interpolate(pred4, size=original_size, mode='bilinear', align_corners=True); pred3 = F.interpolate(pred3, size=original_size, mode='bilinear', align_corners=True); pred2 = F.interpolate(pred2, size=original_size, mode='bilinear', align_corners=True); pred1 = F.interpolate(pred1, size=original_size, mode='bilinear', align_corners=True); pred0 = F.interpolate(pred0, size=original_size, mode='bilinear', align_corners=True); return pred4, pred3, pred2, pred1, pred0
+        original_size = x.size()[2:]; 
+        l0 = self.layer0(x); 
+        l1 = self.layer1(l0); 
+        l2 = self.layer2(l1); 
+        l3 = self.layer3(l2); 
+        l4 = self.layer4(l3); 
+
+        pos_feat, pred4 = self.positioning(l4); 
+
+        # Apply MultiscaleFeatureRefinement to get refined encoder features
+        # The MFR module now explicitly includes attention to fuse features.
+        l2_refined, l3_refined = self.mfr_module(l2, l3, pos_feat)
+
+        # Use the refined features in the Focus blocks
+        # The arguments to Focus blocks remain unchanged, maintaining original functionality.
+        f3_feat, pred3 = self.focus3(l3_refined, pos_feat, pred4); 
+        f2_feat, pred2 = self.focus2(l2_refined, f3_feat, pred3); 
+        f1_feat, pred1 = self.focus1(l1, f2_feat, pred2); 
+        _, pred0 = self.focus0(l0, f1_feat, pred1); 
+        
+        pred4 = F.interpolate(pred4, size=original_size, mode='bilinear', align_corners=True); 
+        pred3 = F.interpolate(pred3, size=original_size, mode='bilinear', align_corners=True); 
+        pred2 = F.interpolate(pred2, size=original_size, mode='bilinear', align_corners=True); 
+        pred1 = F.interpolate(pred1, size=original_size, mode='bilinear', align_corners=True); 
+        pred0 = F.interpolate(pred0, size=original_size, mode='bilinear', align_corners=True); 
+        return pred4, pred3, pred2, pred1, pred0
