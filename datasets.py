@@ -46,6 +46,8 @@ class ImageFolder(data.Dataset):
         self.transform = transform
         self.target_transform = target_transform
         self.split = split
+        # The label_mapping is not used in convert_label, which directly binarizes.
+        # It's kept for original code structure but its effect is minimal for binary segmentation.
         self.label_mapping = {-1: -1, 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6:6, 7:7, 8:8, 9:9, 10:10,
                               11: 11, 12: 12, 13: 13, 14: 14, 15: 15, 16:16, 17:17, 18:18, 19:19, 20:20,
                               21: 21, 22: 22, 23: 23, 24: 24, 25: 25, 26:26, 27:27, 28:28, 29:29, 30:30}
@@ -60,8 +62,9 @@ class ImageFolder(data.Dataset):
         # print(target.size)
         # print(label.size)
 
-        # if self.joint_transform is not None:
-        #     img, label = self.joint_transform(img, label)
+        # The `joint_transform`, `transform`, `target_transform` passed to ImageFolder
+        # are not used directly if self.split handling is present.
+        # Instead, transform_tr and transform_val methods are used.
         
         sample = {'image': img, 'label': label}
         if self.split == "train":
@@ -75,12 +78,16 @@ class ImageFolder(data.Dataset):
     
     def convert_label(self, label):
         label_rgb = np.array(label)
+        # Assuming label is a single-channel image, or we want to binarize it.
+        # The original code binarizes by setting anything > 0 to 1.
         label_index = np.full(label_rgb.shape[:2], 0, dtype='uint8')
         
-        for k in range(1,30):
-            label_index[label_rgb == k] = 1
-
-        label_index = Image.fromarray(label_index, mode='P')
+        # Original logic was to iterate up to 30, setting non-zero to 1.
+        # This can be simplified to a single check for any non-zero value if it's binary segmentation.
+        # If the original GT image is indexed, label_rgb > 0 will capture all foreground.
+        label_index[label_rgb > 0] = 1 
+        
+        label_index = Image.fromarray(label_index, mode='P') # Mode 'P' for palette image
 
         return label_index
 
@@ -89,19 +96,20 @@ class ImageFolder(data.Dataset):
     
     
     def transform_tr(self, sample):
+        # Incorporating additional augmentations here
         composed_transforms = transforms.Compose([
             tr.RandomHorizontalFlip(),
-            tr.FixedResize(576,896),
-            # tr.RandomScaleCrop(base_size=self.args.base_size, crop_size=self.args.crop_size),
-            tr.RandomCrop((576,576)),
+            tr.FixedResize(576,896), # Original resize
+            tr.RandomCrop((576,576)), # Original crop
             tr.RandomGaussianBlur(),
+            tr.RandomGaussianNoise(mean=0., std=0.03, p=0.5), # Added Gaussian Noise
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1), # Added ColorJitter
             tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             tr.ToTensor()])
         return composed_transforms(sample)
  
     def transform_val(self, sample):
         composed_transforms = transforms.Compose([
-            # tr.FixScaleCrop(crop_size=self.args.crop_size),
             tr.FixedResize(576,896),
             tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             tr.ToTensor()])

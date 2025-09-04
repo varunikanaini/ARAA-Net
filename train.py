@@ -44,13 +44,17 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
             predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
             binary_labels = labels.unsqueeze(1).float()
             ce_labels = labels.long()
+            
+            # Using the same loss components as in training for validation loss reporting
             loss_1 = bce_iou_loss(predict_1, binary_labels)
             loss_2 = structure_loss_fn(predict_2, binary_labels)
             loss_3 = structure_loss_fn(predict_3, binary_labels)
             loss_4 = structure_loss_fn(predict_4, binary_labels)
-            loss_0 = ce_loss_fn(predict_0, ce_labels)
-            loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
-            loss_recorder.update(loss.item(), inputs.size(0))
+            # Use Focal Loss for loss_0 in validation too, for consistency
+            loss_0 = focal_loss_fn(predict_0, ce_labels) 
+            total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
+            
+            loss_recorder.update(total_loss.item(), inputs.size(0))
             confmat.update(labels.flatten(), predict_0.argmax(1).flatten())
             
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
@@ -101,21 +105,13 @@ def main():
     scale_w = 299 if args.backbone == 'inception_v3' else 576
     
     # Data Transformations & Dataloaders
-    joint_transform = joint_transforms.Compose([
-        joint_transforms.RandomHorizontallyFlip(),
-        joint_transforms.Resize((scale_h, scale_w)),
-        joint_transforms.RandomCrop((299 if args.backbone == 'inception_v3' else 576, 299 if args.backbone == 'inception_v3' else 576), pad_if_needed=True, lbl_fill=255)
-    ])
-    val_joint_transform = joint_transforms.Compose([joint_transforms.Resize((scale_h, scale_w))])
-    img_transform = transforms.Compose([
-        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    target_transform = transforms.ToTensor()
-    train_set = ImageFolder(cod_training_root, joint_transform=joint_transform, transform=img_transform, target_transform=target_transform)
+    # Note: The img_transform and target_transform passed here are currently not used by ImageFolder
+    # if its internal transform_tr/transform_val methods are defined, which they are.
+    # The actual augmentations for training are handled within datasets.py's transform_tr.
+    train_set = ImageFolder(cod_training_root, split='train') # Use default transforms within ImageFolder
     train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
-    test_set = ImageFolder(test_path, joint_transform=val_joint_transform, transform=img_transform, target_transform=target_transform)
+    
+    test_set = ImageFolder(test_path, split='val') # Use default transforms within ImageFolder
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
     
     logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images.")
@@ -138,11 +134,13 @@ def main():
         ], momentum=args.momentum)
 
     # Loss Functions
-    global structure_loss_fn, bce_loss_fn, iou_loss_fn, ce_loss_fn
+    global structure_loss_fn, bce_loss_fn, iou_loss_fn, focal_loss_fn
     structure_loss_fn = loss.structure_loss().to(device)
     bce_loss_fn = nn.BCEWithLogitsLoss().to(device)
     iou_loss_fn = loss.IOU().to(device)
-    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device)
+    # Replaced CrossEntropyLoss with FocalLoss for final segmentation
+    focal_loss_fn = loss.FocalLoss(alpha=1, gamma=2, reduction='mean', ignore_index=255).to(device)
+    
     def bce_iou_loss(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
 
     # Checkpoint Resuming Logic
@@ -159,7 +157,7 @@ def main():
                 if 'module.' in list(state_dict.keys())[0]:
                     state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
                 net.load_state_dict(state_dict)
-                if not args.snapshot:
+                if not args.snapshot: # if it's a full checkpoint (not just state_dict)
                     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
                     start_epoch = ckpt['epoch'] + 1
                     best_mIoU = ckpt.get('best_mIoU', 0.0)
@@ -199,14 +197,17 @@ def main():
             
                 inputs, labels = data['image'].to(device), data['label'].to(device)
                 binary_labels = labels.unsqueeze(1).float()
-                ce_labels = labels.long()
+                ce_labels = labels.long() # Labels for CrossEntropy/Focal Loss
                 optimizer.zero_grad(set_to_none=True)
                 predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
+                
                 loss_1 = bce_iou_loss(predict_1, binary_labels)
                 loss_2 = structure_loss_fn(predict_2, binary_labels)
                 loss_3 = structure_loss_fn(predict_3, binary_labels)
                 loss_4 = structure_loss_fn(predict_4, binary_labels)
-                loss_0 = ce_loss_fn(predict_0, ce_labels)
+                # Use Focal Loss for the final segmentation output (predict_0)
+                loss_0 = focal_loss_fn(predict_0, ce_labels) 
+                
                 total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
                 total_loss.backward()
                 optimizer.step()
@@ -221,21 +222,24 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # Validate every 10 iterations
-                if i % 10 == 0:
+                # Validate every 10 iterations (or other frequency)
+                if (i + 1) % 10 == 0: # Adjusted to validate after every 10 iterations
                     current_mIoU = validate(net, test_loader, device, writer, curr_iter)
                     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
 
+            # Final validation at the end of epoch
             current_mIoU = validate(net, test_loader, device, writer, curr_iter)
             
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
+                # Save only model state_dict for best_checkpoint
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
                 # Persist to Kaggle output
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth')
             
+            # Save latest checkpoint with full state for resuming
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
             logging.info(f"Saved checkpoint to {checkpoint_path}")

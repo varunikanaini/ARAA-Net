@@ -42,8 +42,14 @@ class ToTensor(object):
         # torch image: C X H X W
         img = sample['image']
         mask = sample['label']
-        img = np.array(img).astype(np.float32).transpose((2, 0, 1))
-        mask = np.array(mask).astype(np.float32)
+        # Check if img is a PIL Image, convert to numpy first if needed
+        if isinstance(img, Image.Image):
+            img = np.array(img)
+        if isinstance(mask, Image.Image):
+            mask = np.array(mask)
+
+        img = img.astype(np.float32).transpose((2, 0, 1))
+        mask = mask.astype(np.float32)
 
         img = torch.from_numpy(img).float()
         mask = torch.from_numpy(mask).float()
@@ -141,7 +147,7 @@ class FixScaleCrop(object):
             ow = int(1.0 * w * oh / h)
         else:
             ow = self.crop_size
-            oh = int(1.0 * h * ow / w)
+            oh = int(1.0 * h * ow / h)
         img = img.resize((ow, oh), Image.BILINEAR)
         mask = mask.resize((ow, oh), Image.NEAREST)
         # center crop
@@ -185,31 +191,17 @@ class FixedResizewx(object):
             ow = int(1.0 * w * oh / h)
         else:
             ow = self.crop_size
-            oh = int(1.0 * h * ow / w)
+            oh = int(1.0 * h * ow / h)
         img = img.resize((ow, oh), Image.BILINEAR)
         mask = mask.resize((ow, oh), Image.NEAREST)
 
         return {'image': img,
                 'label': mask}
     
-    
-    
-    
-    
-    
-    
-
-    
-    
-    
-    
-    
-    
-    
 class RandomCrop(object):
-    def __init__(self, size):
+    def __init__(self, size, lbl_fill=0): # Added lbl_fill to constructor
         self.size = size
-
+        self.lbl_fill = lbl_fill
 
     def __call__(self, sample):
         img = sample['image']
@@ -220,7 +212,39 @@ class RandomCrop(object):
         i, j, h, w = transforms.RandomCrop.get_params(img, self.size)
         
         img = F.crop(img, i, j, h, w)
-        mask = F.crop(lbl, i, j, h, w)
+        mask = F.crop(lbl, i, j, h, w) # F.crop doesn't use fill argument
 
         return {'image': img,
-                'label': mask}  
+                'label': mask}
+
+class RandomGaussianNoise(object):
+    """
+    Adds random Gaussian noise to the image.
+    Args:
+        mean (float): Mean of the Gaussian noise. Default: 0.
+        std (float): Standard deviation of the Gaussian noise. Default: 0.05.
+        p (float): Probability of applying the transform. Default: 0.5.
+    """
+    def __init__(self, mean=0., std=0.03, p=0.5): # Adjusted default std for potentially clearer effect
+        self.mean = mean
+        self.std = std
+        self.p = p
+
+    def __call__(self, sample):
+        img = sample['image']
+        mask = sample['label']
+        if random.random() < self.p:
+            # Convert PIL Image to numpy array (float, 0-1 range)
+            img_np = np.array(img, dtype=np.float32) / 255.0
+            
+            # Generate Gaussian noise
+            noise = np.random.normal(self.mean, self.std, img_np.shape).astype(np.float32)
+            
+            # Add noise and clip to [0, 1] range
+            noisy_img_np = img_np + noise
+            noisy_img_np = np.clip(noisy_img_np, 0.0, 1.0)
+            
+            # Convert back to PIL Image (uint8, 0-255 range)
+            img = Image.fromarray((noisy_img_np * 255).astype(np.uint8))
+            
+        return {'image': img, 'label': mask}
