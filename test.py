@@ -86,7 +86,6 @@ def main():
             _, _, _, _, pred = net(inputs)
             confmat.update(labels.flatten(), pred.argmax(1).flatten())
 
-    # --- Compute, Print, and Save Results ---
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
@@ -99,6 +98,7 @@ def main():
         f"Global Accuracy = {global_acc.item():.4f}\n"
         f"Mean IoU        = {mIoU:.4f}\n"
         f"Mean Dice       = {mDice:.4f}\n"
+        f"FWIoU           = {fwiou.item():.4f}\n" # Added this line
         f"--------------------------------------------------\n"
     )
     print(results_text)
