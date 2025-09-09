@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (FINAL, CORRECTED STANDALONE SCRIPT)
 import os
 import time
 import sys
@@ -8,19 +8,49 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import torch.nn.functional as F # Needed for Focal Loss
 
+# --- Setup Project Path ---
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-# --- Import the NEW standalone model ---
+# --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_VGG_Unet
-
 from config import DATA_ROOT, CKPT_ROOT
 from datasets import ImageFolder
-import loss as loss_module
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
+
+# ===================================================================
+#      ✅ FOCAL LOSS CLASS - INCLUDED DIRECTLY IN THIS SCRIPT ✅
+# ===================================================================
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for multi-class classification, included directly in the script.
+    """
+    def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs, targets):
+        # inputs are raw logits (N, C, H, W)
+        # targets are class indices (N, H, W)
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt)**self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            mask = (targets != self.ignore_index).float()
+            return (focal_loss * mask).sum() / (mask.sum() + 1e-6)
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+# ===================================================================
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train Standalone LASA-VGG-Unet Model')
@@ -52,8 +82,7 @@ def validate(net, test_loader, device, focal_loss_fn):
     with torch.no_grad():
         for data in tqdm(test_loader, desc="Validating", leave=False):
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            # The model returns 5 identical outputs, we only need the last one for validation
-            _, _, _, _, pred = net(inputs)
+            _, _, _, _, pred = net(inputs) # Model returns 5 identical outputs
             loss = focal_loss_fn(pred, labels.long())
             loss_recorder.update(loss.item(), inputs.size(0))
             confmat.update(labels.flatten(), pred.argmax(1).flatten())
@@ -69,49 +98,53 @@ def main():
     torch.manual_seed(2024)
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
 
-    # Experiment name for this specific test
     exp_name = f"standalone_LASA_VGG16_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
 
-    logging.info(f"Starting training with arguments: {args}")
-    logging.info(f"Experiment name: {exp_name}")
+    logging.info(f"Starting STANDALONE training for '{exp_name}' with arguments: {args}")
 
     dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
     train_path = os.path.join(dataset_path, 'train')
     val_path = os.path.join(dataset_path, 'val')
 
-    # Pass args to the dataset class so it knows the image sizes
     train_set = ImageFolder(train_path, args, split='train')
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
     test_set = ImageFolder(val_path, args, split='val')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
-    # --- Use the new, simpler model ---
+    # Use the simple, standalone LASA-VGG model
     net = LASA_VGG_Unet(num_classes=2).to(device)
     
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
-    # --- Use only Focal Loss, as there is only one output ---
-    focal_loss_fn = loss_module.FocalLoss(alpha=0.25, gamma=2).to(device)
+    # Use the Focal Loss defined directly in this script
+    focal_loss_fn = FocalLoss(alpha=0.25, gamma=2).to(device)
 
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if os.path.exists(latest_checkpoint_path):
-        # Resume logic here...
-        pass
-    
+        # Basic resume logic
+        try:
+            ckpt = torch.load(latest_checkpoint_path, map_location=device)
+            net.load_state_dict(ckpt['model_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            start_epoch = ckpt['epoch'] + 1
+            best_mIoU = ckpt.get('best_mIoU', 0.0)
+            logging.info(f"Resuming from epoch {start_epoch}, best mIoU was {best_mIoU:.4f}")
+        except Exception as e:
+            logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
+
     for epoch in range(start_epoch, args.epochs):
         net.train()
         loss_recorder = AvgMeter()
-        train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]")
+        train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         for data in train_iterator:
             inputs, labels = data['image'].to(device), data['label'].to(device)
             optimizer.zero_grad(set_to_none=True)
             
-            # The model returns 5 identical outputs, we only need the last one for loss
-            _, _, _, _, pred = net(inputs)
+            _, _, _, _, pred = net(inputs) # Model returns 5 identical outputs
             
             loss = focal_loss_fn(pred, labels.long())
             
