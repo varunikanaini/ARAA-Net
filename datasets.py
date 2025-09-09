@@ -17,28 +17,28 @@ def make_dataset(root):
     img_list = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.endswith('.jpg')]
     return [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_list]
 
+# In datasets.py, replace the entire ImageFolder class with this:
+
 class ImageFolder(data.Dataset):
-    # It now accepts args to use command-line parameters
     def __init__(self, root, args, split='train'):
         self.root = root
         self.imgs = make_dataset(root)
         self.split = split
         
+        # --- THIS IS THE FIX ---
+        # The transforms now correctly use the arguments passed from the training script
         if self.split == 'train':
-            # This pipeline uses your command-line args and adds better augmentation
             self.composed_transforms = transforms.Compose([
                 tr.RandomHorizontalFlip(),
-                # Use scale from args, then crop to a fixed size for training stability
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                # RandomResizedCrop is excellent for handling objects of different sizes
-                tr.RandomCrop((576, 576)), 
+                # Use the scale_w (or a dedicated crop_size arg) for the random crop
+                tr.RandomCrop((args.scale_h, args.scale_w)), 
                 tr.RandomGaussianBlur(),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
         else: # Validation/Test
             self.composed_transforms = transforms.Compose([
-                # For validation, we just resize deterministically based on your args
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
@@ -51,7 +51,6 @@ class ImageFolder(data.Dataset):
         label = self.convert_label(target)
         
         sample = {'image': img, 'label': label}
-        
         transformed_sample = self.composed_transforms(sample)
         
         if self.split != 'train':
@@ -64,8 +63,7 @@ class ImageFolder(data.Dataset):
         label_index = np.full(label_rgb.shape[:2], 0, dtype='uint8')
         for k in range(1, 30):
             label_index[label_rgb == k] = 1
-        label_index = Image.fromarray(label_index, mode='P')
-        return label_index
+        return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
         return len(self.imgs)
