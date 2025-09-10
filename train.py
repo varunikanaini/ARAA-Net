@@ -26,15 +26,13 @@ if project_path not in sys.path:
 
 from config import DATA_ROOT, CKPT_ROOT
 from datasets import ImageFolder
-from models.daseg import daseg # Using 'models' subfolder as per your fast script
+from daseg import daseg 
 import loss as loss_module
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- ARGUMENT PARSING (Adds command-line control) ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with LASA integration')
-    # --- CHANGE 1: ADDED --dataset-name and updated other args ---
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Name of the dataset to use')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['resnet50', 'resnet101', 'vgg16'], help='Choose the backbone model')
     parser.add_argument('--epochs', type=int, default=100)
@@ -50,7 +48,7 @@ def get_args():
     try:
         args = parser.parse_args()
     except SystemExit:
-        args = parser.parse_args([]) # Fallback for notebooks
+        args = parser.parse_args([]) 
     return args
 
 def setup_logging(log_dir):
@@ -58,7 +56,6 @@ def setup_logging(log_dir):
     for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-# --- VALIDATION FUNCTION (Logic Preserved) ---
 def validate(net, test_loader, device):
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
@@ -73,7 +70,6 @@ def validate(net, test_loader, device):
     net.train()
     return mIoU
 
-# --- TRAINING FUNCTION (Logic and Structure Preserved) ---
 def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_path, checkpoint_path, args):
     net.train()
     total_iterations = args.epochs * len(train_loader)
@@ -82,7 +78,6 @@ def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_pa
     patience_counter = 0
     best_mIoU = 0.0
 
-    # Loss functions are defined here as per your original script's scope
     structure_loss = loss_module.structure_loss().to(device)
     bce_loss = nn.BCEWithLogitsLoss().to(device)
     iou_loss = loss_module.IOU().to(device)
@@ -137,7 +132,6 @@ def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # --- CHANGE 2: IMPLEMENT NEW OUTPUT DIRECTORY FORMAT ---
     exp_name = f"LASA_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}_{args.backbone}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
@@ -149,7 +143,6 @@ def main():
     cod_training_root = os.path.join(dataset_path, 'train')
     val_path = os.path.join(dataset_path, 'val')
 
-    # Pass args to ImageFolder so it can use the scale parameters
     train_set = ImageFolder(cod_training_root, args, split='train')
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
     test_set = ImageFolder(val_path, args, split='val')
@@ -163,7 +156,6 @@ def main():
     start_epoch = 0
     checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth') # Path for saving best model
     if os.path.exists(checkpoint_path):
-        # Basic resume logic if needed
         pass
     
     writer = SummaryWriter(log_dir=os.path.join(exp_path, 'log'), comment=exp_name)
