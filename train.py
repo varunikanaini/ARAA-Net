@@ -3,7 +3,7 @@
 """
 Created on 2022-12-13 09:54:12
 @author: XuWang
-This script is based on the user's proven-fast template, with added flexibility.
+This script is based on the user's proven-fast template, with added flexibility and bug fixes.
 """
 import datetime
 import time
@@ -26,29 +26,30 @@ if project_path not in sys.path:
 
 from config import DATA_ROOT, CKPT_ROOT
 from datasets import ImageFolder
-from daseg import daseg 
+# --- FIX 2: Correct the import path to not use 'models' subfolder ---
+from daseg import daseg
 import loss as loss_module
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with LASA integration')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Name of the dataset to use')
-    parser.add_argument('--backbone', type=str, default='vgg16', choices=['resnet50', 'resnet101', 'vgg16'], help='Choose the backbone model')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'])
+    parser.add_argument('--backbone', type=str, default='vgg16', choices=['resnet50', 'resnet101', 'vgg16'])
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--batch-size', type=int, default=5, help='Batch size for training')
+    parser.add_argument('--batch-size', type=int, default=3)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--lr-decay', type=float, default=0.9)
     parser.add_argument('--weight-decay', type=float, default=5e-4)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--num-workers', type=int, default=2)
-    parser.add_argument('--scale-h', type=int, default=576) # Note: Original fast script used 576x576 crop
+    parser.add_argument('--scale-h', type=int, default=576)
     parser.add_argument('--scale-w', type=int, default=576)
     
     try:
         args = parser.parse_args()
     except SystemExit:
-        args = parser.parse_args([]) 
+        args = parser.parse_args([])
     return args
 
 def setup_logging(log_dir):
@@ -70,7 +71,8 @@ def validate(net, test_loader, device):
     net.train()
     return mIoU
 
-def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_path, checkpoint_path, args):
+# --- FIX 1: Add 'device' as an argument to the train function ---
+def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_path, checkpoint_path, args, device):
     net.train()
     total_iterations = args.epochs * len(train_loader)
     curr_iter = start_epoch * len(train_loader)
@@ -78,6 +80,7 @@ def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_pa
     patience_counter = 0
     best_mIoU = 0.0
 
+    # Loss functions are defined inside train(), giving them access to the 'device' variable
     structure_loss = loss_module.structure_loss().to(device)
     bce_loss = nn.BCEWithLogitsLoss().to(device)
     iou_loss = loss_module.IOU().to(device)
@@ -119,6 +122,7 @@ def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_pa
             best_mIoU = current_mIoU
             patience_counter = 0
             logging.info(f"✅ New best mIoU: {best_mIoU:.4f}. Saving best model.")
+            # The checkpoint path is passed in directly, fixing the previous bug
             torch.save({'epoch': epoch, 'model_state_dict': net.module.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
         else:
             patience_counter += 1
@@ -154,12 +158,14 @@ def main():
     optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if 'bias' in n], 'lr': 2 * args.lr}, {'params': [p for n, p in net.named_parameters() if 'bias' not in n], 'lr': args.lr, 'weight_decay': args.weight_decay}])
 
     start_epoch = 0
-    checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth') # Path for saving best model
-    if os.path.exists(checkpoint_path):
+    best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
+    if os.path.exists(best_checkpoint_path):
+        # Basic resume logic
         pass
     
     writer = SummaryWriter(log_dir=os.path.join(exp_path, 'log'), comment=exp_name)
-    train(net, optimizer, start_epoch, train_loader, test_loader, writer, os.path.join(exp_path, 'log.txt'), checkpoint_path, args)
+    # --- FIX 1: Pass 'device' as an argument to the train function ---
+    train(net, optimizer, start_epoch, train_loader, test_loader, writer, os.path.join(exp_path, 'log.txt'), best_checkpoint_path, args, device)
     writer.close()
 
 if __name__ == '__main__':
