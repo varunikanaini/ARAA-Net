@@ -11,7 +11,7 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-from models.daseg import daseg
+from daseg import daseg
 from datasets import ImageFolder
 from config import DATA_ROOT, CKPT_ROOT
 from misc import check_mkdir
