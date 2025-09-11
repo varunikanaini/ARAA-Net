@@ -153,37 +153,40 @@ def main():
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
     net = daseg(backbone_name=args.backbone).to(device)
-    net = nn.DataParallel(net)
+    net = nn.DataParallel(net) # The model is wrapped here.
     
     optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if 'bias' in n], 'lr': 2 * args.lr}, {'params': [p for n, p in net.named_parameters() if 'bias' not in n], 'lr': args.lr, 'weight_decay': args.weight_decay}])
 
     start_epoch = 0
-    best_mIoU = 0.0 # Initialize best_mIoU
+    best_mIoU = 0.0 
     best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
 
     if os.path.exists(best_checkpoint_path):
         logging.info(f"Resuming training from checkpoint: {best_checkpoint_path}")
         checkpoint = torch.load(best_checkpoint_path, map_location=device)
         
-        # Load model state
-        net.load_state_dict(checkpoint['model_state_dict'])
+        # Get the model's state_dict from the checkpoint
+        model_state_dict = checkpoint['model_state_dict']
+        
+        # Add 'module.' prefix to all keys in the loaded state_dict
+        # because the current 'net' is wrapped in nn.DataParallel,
+        # but the saved state_dict was from net.module (unwrapped).
+        new_state_dict = {f"module.{k}": v for k, v in model_state_dict.items()}
+        
+        net.load_state_dict(new_state_dict) # Load the modified state_dict
         
         # Load optimizer state
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
         # Resume epoch and best mIoU
-        start_epoch = checkpoint['epoch'] + 1 # Start from the next epoch
+        start_epoch = checkpoint['epoch'] + 1 
         best_mIoU = checkpoint['best_mIoU']
         logging.info(f"Loaded checkpoint: Epoch {start_epoch-1}, Best mIoU: {best_mIoU:.4f}")
     else:
         logging.info("No checkpoint found, starting training from scratch.")
     
     writer = SummaryWriter(log_dir=os.path.join(exp_path, 'log'), comment=exp_name)
-    
-    # Pass best_mIoU to the train function if you want to use it for initial comparison
-    # You might also want to modify the train function to accept and use the loaded best_mIoU
     train(net, optimizer, start_epoch, train_loader, test_loader, writer, os.path.join(exp_path, 'log.txt'), best_checkpoint_path, args, device)
-    
     writer.close()
 
 if __name__ == '__main__':
