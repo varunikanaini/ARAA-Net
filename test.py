@@ -20,8 +20,8 @@ from config import DATA_ROOT, CKPT_ROOT
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test ARAA-Net with LASA model')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis')
-    parser.add_argument('--backbone', type=str, default='vgg16')
-    parser.add_argument('--scale-h', type=int, default=576)
+    parser.add_argument('--backbone', type=str, default='resnet50')
+    parser.add_argument('--scale-h', type=int, default=896)
     parser.add_argument('--scale-w', type=int, default=576)
     try:
         args = parser.parse_args()

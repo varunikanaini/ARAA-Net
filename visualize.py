@@ -19,9 +19,9 @@ from misc import check_mkdir
 def main():
     parser = argparse.ArgumentParser(description='Visualize model predictions')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis')
-    parser.add_argument('--backbone', type=str, default='vgg16')
+    parser.add_argument('--backbone', type=str, default='resnet50')
     parser.add_argument('--image-index', type=int, default=10)
-    parser.add_argument('--scale-h', type=int, default=576)
+    parser.add_argument('--scale-h', type=int, default=896)
     parser.add_argument('--scale-w', type=int, default=576)
 
     try:

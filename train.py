@@ -35,7 +35,7 @@ from misc import AvgMeter, check_mkdir
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with LASA integration')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'])
-    parser.add_argument('--backbone', type=str, default='vgg16', choices=['resnet50', 'resnet101', 'vgg16'])
+    parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16'])
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=3)
     parser.add_argument('--lr', type=float, default=1e-3)
@@ -43,7 +43,7 @@ def get_args():
     parser.add_argument('--weight-decay', type=float, default=5e-4)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--num-workers', type=int, default=2)
-    parser.add_argument('--scale-h', type=int, default=576)
+    parser.add_argument('--scale-h', type=int, default=896)
     parser.add_argument('--scale-w', type=int, default=576)
     
     try:
