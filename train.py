@@ -22,7 +22,7 @@ from tensorboardX import SummaryWriter
 # --- Setup Project Path and Imports ---
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
-    sys.path.insert(0, project_path)
+    sys.sys.path.insert(0, project_path)
 
 from config import DATA_ROOT, CKPT_ROOT
 from datasets import ImageFolder
@@ -71,15 +71,15 @@ def validate(net, test_loader, device):
     net.train()
     return mIoU
 
-# --- FIX 1: Add 'device' as an argument to the train function ---
-def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_path, checkpoint_path, args, device):
+# --- Modified train function signature to accept initial_best_mIoU ---
+def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_path, checkpoint_path, args, device, initial_best_mIoU=0.0):
     net.train()
     total_iterations = args.epochs * len(train_loader)
     curr_iter = start_epoch * len(train_loader)
     
     patience_counter = 0
-    best_mIoU = 0.0
-
+    best_mIoU = initial_best_mIoU # <--- Initialize with the provided value
+    
     # Loss functions are defined inside train(), giving them access to the 'device' variable
     structure_loss = loss_module.structure_loss().to(device)
     bce_loss = nn.BCEWithLogitsLoss().to(device)
@@ -93,6 +93,7 @@ def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_pa
         
         for i, data in enumerate(train_iterator):
             current_iter_num = curr_iter + i
+            # Original learning rate decay logic
             lr_decay = (1 - float(current_iter_num) / float(total_iterations)) ** args.lr_decay
             optimizer.param_groups[0]['lr'] = 2 * args.lr * lr_decay
             optimizer.param_groups[1]['lr'] = args.lr * lr_decay
@@ -123,6 +124,7 @@ def train(net, optimizer, start_epoch, train_loader, test_loader, writer, log_pa
             patience_counter = 0
             logging.info(f"✅ New best mIoU: {best_mIoU:.4f}. Saving best model.")
             # The checkpoint path is passed in directly, fixing the previous bug
+            # Save net.module.state_dict() as done originally
             torch.save({'epoch': epoch, 'model_state_dict': net.module.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
         else:
             patience_counter += 1
@@ -153,12 +155,12 @@ def main():
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
     net = daseg(backbone_name=args.backbone).to(device)
-    net = nn.DataParallel(net) # The model is wrapped here.
+    net = nn.DataParallel(net)
     
     optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if 'bias' in n], 'lr': 2 * args.lr}, {'params': [p for n, p in net.named_parameters() if 'bias' not in n], 'lr': args.lr, 'weight_decay': args.weight_decay}])
 
     start_epoch = 0
-    best_mIoU = 0.0 
+    best_mIoU = 0.0 # Initialize best_mIoU before loading
     best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
 
     if os.path.exists(best_checkpoint_path):
@@ -171,22 +173,31 @@ def main():
         # Add 'module.' prefix to all keys in the loaded state_dict
         # because the current 'net' is wrapped in nn.DataParallel,
         # but the saved state_dict was from net.module (unwrapped).
-        new_state_dict = {f"module.{k}": v for k, v in model_state_dict.items()}
-        
-        net.load_state_dict(new_state_dict) # Load the modified state_dict
+        # This resolves the "Missing key(s) in state_dict" error.
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        for k, v in model_state_dict.items():
+            if not k.startswith('module.'): # Check if prefix is already there to prevent double-prefixing
+                new_state_dict[f"module.{k}"] = v
+            else:
+                new_state_dict[k] = v # If it's already there (shouldn't be based on save), keep as is
+
+        net.load_state_dict(new_state_dict)
         
         # Load optimizer state
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
         # Resume epoch and best mIoU
-        start_epoch = checkpoint['epoch'] + 1 
-        best_mIoU = checkpoint['best_mIoU']
+        start_epoch = checkpoint['epoch'] + 1 # Start from the next epoch
+        best_mIoU = checkpoint['best_mIoU'] # <--- Load the best mIoU from the checkpoint
         logging.info(f"Loaded checkpoint: Epoch {start_epoch-1}, Best mIoU: {best_mIoU:.4f}")
     else:
         logging.info("No checkpoint found, starting training from scratch.")
     
     writer = SummaryWriter(log_dir=os.path.join(exp_path, 'log'), comment=exp_name)
-    train(net, optimizer, start_epoch, train_loader, test_loader, writer, os.path.join(exp_path, 'log.txt'), best_checkpoint_path, args, device)
+    
+    # --- Pass 'best_mIoU' to the train function ---
+    train(net, optimizer, start_epoch, train_loader, test_loader, writer, os.path.join(exp_path, 'log.txt'), best_checkpoint_path, args, device, initial_best_mIoU=best_mIoU)
     writer.close()
 
 if __name__ == '__main__':
