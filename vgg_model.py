@@ -2,12 +2,12 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from lasa import LASA # We will reuse your existing lasa.py file
+# Removed: from lasa import LASA # We will reuse your existing lasa.py file
 
 class LASA_VGG_Unet(nn.Module):
     """
-    A standalone segmentation model using a VGG16 backbone, a LASA module for
-    feature enhancement, and a U-Net style decoder.
+    A standalone segmentation model using a VGG16 backbone and a U-Net style decoder.
+    The LASA module has been removed, making this a pure VGG-Unet.
     """
     def __init__(self, num_classes=2):
         super(LASA_VGG_Unet, self).__init__()
@@ -24,16 +24,16 @@ class LASA_VGG_Unet(nn.Module):
         self.encoder3 = vgg_features[13:23] # Output channels: 256
         self.encoder4 = vgg_features[23:33] # Output channels: 512
         
-        # --- 3. Insert the LASA Module ---
-        # LASA will enhance the features from the 4th encoder block.
-        self.lasa = LASA(in_channels=512)
+        # Removed: --- 3. Insert the LASA Module ---
+        # Removed: self.lasa = LASA(in_channels=512)
 
         # --- 4. Define the Bottleneck ---
+        # The bottleneck now directly processes the output of the 4th encoder block.
         self.bottleneck = vgg_features[33:43] # Output channels: 512
 
         # --- 5. Define Decoder Blocks ---
         # These blocks will upsample the features and merge them with skip connections.
-        self.decoder4 = self._decoder_block(512 + 512, 512) # Input: bottleneck + lasa-enhanced e4
+        self.decoder4 = self._decoder_block(512 + 512, 512) # Input: bottleneck + e4 (skip connection)
         self.decoder3 = self._decoder_block(512 + 256, 256) # Input: upsampled d4 + e3
         self.decoder2 = self._decoder_block(256 + 128, 128) # Input: upsampled d3 + e2
         self.decoder1 = self._decoder_block(128 + 64, 64)   # Input: upsampled d2 + e1
@@ -59,14 +59,16 @@ class LASA_VGG_Unet(nn.Module):
         e3 = self.encoder3(e2)
         e4 = self.encoder4(e3)
         
-        # Apply LASA enhancement
-        e4_lasa = self.lasa(e4)
+        # Removed: Apply LASA enhancement
+        # Removed: e4_lasa = self.lasa(e4)
         
-        bottleneck = self.bottleneck(e4_lasa)
+        # Bottleneck now directly uses e4 features
+        bottleneck = self.bottleneck(e4)
 
         # --- Decoder Path with Skip Connections ---
         d4 = nn.functional.interpolate(bottleneck, scale_factor=2, mode='bilinear', align_corners=True)
-        d4 = torch.cat([d4, e4_lasa], dim=1) # Skip connection from LASA-enhanced features
+        # Skip connection from original e4 features
+        d4 = torch.cat([d4, e4], dim=1) 
         d4 = self.decoder4(d4)
         
         d3 = nn.functional.interpolate(d4, scale_factor=2, mode='bilinear', align_corners=True)

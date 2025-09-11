@@ -11,7 +11,7 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-from lasa_vgg_model import LASA_VGG_Unet
+from vgg_model import LASA_VGG_Unet
 from datasets import ImageFolder
 from config import DATA_ROOT, CKPT_ROOT
 from misc import check_mkdir
@@ -29,7 +29,7 @@ def main():
         args = parser.parse_args([])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    exp_name = f"standalone_LASA_VGG16_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_name = f"standalone_VGG16_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     
     model_path = os.path.join(CKPT_ROOT, exp_name, 'best_checkpoint.pth')
     if not os.path.exists(model_path):

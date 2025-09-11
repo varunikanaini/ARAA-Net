@@ -14,7 +14,7 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_VGG_Unet
+from vgg_model import LASA_VGG_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir
@@ -35,10 +35,10 @@ def get_test_args():
 def main():
     args = get_test_args()
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BACKBONE_TO_TEST = 'VGG16_with_LASA' # For clarity in the report
+    BACKBONE_TO_TEST = 'VGG16' # For clarity in the report
 
     # --- Construct the correct experiment name to find the checkpoint ---
-    EXP_NAME = f"standalone_LASA_VGG16_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    EXP_NAME = f"standalone_VGG16_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     log_file_path = os.path.join(log_dir, 'final_testing_results.log')
     print(f"Results for experiment '{EXP_NAME}' will be saved to: {log_file_path}")

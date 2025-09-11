@@ -9,7 +9,7 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-from lasa_vgg_model import LASA_VGG_Unet
+from vgg_model import LASA_VGG_Unet
 
 def benchmark(model, device, input_h, input_w):
     model.to(device)

@@ -16,7 +16,7 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_VGG_Unet
+from vgg_model import LASA_VGG_Unet
 from config import DATA_ROOT, CKPT_ROOT
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
@@ -98,7 +98,7 @@ def main():
     torch.manual_seed(2024)
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
 
-    exp_name = f"standalone_LASA_VGG16_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_name = f"standalone_VGG16_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
