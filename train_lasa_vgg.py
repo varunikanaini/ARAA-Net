@@ -218,7 +218,7 @@ def main():
         torch.save({
             'epoch': epoch,
             'model_state_dict': net.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
+            'optimizer_state_dict': optimizer.load_state_dict(),
             'best_mIoU': best_mIoU,
             'patience_counter': patience_counter
         }, latest_checkpoint_path)

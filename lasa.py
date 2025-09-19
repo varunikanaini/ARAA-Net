@@ -3,6 +3,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Helper module to explicitly squeeze dimensions within nn.Sequential
+class Squeeze(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+    def forward(self, x):
+        return x.squeeze(self.dim)
+
+
 class LASA(nn.Module):
     """
     Local Axial Scale-Attention Module (Re-interpreted for 2D robustness).
@@ -46,7 +55,7 @@ class LASA(nn.Module):
             self.channel_attention_fcs.append(
                 nn.Sequential(
                     nn.AdaptiveAvgPool2d(1), # Output: (B, C_g, 1, 1)
-                    nn.Flatten(start_dim=2), # NEW: Squeeze H and W to create (B, C_g, 1) for Conv1d
+                    Squeeze(dim=-1),         # Output: (B, C_g, 1) - Correct 3D for Conv1d
                     nn.Conv1d(self.group_channels, self.group_channels, kernel_size=kernel_size_1d, 
                               padding=(kernel_size_1d - 1) // 2, bias=False),
                     nn.BatchNorm1d(self.group_channels),
@@ -78,7 +87,7 @@ class LASA(nn.Module):
             local_context_features = self.local_context_extractors[i](x_group) # (B, C_g, H, W)
             
             # 2. Generate channel attention weights from the local context features
-            # channel_attention_fcs[i] now produces (B, C_g, 1) from (B, C_g, H, W) -> AvgPool -> Flatten -> Conv1d
+            # channel_attention_fcs[i] now correctly produces (B, C_g, 1) from (B, C_g, H, W)
             channel_weights_1d = self.channel_attention_fcs[i](local_context_features) # (B, C_g, 1)
             
             # Reshape back to (B, C_g, 1, 1) for 2D element-wise multiplication
