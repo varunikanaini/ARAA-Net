@@ -6,37 +6,27 @@ from PIL import Image
 import numpy as np
 from torchvision import transforms
 
-# We will use custom_transforms for Normalize and ToTensor which work with dicts
 import custom_transforms as tr 
 
 def make_dataset(root):
-    # This function needs to be robust to your dataset's actual structure.
-    # Assuming images are directly in 'root' and labels are in 'root_labels'
-    # or a 'GT' subdirectory.
-    
     image_path = root
     
-    # Prioritize 'GT' folder if it exists, otherwise use '_labels' convention
     if os.path.exists(os.path.join(root, 'GT')):
         mask_path = os.path.join(root, 'GT')
-    elif os.path.exists(root + '_labels'): # Check for the root_labels convention
+    elif os.path.exists(root + '_labels'):
         mask_path = root + '_labels'
     else:
-        # Fallback or raise error if neither expected label path exists
         raise FileNotFoundError(f"Could not find label directory for {root}. Looked in '{os.path.join(root, 'GT')}' and '{root + '_labels'}'.")
 
-
-    # Filter for common image extensions
     img_list = []
     for f in os.listdir(image_path):
-        if f.lower().endswith(('.png', '.jpg', '.jpeg')): # Add other image formats if needed
+        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
             img_list.append(os.path.splitext(f)[0])
 
-    # Construct (image_path, mask_path) tuples
     dataset_items = []
     for img_name in img_list:
-        img_full_path = os.path.join(image_path, img_name + '.jpg') # Assuming .jpg
-        mask_full_path = os.path.join(mask_path, img_name + '.png') # Assuming .png labels
+        img_full_path = os.path.join(image_path, img_name + '.jpg')
+        mask_full_path = os.path.join(mask_path, img_name + '.png')
         
         if os.path.exists(img_full_path) and os.path.exists(mask_full_path):
             dataset_items.append((img_full_path, mask_full_path))
@@ -54,7 +44,7 @@ class ImageFolder(data.Dataset):
         self.root = root
         self.imgs = make_dataset(root)
         self.split = split
-        self.args = args # Store args to pass to CenterAmplification if needed
+        self.args = args
 
         # Define CenterAmplification parameters from args
         min_lesion_area = args.min_lesion_area_pixels
@@ -96,11 +86,9 @@ class ImageFolder(data.Dataset):
         return transformed_sample
     
     def convert_label(self, label):
-        # Original logic: assume label has values 1-29 are lesions, 0 is background.
-        # This converts any non-zero pixel in the label to 1 (lesion), 0 remains background.
         label_np = np.array(label, dtype=np.uint8)
         label_index = np.zeros_like(label_np, dtype=np.uint8)
-        label_index[label_np > 0] = 1 # Map all lesion types to a single 'lesion' class
+        label_index[label_np > 0] = 1
         return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
