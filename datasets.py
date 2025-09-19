@@ -1,4 +1,4 @@
-# /kaggle/working/araa/ARAA-Net/datasets.py (FINAL VERSION)
+# /kaggle/working/ARAA-Net/datasets.py (FINAL VERSION WITH CENTERAMPLIFICATION)
 
 import os
 import torch.utils.data as data
@@ -10,28 +10,65 @@ from torchvision import transforms
 import custom_transforms as tr 
 
 def make_dataset(root):
-    # This function is fine as-is.
-    mask_path = os.path.join(root, 'GT')
+    # This function needs to be robust to your dataset's actual structure.
+    # Assuming images are directly in 'root' and labels are in 'root_labels'
+    # or a 'GT' subdirectory.
+    
     image_path = root
-    mask_path = root + '_labels'
-    img_list = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.endswith('.jpg')]
-    return [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_list]
+    
+    # Prioritize 'GT' folder if it exists, otherwise use '_labels' convention
+    if os.path.exists(os.path.join(root, 'GT')):
+        mask_path = os.path.join(root, 'GT')
+    elif os.path.exists(root + '_labels'): # Check for the root_labels convention
+        mask_path = root + '_labels'
+    else:
+        # Fallback or raise error if neither expected label path exists
+        raise FileNotFoundError(f"Could not find label directory for {root}. Looked in '{os.path.join(root, 'GT')}' and '{root + '_labels'}'.")
 
-# In datasets.py, replace the entire ImageFolder class with this:
+
+    # Filter for common image extensions
+    img_list = []
+    for f in os.listdir(image_path):
+        if f.lower().endswith(('.png', '.jpg', '.jpeg')): # Add other image formats if needed
+            img_list.append(os.path.splitext(f)[0])
+
+    # Construct (image_path, mask_path) tuples
+    dataset_items = []
+    for img_name in img_list:
+        img_full_path = os.path.join(image_path, img_name + '.jpg') # Assuming .jpg
+        mask_full_path = os.path.join(mask_path, img_name + '.png') # Assuming .png labels
+        
+        if os.path.exists(img_full_path) and os.path.exists(mask_full_path):
+            dataset_items.append((img_full_path, mask_full_path))
+        else:
+            print(f"Warning: Missing image or mask for {img_name}. Skipping.")
+
+    if not dataset_items:
+        raise RuntimeError(f"Found 0 images in {root} with corresponding labels. Please check dataset path and file extensions.")
+        
+    return dataset_items
+
 
 class ImageFolder(data.Dataset):
     def __init__(self, root, args, split='train'):
         self.root = root
         self.imgs = make_dataset(root)
         self.split = split
-        
-        # --- THIS IS THE FIX ---
-        # The transforms now correctly use the arguments passed from the training script
+        self.args = args # Store args to pass to CenterAmplification if needed
+
+        # Define CenterAmplification parameters from args
+        min_lesion_area = args.min_lesion_area_pixels
+        expansion_factor = args.expansion_factor
+        min_bbox_h = args.min_bbox_h
+        min_bbox_w = args.min_bbox_w
+
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
-                tr.RandomHorizontalFlip(),
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                # Use the scale_w (or a dedicated crop_size arg) for the random crop
+                tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
+                                       expansion_factor=expansion_factor,
+                                       min_bbox_size=(min_bbox_h, min_bbox_w)),
+                tr.RandomHorizontalFlip(),
                 tr.RandomCrop((args.scale_h, args.scale_w)), 
                 tr.RandomGaussianBlur(),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
@@ -59,10 +96,11 @@ class ImageFolder(data.Dataset):
         return transformed_sample
     
     def convert_label(self, label):
-        label_rgb = np.array(label)
-        label_index = np.full(label_rgb.shape[:2], 0, dtype='uint8')
-        for k in range(1, 30):
-            label_index[label_rgb == k] = 1
+        # Original logic: assume label has values 1-29 are lesions, 0 is background.
+        # This converts any non-zero pixel in the label to 1 (lesion), 0 remains background.
+        label_np = np.array(label, dtype=np.uint8)
+        label_index = np.zeros_like(label_np, dtype=np.uint8)
+        label_index[label_np > 0] = 1 # Map all lesion types to a single 'lesion' class
         return Image.fromarray(label_index, mode='P')
 
     def __len__(self):

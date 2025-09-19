@@ -19,9 +19,9 @@ class FixedResize(object):
 
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        # Use Image.LANCZOS for higher quality resizing for images, but BILINEAR is often fine too.
+        # Use Image.BILINEAR for images, Image.NEAREST for labels to preserve integrity
         img = img.resize((self.w, self.h), Image.BILINEAR) 
-        label = label.resize((self.w, self.h), Image.NEAREST) # For labels, use NEAREST
+        label = label.resize((self.w, self.h), Image.NEAREST)
         return {'image': img, 'label': label}
 
 class RandomCrop(object):
@@ -32,10 +32,17 @@ class RandomCrop(object):
         img, label = sample['image'], sample['label']
         w, h = img.size
         th, tw = self.size
-        if w == tw and h == th:
+        
+        if w == tw and h == th: # No cropping needed if already target size
             return {'image': img, 'label': label}
         
-        # Simple random crop, not lesion-aware to keep it generic
+        # Ensure crop dimensions are valid
+        if h < th or w < tw:
+            # If image is smaller than crop size, resize it to crop size and return
+            img = img.resize((tw, th), Image.BILINEAR)
+            label = label.resize((tw, th), Image.NEAREST)
+            return {'image': img, 'label': label}
+
         i = np.random.randint(0, h - th + 1)
         j = np.random.randint(0, w - tw + 1)
         
@@ -75,8 +82,8 @@ class ToTensor(object):
 class CenterAmplification(object):
     """
     Applies center-based amplification to small lesions, as described in STS-Net Method 4.
-    Operates on PIL Images. This transform should be applied AFTER FixedResize
-    but BEFORE RandomCrop if RandomCrop is used to ensure consistent image dimensions.
+    Operates on PIL Images. This transform should ideally be applied AFTER FixedResize
+    and BEFORE RandomCrop.
     """
     def __init__(self, min_lesion_area_pixels=576, expansion_factor=1.5, min_bbox_size=(32, 32)):
         self.min_lesion_area_pixels = min_lesion_area_pixels
@@ -106,22 +113,43 @@ class CenterAmplification(object):
             img_w, img_h = img.size # Current image size (after FixedResize)
             
             # Calculate new crop coordinates, ensuring they stay within image bounds
-            cx1 = max(0, center_x - expanded_w // 2)
-            cy1 = max(0, center_y - expanded_h // 2)
-            cx2 = min(img_w, center_x + expanded_w // 2 + (expanded_w % 2))
-            cy2 = min(img_h, center_y + expanded_h // 2 + (expanded_h % 2))
+            # Ensure the crop doesn't go negative or beyond image size
+            cx1_raw = center_x - expanded_w // 2
+            cy1_raw = center_y - expanded_h // 2
+            
+            cx2_raw = center_x + (expanded_w // 2) + (expanded_w % 2) # Account for odd/even expanded_w
+            cy2_raw = center_y + (expanded_h // 2) + (expanded_h % 2) # Account for odd/even expanded_h
 
-            # Adjust if the calculated box is smaller than desired due to image boundaries
-            if cx2 - cx1 < expanded_w:
-                if cx1 == 0: cx2 = min(img_w, cx1 + expanded_w)
-                else: cx1 = max(0, cx2 - expanded_w)
+            # Adjust crop box to fit within image boundaries
+            crop_x_min = max(0, cx1_raw)
+            crop_y_min = max(0, cy1_raw)
+            crop_x_max = min(img_w, cx2_raw)
+            crop_y_max = min(img_h, cy2_raw)
+
+            # Ensure the cropped box still has the target expanded_w/h, adjusting if clamped
+            current_crop_w = crop_x_max - crop_x_min
+            current_crop_h = crop_y_max - crop_y_min
+
+            if current_crop_w < expanded_w:
+                if crop_x_min == 0:
+                    crop_x_max = min(img_w, crop_x_min + expanded_w)
+                else: # crop_x_max == img_w
+                    crop_x_min = max(0, crop_x_max - expanded_w)
             
-            if cy2 - cy1 < expanded_h:
-                if cy1 == 0: cy2 = min(img_h, cy1 + expanded_h)
-                else: cy1 = max(0, cy2 - expanded_h)
+            if current_crop_h < expanded_h:
+                if crop_y_min == 0:
+                    crop_y_max = min(img_h, crop_y_min + expanded_h)
+                else: # crop_y_max == img_h
+                    crop_y_min = max(0, crop_y_max - expanded_h)
             
-            # Final crop coordinates
-            crop_x_min, crop_y_min, crop_x_max, crop_y_max = cx1, cy1, cx2, cy2
+            # Final check to ensure minimum size after boundary adjustments
+            crop_x_max = max(crop_x_min + self.min_bbox_size[1], crop_x_max)
+            crop_y_max = max(crop_y_min + self.min_bbox_size[0], crop_y_max)
+            crop_x_max = min(img_w, crop_x_max)
+            crop_y_max = min(img_h, crop_y_max)
+            crop_x_min = max(0, crop_x_max - self.min_bbox_size[1])
+            crop_y_min = max(0, crop_y_max - self.min_bbox_size[0])
+
 
             # Perform crop
             img_cropped = img.crop((crop_x_min, crop_y_min, crop_x_max, crop_y_max))

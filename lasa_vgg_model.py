@@ -21,11 +21,11 @@ class LASA_Unet(nn.Module):
             vgg_features = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).features
             
             # Encoder blocks and their output channels
-            self.encoder1 = vgg_features[:6]   # Output channels: 64
-            self.encoder2 = vgg_features[6:13]  # Output channels: 128
-            self.encoder3 = vgg_features[13:23] # Output channels: 256
-            self.encoder4 = vgg_features[23:33] # Output channels: 512
-            self.bottleneck_layer = vgg_features[33:43] # Output channels: 512
+            self.encoder1 = vgg_features[:6]   # Output channels: 64 (conv1_2)
+            self.encoder2 = vgg_features[6:13]  # Output channels: 128 (conv2_2)
+            self.encoder3 = vgg_features[13:23] # Output channels: 256 (conv3_3)
+            self.encoder4 = vgg_features[23:33] # Output channels: 512 (conv4_3)
+            self.bottleneck_layer = vgg_features[33:43] # Output channels: 512 (conv5_3)
 
             self.e1_channels = 64
             self.e2_channels = 128
@@ -37,12 +37,13 @@ class LASA_Unet(nn.Module):
             # ResNet50
             resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
             
-            # Encoder blocks and their output channels for U-Net style
-            self.encoder1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool) # 64 channels after maxpool
-            self.encoder2 = resnet.layer1 # 256 channels
-            self.encoder3 = resnet.layer2 # 512 channels
-            self.encoder4 = resnet.layer3 # 1024 channels
-            self.bottleneck_layer = resnet.layer4 # 2048 channels
+            # Encoder blocks for U-Net style skip connections
+            # encoder1: conv1 + maxpool (output 64 channels, 1/4 spatial resolution)
+            self.encoder1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool) 
+            self.encoder2 = resnet.layer1 # Output 256 channels (1/4 spatial resolution)
+            self.encoder3 = resnet.layer2 # Output 512 channels (1/8 spatial resolution)
+            self.encoder4 = resnet.layer3 # Output 1024 channels (1/16 spatial resolution)
+            self.bottleneck_layer = resnet.layer4 # Output 2048 channels (1/32 spatial resolution)
 
             self.e1_channels = 64
             self.e2_channels = 256
@@ -58,21 +59,21 @@ class LASA_Unet(nn.Module):
 
         # --- 3. Define Decoder Blocks ---
         # These blocks will upsample the features and merge them with skip connections.
-        # Deep supervision auxiliary heads are also added
+        # Auxiliary segmentation heads are also added for deep supervision.
         
-        # d4: upsampled bottleneck + LASA-enhanced e4
+        # Decoder 4: upsample bottleneck + LASA-enhanced e4
         self.decoder4 = self._decoder_block(self.bottleneck_channels + self.e4_channels, self.e4_channels)
         self.aux_conv_d4 = nn.Conv2d(self.e4_channels, num_classes, kernel_size=1)
 
-        # d3: upsampled d4_out + e3
+        # Decoder 3: upsample d4_out + e3
         self.decoder3 = self._decoder_block(self.e4_channels + self.e3_channels, self.e3_channels)
         self.aux_conv_d3 = nn.Conv2d(self.e3_channels, num_classes, kernel_size=1)
 
-        # d2: upsampled d3_out + e2
+        # Decoder 2: upsample d3_out + e2
         self.decoder2 = self._decoder_block(self.e3_channels + self.e2_channels, self.e2_channels)
         self.aux_conv_d2 = nn.Conv2d(self.e2_channels, num_classes, kernel_size=1)
 
-        # d1: upsampled d2_out + e1
+        # Decoder 1: upsample d2_out + e1
         self.decoder1 = self._decoder_block(self.e2_channels + self.e1_channels, self.e1_channels)
         
         # --- 4. Final Output Convolution ---
@@ -103,33 +104,38 @@ class LASA_Unet(nn.Module):
         bottleneck = self.bottleneck_layer(e4_lasa)
 
         # --- Decoder Path with Skip Connections and Deep Supervision ---
-        aux_outputs = []
+        aux_outputs = [] # To collect intermediate predictions
 
         # Decoder 4
-        d4 = F.interpolate(bottleneck, scale_factor=2, mode='bilinear', align_corners=True)
+        # Upsample bottleneck and concatenate with e4_lasa
+        d4 = F.interpolate(bottleneck, size=e4_lasa.shape[2:], mode='bilinear', align_corners=True)
         d4 = torch.cat([d4, e4_lasa], dim=1) # Skip connection from LASA-enhanced e4
         d4_out = self.decoder4(d4)
         aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=input_size, mode='bilinear', align_corners=True))
         
         # Decoder 3
-        d3 = F.interpolate(d4_out, scale_factor=2, mode='bilinear', align_corners=True)
+        # Upsample d4_out and concatenate with e3
+        d3 = F.interpolate(d4_out, size=e3.shape[2:], mode='bilinear', align_corners=True)
         d3 = torch.cat([d3, e3], dim=1)
         d3_out = self.decoder3(d3)
         aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=input_size, mode='bilinear', align_corners=True))
 
         # Decoder 2
-        d2 = F.interpolate(d3_out, scale_factor=2, mode='bilinear', align_corners=True)
+        # Upsample d3_out and concatenate with e2
+        d2 = F.interpolate(d3_out, size=e2.shape[2:], mode='bilinear', align_corners=True)
         d2 = torch.cat([d2, e2], dim=1)
         d2_out = self.decoder2(d2)
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=input_size, mode='bilinear', align_corners=True))
 
         # Decoder 1 (Final segmentation head)
-        d1 = F.interpolate(d2_out, scale_factor=2, mode='bilinear', align_corners=True)
+        # Upsample d2_out and concatenate with e1
+        d1 = F.interpolate(d2_out, size=e1.shape[2:], mode='bilinear', align_corners=True)
         d1 = torch.cat([d1, e1], dim=1)
         d1_out = self.decoder1(d1)
         final_output = self.final_conv(d1_out)
         
+        # Append final output to aux_outputs and return as a tuple
         return tuple(aux_outputs + [final_output])
 
-# Rename the model to reflect backbone choice flexibility
-LASA_VGG_Unet = LASA_Unet # Keep alias for backward compatibility if needed, or remove it
+# Alias for backward compatibility if the original model name is referenced elsewhere
+LASA_VGG_Unet = LASA_Unet 
