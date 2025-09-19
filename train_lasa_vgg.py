@@ -5,7 +5,6 @@ import sys
 import logging
 import argparse
 import torch
-import numpy as np
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -173,7 +172,7 @@ def main():
         try:
             ckpt = torch.load(latest_checkpoint_path, map_location=device)
             net.load_state_dict(ckpt['model_state_dict'])
-            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict']) # Corrected: Pass the state dict to load
             start_epoch = ckpt['epoch'] + 1
             best_mIoU = ckpt.get('best_mIoU', 0.0)
             patience_counter = ckpt.get('patience_counter', 0)
@@ -218,7 +217,7 @@ def main():
         torch.save({
             'epoch': epoch,
             'model_state_dict': net.state_dict(),
-            'optimizer_state_dict': optimizer.load_state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(), # FIXED THIS LINE!
             'best_mIoU': best_mIoU,
             'patience_counter': patience_counter
         }, latest_checkpoint_path)
