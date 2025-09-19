@@ -38,15 +38,15 @@ class LASA(nn.Module):
             )
 
             # 2. Channel attention generation for each group
-            # This follows an ECA-like approach: Global Average Pool -> 1D Conv -> Sigmoid
+            # This follows an ECA-like approach: Global Average Pool -> Squeeze -> 1D Conv -> Sigmoid
             # The kernel size of the 1D conv is determined by L from L_list.
             kernel_size_1d = L 
             if kernel_size_1d % 2 == 0: kernel_size_1d += 1 # Ensure odd kernel size for symmetric padding
 
             self.channel_attention_fcs.append(
                 nn.Sequential(
-                    nn.AdaptiveAvgPool2d(1), # (B, C_g, 1, 1)
-                    # Squeeze and unsqueeze for 1D convolution
+                    nn.AdaptiveAvgPool2d(1), # Output: (B, C_g, 1, 1)
+                    nn.Flatten(start_dim=2), # NEW: Squeeze H and W to create (B, C_g, 1) for Conv1d
                     nn.Conv1d(self.group_channels, self.group_channels, kernel_size=kernel_size_1d, 
                               padding=(kernel_size_1d - 1) // 2, bias=False),
                     nn.BatchNorm1d(self.group_channels),
@@ -78,10 +78,11 @@ class LASA(nn.Module):
             local_context_features = self.local_context_extractors[i](x_group) # (B, C_g, H, W)
             
             # 2. Generate channel attention weights from the local context features
-            # Pass local_context_features to the 1D conv based attention.
-            # squeeze(-1).squeeze(-1) converts (B, C_g, 1, 1) to (B, C_g) for Conv1d input
-            channel_weights_1d = self.channel_attention_fcs[i](local_context_features).squeeze(-1).squeeze(-1) # (B, C_g)
-            channel_weights = channel_weights_1d.unsqueeze(-1).unsqueeze(-1) # Reshape back to (B, C_g, 1, 1)
+            # channel_attention_fcs[i] now produces (B, C_g, 1) from (B, C_g, H, W) -> AvgPool -> Flatten -> Conv1d
+            channel_weights_1d = self.channel_attention_fcs[i](local_context_features) # (B, C_g, 1)
+            
+            # Reshape back to (B, C_g, 1, 1) for 2D element-wise multiplication
+            channel_weights = channel_weights_1d.unsqueeze(-1) # (B, C_g, 1, 1)
             
             # Apply sigmoid to get attention map (0-1)
             group_attention_map = self.sigmoid(channel_weights)
