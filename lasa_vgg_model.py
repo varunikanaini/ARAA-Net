@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
-from lasa import LASA # <<< NOW IMPORTS THE RE-IMPLEMENTED LASA MODULE
+from lasa import LASA 
 
-class LASA_Unet(nn.Module): # Renamed for general backbone compatibility
+class LASA_Unet(nn.Module):
     """
     A standalone segmentation model using a VGG16 or ResNet50 backbone,
     a re-implemented LASA module for feature enhancement, and a U-Net style decoder with deep supervision.
@@ -35,11 +35,11 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility
             resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
             
             # ResNet encoder stages (blocks of layers)
-            self.encoder1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool) # Output 64 channels (1/4 spatial)
-            self.encoder2 = resnet.layer1 # Output 256 channels (1/4 spatial)
-            self.encoder3 = resnet.layer2 # Output 512 channels (1/8 spatial)
-            self.encoder4 = resnet.layer3 # Output 1024 channels (1/16 spatial)
-            self.bottleneck_layer = resnet.layer4 # Output 2048 channels (1/32 spatial)
+            self.encoder1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool) 
+            self.encoder2 = resnet.layer1 # Output 256 channels
+            self.encoder3 = resnet.layer2 # Output 512 channels
+            self.encoder4 = resnet.layer3 # Output 1024 channels
+            self.bottleneck_layer = resnet.layer4 # Output 2048 channels
 
             self.e1_channels = 64
             self.e2_channels = 256
@@ -50,23 +50,18 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility
             raise ValueError(f"Unsupported backbone: {backbone_name}")
 
         # --- 2. Insert the LASA Module ---
-        # LASA will enhance features from the 4th encoder block (e4)
-        self.lasa_module = LASA(in_channels=self.e4_channels) # <<< CHANGED: Renamed instance for clarity
+        self.lasa_module = LASA(in_channels=self.e4_channels) 
 
         # --- 3. Define Decoder Blocks and Auxiliary Convs for Deep Supervision ---
-        # Decoder 4: upsample bottleneck + LASA-enhanced e4
         self.decoder4 = self._decoder_block(self.bottleneck_channels + self.e4_channels, self.e4_channels)
         self.aux_conv_d4 = nn.Conv2d(self.e4_channels, num_classes, kernel_size=1)
 
-        # Decoder 3: upsample d4_out + e3
         self.decoder3 = self._decoder_block(self.e4_channels + self.e3_channels, self.e3_channels)
         self.aux_conv_d3 = nn.Conv2d(self.e3_channels, num_classes, kernel_size=1)
 
-        # Decoder 2: upsample d3_out + e2
         self.decoder2 = self._decoder_block(self.e3_channels + self.e2_channels, self.e2_channels)
         self.aux_conv_d2 = nn.Conv2d(self.e2_channels, num_classes, kernel_size=1)
 
-        # Decoder 1: upsample d2_out + e1
         self.decoder1 = self._decoder_block(self.e2_channels + self.e1_channels, self.e1_channels)
         
         # --- 4. Final Output Convolution ---
@@ -92,7 +87,7 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility
         e4 = self.encoder4(e3) 
 
         # Apply LASA enhancement
-        e4_enhanced = self.lasa_module(e4) # <<< CHANGED
+        e4_enhanced = self.lasa_module(e4)
 
         bottleneck = self.bottleneck_layer(e4_enhanced)
 
@@ -118,7 +113,8 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=input_size, mode='bilinear', align_corners=True))
 
         # Decoder 1 (Final segmentation head)
-        d1 = F.interpolate(d2_out, size=e1.shape[2:], mode='bilinear', align_corners=True)
+        # FIX: Interpolate to the original input_size, not e1.shape[2:]
+        d1 = F.interpolate(d2_out, size=input_size, mode='bilinear', align_corners=True) # <<< FIXED THIS LINE
         d1 = torch.cat([d1, e1], dim=1)
         d1_out = self.decoder1(d1)
         final_output = self.final_conv(d1_out)
