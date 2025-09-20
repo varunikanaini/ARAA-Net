@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (FINAL VERSION with DETAILED METRICS)
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py (FINAL VERSION with DETAILED METRICS - CKPT_ROOT Fixed)
 import sys
 import os
 import torch
@@ -15,10 +15,12 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_Unet # Use the generalized LASA_Unet
+from lasa_vgg_model import LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
-from misc import check_mkdir, AvgMeter # Import AvgMeter for loss logging in test
+from misc import check_mkdir, AvgMeter
+from config import DATA_ROOT, CKPT_ROOT # <<< FIXED: Import CKPT_ROOT from config
+
 # Import loss functions for consistent loss calculation if logging loss during test
 from train_lasa_vgg import FocalLoss, DiceLoss 
 
@@ -129,7 +131,6 @@ def main():
                 combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + \
                                          (args.dice_loss_weight * current_dice_loss)
                 
-                # Only add to total_loss if it's not None (e.g. if you want to skip aux losses for test metrics)
                 # For consistency with train, sum all weighted losses.
                 total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
             

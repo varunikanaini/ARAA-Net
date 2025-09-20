@@ -20,7 +20,6 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility (can be
             vgg_features = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).features
             
             # Encoder blocks and their output channels for U-Net style
-            # These correspond to stages before pooling layers (or specific conv layers)
             self.encoder1 = vgg_features[:6]   # Output channels: 64 (after conv1_2_bn)
             self.encoder2 = vgg_features[6:13]  # Output channels: 128 (after conv2_2_bn)
             self.encoder3 = vgg_features[13:23] # Output channels: 256 (after conv3_3_bn)
@@ -33,16 +32,10 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility (can be
             self.e4_channels = 512
             self.bottleneck_channels = 512
 
-            # Define spatial scale factors for VGG encoder stages relative to input:
-            # Input -> e1 (1/2) -> e2 (1/4) -> e3 (1/8) -> e4 (1/16) -> bottleneck (1/32)
-            # This is important for correct upsampling to matching sizes.
-            self.e_spatial_scales = {'e1': 2, 'e2': 4, 'e3': 8, 'e4': 16, 'bottleneck': 32}
-
         elif backbone_name == 'resnet50':
             resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
             
             # ResNet encoder stages for U-Net style skip connections
-            # encoder1: conv1 + bn1 + relu + maxpool (output 64 channels, spatial 1/4)
             self.encoder1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool) 
             self.encoder2 = resnet.layer1 # Output 256 channels, spatial 1/4
             self.encoder3 = resnet.layer2 # Output 512 channels, spatial 1/8
@@ -55,10 +48,6 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility (can be
             self.e4_channels = 1024
             self.bottleneck_channels = 2048
             
-            # Define spatial scale factors for ResNet encoder stages relative to input:
-            # Input -> e1 (1/4) -> e2 (1/4) -> e3 (1/8) -> e4 (1/16) -> bottleneck (1/32)
-            self.e_spatial_scales = {'e1': 4, 'e2': 4, 'e3': 8, 'e4': 16, 'bottleneck': 32}
-
         else:
             raise ValueError(f"Unsupported backbone: {backbone_name}")
 
@@ -100,61 +89,53 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility (can be
         input_h, input_w = x.shape[2:] 
 
         # --- Encoder Path ---
-        e1 = self.encoder1(x) # (B, e1_C, H/scale_e1, W/scale_e1)
-        e2 = self.encoder2(e1) # (B, e2_C, H/scale_e2, W/scale_e2)
-        e3 = self.encoder3(e2) # (B, e3_C, H/scale_e3, W/scale_e3)
-        e4 = self.encoder4(e3) # (B, e4_C, H/scale_e4, W/scale_e4)
+        e1 = self.encoder1(x) 
+        e2 = self.encoder2(e1) 
+        e3 = self.encoder3(e2) 
+        e4 = self.encoder4(e3) 
 
         # Apply LASA enhancement to e4
         e4_enhanced = self.lasa_module(e4)
         
         # Bottleneck
-        bottleneck = self.bottleneck_layer(e4_enhanced) # (B, B_C, H/scale_bottleneck, W/scale_bottleneck)
+        bottleneck = self.bottleneck_layer(e4_enhanced) 
 
         # --- Decoder Path with Skip Connections and True Deep Supervision ---
         aux_outputs = [] 
 
         # Decoder 4 (highest stride, lowest resolution decoder stage)
-        # Upsample bottleneck to match e4_enhanced spatial size
         d4_interp_size = e4_enhanced.shape[2:] 
         d4 = F.interpolate(bottleneck, size=d4_interp_size, mode='bilinear', align_corners=True)
-        d4 = torch.cat([d4, e4_enhanced], dim=1) # Skip connection from LASA-enhanced e4
-        d4_out = self.decoder4(d4) # Output of d4 block
+        d4 = torch.cat([d4, e4_enhanced], dim=1) 
+        d4_out = self.decoder4(d4) 
         aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
         
         # Decoder 3
-        # Upsample d4_out to match e3 spatial size
         d3_interp_size = e3.shape[2:]
         d3 = F.interpolate(d4_out, size=d3_interp_size, mode='bilinear', align_corners=True)
-        d3 = torch.cat([d3, e3], dim=1) # Skip connection from e3
-        d3_out = self.decoder3(d3) # Output of d3 block
+        d3 = torch.cat([d3, e3], dim=1) 
+        d3_out = self.decoder3(d3) 
         aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
         # Decoder 2
-        # Upsample d3_out to match e2 spatial size
         d2_interp_size = e2.shape[2:]
         d2 = F.interpolate(d3_out, size=d2_interp_size, mode='bilinear', align_corners=True)
-        d2 = torch.cat([d2, e2], dim=1) # Skip connection from e2
-        d2_out = self.decoder2(d2) # Output of d2 block
+        d2 = torch.cat([d2, e2], dim=1) 
+        d2_out = self.decoder2(d2) 
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
         # Decoder 1 (Lowest stride, highest resolution decoder stage)
-        # Upsample d2_out to match e1 spatial size
         d1_interp_size = e1.shape[2:]
         d1 = F.interpolate(d2_out, size=d1_interp_size, mode='bilinear', align_corners=True)
-        d1 = torch.cat([d1, e1], dim=1) # Skip connection from e1
-        d1_out = self.decoder1(d1) # Output of d1 block
-        aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True)) # Aux head for d1_out
+        d1 = torch.cat([d1, e1], dim=1) 
+        d1_out = self.decoder1(d1) 
+        aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True)) 
         
         # Final output of the network
-        final_output = self.final_conv(d1_out) # (B, num_classes, H/scale_e1, W/scale_e1)
+        final_output = self.final_conv(d1_out) 
         
-        # Finally, upsample the final_output to the original input size.
         final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
         
-        # The tuple of outputs will now contain 4 auxiliary outputs and 1 final main output.
         return tuple(aux_outputs + [final_output_upsampled])
 
-# Alias for backward compatibility if the original model name is referenced elsewhere
-# (But you should ideally update references to LASA_Unet)
 LASA_VGG_Unet = LASA_Unet 
