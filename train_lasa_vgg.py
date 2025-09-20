@@ -5,7 +5,6 @@ import sys
 import logging
 import argparse
 import torch
-import numpy as np
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
