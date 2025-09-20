@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/lasa.py (REVERTED to ORIGINAL USER CODE, with r_ks shape fix)
+# /kaggle/working/ARAA-Net/lasa.py (REVERTED to ORIGINAL USER CODE, with structural fix for r_ks)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,12 +22,8 @@ class LASA(nn.Module):
 
         self.r_q = nn.Parameter(torch.randn(1, in_channels, 1, 1), requires_grad=True)
         
-        # FIX: Original r_ks was defined as (1, group_channels, 2*L-1, 1, 1)
-        # This parameter is meant to be added to k_axial which is (B, group_channels, 2L-1, H, W)
-        # For broadcasting to work correctly and add a *positional bias* across the 2L-1 dimension,
-        # its shape should be (1, 1, 2*L-1, 1, 1) or (1, group_channels, 2*L-1, 1, 1) if per-channel.
-        # Let's use (1, group_channels, 2*L-1, 1, 1) as in your original code, which is valid for broadcasting.
-        # The previous error was not in this definition but in a different `LASA` re-implementation.
+        # FIX: Ensure r_ks shape for broadcast compatibility with k_axial (B, C_g, 2L-1, H, W)
+        # Your original (1, group_channels, 2*L-1, 1, 1) is indeed correct for broadcasting.
         self.r_ks = nn.ParameterList([nn.Parameter(torch.randn(1, self.group_channels, 2 * L - 1, 1, 1), requires_grad=True) for L in L_list])
 
         self.fusion_conv = nn.Sequential(
@@ -51,12 +47,13 @@ class LASA(nn.Module):
             pad = (L - 1) // 2
 
             # The original `F.unfold` and `view` to create `k_unfolded` with L, L spatial dimensions:
-            k_unfolded = F.unfold(k_unpadded, kernel_size=(L, L), padding=pad) # (B, C_g * L * L, H * W)
-            k_unfolded = k_unfolded.view(B, self.group_channels, L, L, H, W) # (B, C_g, L, L, H, W)
+            # (B, C_g * L * L, H * W) -> (B, C_g, L, L, H, W)
+            k_unfolded = F.unfold(k_unpadded, kernel_size=(L, L), padding=pad)
+            k_unfolded = k_unfolded.view(B, self.group_channels, L, L, H, W)
 
             # Original extraction of horizontal and vertical slices from the L x L window:
-            k_h = k_unfolded[:, :, :, pad, :, :] # (B, C_g, L, H, W) - horizontal line at center row
-            k_w = k_unfolded[:, :, pad, :, :, :] # (B, C_g, L, H, W) - vertical line at center column
+            k_h = k_unfolded[:, :, :, pad, :, :] # (B, C_g, L, H, W)
+            k_w = k_unfolded[:, :, pad, :, :, :] # (B, C_g, L, H, W)
 
             # Original splitting and concatenation to form k_axial (2L-1 elements in dim=2):
             k_w_pre, _, k_w_post = k_w.split([pad, 1, L - pad - 1], dim=2)
@@ -66,11 +63,7 @@ class LASA(nn.Module):
             k_axial = k_axial + self.r_ks[i] # r_ks[i] is (1, C_g, 2L-1, 1, 1), broadcasts correctly
 
             # Original einsum for batch dot-product attention:
-            # 'bchw,bcrhw->brhw' means:
-            # - For each item in batch (b), height (h), and width (w)...
-            # - Multiply query (bchw) with key (bcrhw)
-            # - Sum the result over the channel dimension (c)
-            # - The output will have dimensions for batch (b), axial position (r), height (h), and width (w)
+            # 'bchw,bcrhw->brhw' means: sum over `c` (group_channels)
             energy = torch.einsum('bchw,bcrhw->brhw', q, k_axial) # (B, 2L-1, H, W)
 
             # Sum over the 'axial' (r) dimension to get a single energy map per pixel

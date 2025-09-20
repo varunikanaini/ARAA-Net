@@ -1,11 +1,10 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for FPN, Deep Supervision, and --test-only)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for True Deep Supervision and --test-only)
 import os
 import time
 import sys
 import logging
 import argparse
 import torch
-import numpy as np
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -52,7 +51,7 @@ class FocalLoss(nn.Module):
 # ===================================================================
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train LASA-Unet Model with FPN, Deep Supervision and Amplification')
+    parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Name of the dataset')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to use')
     parser.add_argument('--epochs', type=int, default=100)
@@ -76,7 +75,7 @@ def get_args():
     parser.add_argument('--min-bbox-w', type=int, default=32, 
                         help='Minimum width of the expanded bounding box in pixels for CenterAmplification')
 
-    # NEW: Test-only flag
+    # Test-only flag
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
 
 
@@ -121,7 +120,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, deep_supervision_wei
     _, _, class_iou, _, _ = confmat.compute()
     mIoU = class_iou.mean().item()
     logging.info(f"--- {mode} mIoU: {mIoU:.4f} | {mode} Loss: {loss_recorder.avg:.4f} ---")
-    if mode == "Validating":
+    if mode == "Validating": # Only set to train if we are in training loop
         net.train()
     return mIoU
 
@@ -133,7 +132,7 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    exp_name = f"{args.backbone}_LASA_Unet_FPN_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" # <<< CHANGED exp_name
+    exp_name = f"{args.backbone}_LASA_Unet_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" # <<< CHANGED exp_name (DS for Deep Supervision)
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
@@ -143,10 +142,8 @@ def main():
     dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
     train_path = os.path.join(dataset_path, 'train')
     val_path = os.path.join(dataset_path, 'val')
-    # If you have a separate 'test' folder, define it here:
-    # test_path = os.path.join(dataset_path, 'test') 
-
-    # Instantiate the model with chosen backbone
+    
+    # --- Instantiate the model ---
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
     focal_loss_fn = FocalLoss(alpha=0.25, gamma=2).to(device)
@@ -166,16 +163,14 @@ def main():
             logging.error(f"Error loading model from checkpoint: {e}")
             sys.exit(1)
 
-        # For test-only, load the validation set for evaluation (assuming val is also test)
-        # If you have a dedicated 'test' folder, change 'val_path' to 'test_path' and split='test'
-        test_set_for_eval = ImageFolder(val_path, args, split='val') # Renamed variable for clarity
+        test_set_for_eval = ImageFolder(val_path, args, split='val') 
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
         test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, args.deep_supervision_weights, mode="Testing")
         logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
         return # Exit main function after testing
 
-    # --- Training Mode (existing logic) ---
+    # --- Training Mode ---
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
@@ -194,7 +189,7 @@ def main():
         except Exception as e:
             logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
 
-    train_set = ImageFolder(train_path, args, split='train') # Needs to be defined here if not in test_only
+    train_set = ImageFolder(train_path, args, split='train') 
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
     test_set = ImageFolder(val_path, args, split='val') # This is for validation during training
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
