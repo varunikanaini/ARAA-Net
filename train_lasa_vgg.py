@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated to use new LASA and Deep Supervision, with --test-only)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for FPN, Deep Supervision, and --test-only)
 import os
 import time
 import sys
@@ -52,7 +52,7 @@ class FocalLoss(nn.Module):
 # ===================================================================
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
+    parser = argparse.ArgumentParser(description='Train LASA-Unet Model with FPN, Deep Supervision and Amplification')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Name of the dataset')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to use')
     parser.add_argument('--epochs', type=int, default=100)
@@ -121,7 +121,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, deep_supervision_wei
     _, _, class_iou, _, _ = confmat.compute()
     mIoU = class_iou.mean().item()
     logging.info(f"--- {mode} mIoU: {mIoU:.4f} | {mode} Loss: {loss_recorder.avg:.4f} ---")
-    if mode == "Validating": # Only set to train if we are in training loop
+    if mode == "Validating":
         net.train()
     return mIoU
 
@@ -133,12 +133,12 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    exp_name = f"{args.backbone}_LASA_Unet_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" 
+    exp_name = f"{args.backbone}_LASA_Unet_FPN_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" # <<< CHANGED exp_name
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
 
-    logging.info(f"Starting operation for '{exp_name}' with arguments: {args}") # Changed log message
+    logging.info(f"Starting operation for '{exp_name}' with arguments: {args}")
 
     dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
     train_path = os.path.join(dataset_path, 'train')
@@ -157,7 +157,7 @@ def main():
         best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
         if not os.path.exists(best_checkpoint_path):
             logging.error(f"Best checkpoint not found at {best_checkpoint_path}. Please train a model first or specify correct path.")
-            sys.exit(1) # Exit if no model to test
+            sys.exit(1)
 
         try:
             net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
@@ -168,10 +168,10 @@ def main():
 
         # For test-only, load the validation set for evaluation (assuming val is also test)
         # If you have a dedicated 'test' folder, change 'val_path' to 'test_path' and split='test'
-        test_set = ImageFolder(val_path, args, split='val') 
-        test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
+        test_set_for_eval = ImageFolder(val_path, args, split='val') # Renamed variable for clarity
+        test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
-        test_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, args.deep_supervision_weights, mode="Testing")
+        test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, args.deep_supervision_weights, mode="Testing")
         logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
         return # Exit main function after testing
 

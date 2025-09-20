@@ -46,7 +46,6 @@ class ImageFolder(data.Dataset):
         self.split = split
         self.args = args
 
-        # Define CenterAmplification parameters from args
         min_lesion_area = args.min_lesion_area_pixels
         expansion_factor = args.expansion_factor
         min_bbox_h = args.min_bbox_h
