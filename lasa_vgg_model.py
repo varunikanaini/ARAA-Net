@@ -113,9 +113,14 @@ class LASA_Unet(nn.Module):
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=input_size, mode='bilinear', align_corners=True))
 
         # Decoder 1 (Final segmentation head)
-        # FIX: Interpolate to the original input_size, not e1.shape[2:]
-        d1 = F.interpolate(d2_out, size=input_size, mode='bilinear', align_corners=True) # <<< FIXED THIS LINE
-        d1 = torch.cat([d1, e1], dim=1)
+        # d1 is already interpolated to input_size (448x448) from d2_out.
+        d1 = F.interpolate(d2_out, size=input_size, mode='bilinear', align_corners=True) 
+
+        # FIX: e1 (from ResNet's encoder1) is 112x112. It must be upsampled to input_size (448x448)
+        # before concatenation to match d1's spatial dimensions.
+        e1_upsampled = F.interpolate(e1, size=input_size, mode='bilinear', align_corners=True) # <<< NEW LINE
+
+        d1 = torch.cat([d1, e1_upsampled], dim=1) # <<< Use the upsampled e1 here
         d1_out = self.decoder1(d1)
         final_output = self.final_conv(d1_out)
         
