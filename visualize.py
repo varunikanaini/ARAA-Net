@@ -7,6 +7,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import sys
 import logging
+from torchvision import transforms
 
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
@@ -31,6 +32,12 @@ def main():
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
     
+    # Dummy args for ImageFolder to instantiate correctly (CenterAmplification is training-only but args are parsed)
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
+    
     try:
         args = parser.parse_args()
     except SystemExit:
@@ -39,6 +46,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Construct the experiment name to find the checkpoint
+    # This MUST match the naming convention used in train_lasa_vgg.py
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     output_dir = os.path.join(CKPT_ROOT, 'visual_results', exp_name)
     check_mkdir(output_dir)
@@ -67,7 +75,7 @@ def main():
             logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for visualization at '{test_data_path}'.")
             sys.exit(1)
             
-    test_set = ImageFolder(test_data_path, args, split='test') # Still use split='test' for transform consistency
+    test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
 
     if args.image_index >= len(test_set) or args.image_index < 0:
         logging.error(f"❌ ERROR: Image index {args.image_index} is out of bounds. Dataset has {len(test_set)} images.")
@@ -77,8 +85,8 @@ def main():
     image_tensor = sample['image'].unsqueeze(0).to(device)
     label_tensor = sample['label']
     
-    # Ensure 'name' is retrieved correctly, it's a list from ImageFolder
-    image_name = sample['name'][0] if isinstance(sample['name'], list) else sample['name']
+    # Ensure 'name' is retrieved correctly, it's a list from ImageFolder if batch_size > 1, but here batch_size=1
+    image_name = sample['name'] if not isinstance(sample['name'], list) else sample['name'][0]
     logging.info(f"✅ Visualizing image: {image_name} (index {args.image_index})")
 
     with torch.no_grad():
@@ -100,7 +108,7 @@ def main():
     axes[1].imshow(ground_truth_mask, cmap='gray'); axes[1].set_title('Ground Truth Mask'); axes[1].axis('off')
     axes[2].imshow(prediction_mask, cmap='gray'); axes[2].set_title("Model's Prediction"); axes[2].axis('off')
 
-    # Save path includes experiment name and index
+    # Save path includes experiment name and image identifier
     save_path = os.path.join(output_dir, f"visual_result_{image_name}_index_{args.image_index}.png")
     plt.savefig(save_path, bbox_inches='tight')
     logging.info(f"✅ Visualization saved to {save_path}")

@@ -18,9 +18,9 @@ if project_path not in sys.path:
 from lasa_vgg_model import LASA_Unet # Use the generalized LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
-from misc import check_mkdir
-from config import DATA_ROOT, CKPT_ROOT
-from train_lasa_vgg import FocalLoss, DiceLoss # Import loss functions for consistent loss calculation
+from misc import check_mkdir, AvgMeter # Import AvgMeter for loss logging in test
+# Import loss functions for consistent loss calculation if logging loss during test
+from train_lasa_vgg import FocalLoss, DiceLoss 
 
 
 def get_test_args():
@@ -40,6 +40,11 @@ def get_test_args():
     # Dice Loss specific hyperparameters
     parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss component in combined loss.')
 
+    # CenterAmplification args (needed for ImageFolder to instantiate correctly, even if not used in test split)
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
 
     try:
         args = parser.parse_args()
@@ -64,7 +69,7 @@ def main():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # --- Construct the correct experiment name to find the checkpoint ---
-    # Must match the training script's naming convention
+    # This MUST match the naming convention used in train_lasa_vgg.py
     EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir) # Ensure log directory exists
@@ -75,14 +80,17 @@ def main():
 
     # --- Load the 'test' split of the data ---
     dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
-    # Assuming your dataset has a 'test' subdirectory. If not, use 'val' instead.
+    # Assume 'test' split exists. If not, fallback to 'val' and log a warning.
     test_data_path = os.path.join(dataset_path, 'test') 
-
     if not os.path.exists(test_data_path):
-        logging.error(f"❌ ERROR: Test data not found at '{test_data_path}'. Please check dataset structure or specify 'val' split if no 'test' exists.")
-        sys.exit(1)
+        logging.warning(f"Test data not found at '{test_data_path}'. Falling back to 'val' split for testing.")
+        test_data_path = os.path.join(dataset_path, 'val')
+        if not os.path.exists(test_data_path):
+            logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for testing at '{test_data_path}'.")
+            sys.exit(1)
 
-    test_set = ImageFolder(test_data_path, args, split='test')
+
+    test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for correct transforms
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False)
     logging.info(f"Found {len(test_set)} testing images in '{test_data_path}'.")
 
@@ -102,8 +110,7 @@ def main():
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(DEVICE)
     dice_loss_fn = DiceLoss().to(DEVICE)
 
-    # --- Run Evaluation (re-using the evaluate_model function from train_lasa_vgg.py) ---
-    # We copy relevant parts of evaluate_model here or define it separately
+    # --- Run Evaluation ---
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
 
@@ -112,7 +119,7 @@ def main():
             inputs, labels = data['image'].to(DEVICE), data['label'].to(DEVICE)
             
             outputs = net(inputs) 
-            final_pred = outputs[-1] 
+            final_pred = outputs[-1] # The last output is always the final one for evaluation metrics
             
             total_loss = 0
             for i, pred_output in enumerate(outputs):
@@ -122,6 +129,8 @@ def main():
                 combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + \
                                          (args.dice_loss_weight * current_dice_loss)
                 
+                # Only add to total_loss if it's not None (e.g. if you want to skip aux losses for test metrics)
+                # For consistency with train, sum all weighted losses.
                 total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
@@ -147,7 +156,7 @@ def main():
         f"FWIoU           = {fwiou.item():.4f}\n"
         f"Class IoU       = {class_iou.cpu().numpy()}\n" 
         f"Class Accuracy  = {class_acc.cpu().numpy()}\n" 
-        f"Combined Loss (Avg) = {loss_recorder.avg:.4f}\n"
+        f"Combined Loss (Avg) = {loss_recorder.avg:.4f}\n" # Log the test loss
         f"--------------------------------------------------\n"
     )
     logging.info("✅ Final testing completed.")
