@@ -1,11 +1,10 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated to use new LASA and Deep Supervision)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated to use new LASA and Deep Supervision, with --test-only)
 import os
 import time
 import sys
 import logging
 import argparse
 import torch
-import numpy as np
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -17,7 +16,7 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_Unet # The U-Net model with the re-implemented LASA
+from lasa_vgg_model import LASA_Unet 
 from config import DATA_ROOT, CKPT_ROOT 
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
@@ -76,6 +75,9 @@ def get_args():
     parser.add_argument('--min-bbox-w', type=int, default=32, 
                         help='Minimum width of the expanded bounding box in pixels for CenterAmplification')
 
+    # NEW: Test-only flag
+    parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
+
 
     try:
         args = parser.parse_args()
@@ -93,16 +95,19 @@ def setup_logging(log_dir):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-def validate(net, test_loader, device, focal_loss_fn, deep_supervision_weights):
+def evaluate_model(net, data_loader, device, focal_loss_fn, deep_supervision_weights, mode="Validating"):
+    """
+    Evaluates the model on a given data_loader.
+    """
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
     with torch.no_grad():
-        for data in tqdm(test_loader, desc="Validating", leave=False):
+        for data in tqdm(data_loader, desc=mode, leave=False):
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
             outputs = net(inputs) 
-            final_pred = outputs[-1] 
+            final_pred = outputs[-1] # The last output is always the final one for evaluation metrics
             
             total_loss = 0
             for i, pred in enumerate(outputs):
@@ -114,8 +119,9 @@ def validate(net, test_loader, device, focal_loss_fn, deep_supervision_weights):
             
     _, _, class_iou, _, _ = confmat.compute()
     mIoU = class_iou.mean().item()
-    logging.info(f"--- Validation mIoU: {mIoU:.4f} | Validation Loss: {loss_recorder.avg:.4f} ---")
-    net.train()
+    logging.info(f"--- {mode} mIoU: {mIoU:.4f} | {mode} Loss: {loss_recorder.avg:.4f} ---")
+    if mode == "Validating": # Only set to train if we are in training loop
+        net.train()
     return mIoU
 
 def main():
@@ -131,26 +137,50 @@ def main():
     check_mkdir(exp_path)
     setup_logging(exp_path)
 
-    logging.info(f"Starting training for '{exp_name}' with arguments: {args}")
+    logging.info(f"Starting operation for '{exp_name}' with arguments: {args}") # Changed log message
 
     dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
     train_path = os.path.join(dataset_path, 'train')
     val_path = os.path.join(dataset_path, 'val')
+    # If you have a separate 'test' folder, define it here:
+    # test_path = os.path.join(dataset_path, 'test') 
 
-    train_set = ImageFolder(train_path, args, split='train')
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
-    test_set = ImageFolder(val_path, args, split='val')
-    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
-
+    # Instantiate the model with chosen backbone
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
-    optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    
     focal_loss_fn = FocalLoss(alpha=0.25, gamma=2).to(device)
+
+    # --- Test-only Mode ---
+    if args.test_only:
+        logging.info("Running in TEST ONLY mode.")
+        best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
+        if not os.path.exists(best_checkpoint_path):
+            logging.error(f"Best checkpoint not found at {best_checkpoint_path}. Please train a model first or specify correct path.")
+            sys.exit(1) # Exit if no model to test
+
+        try:
+            net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
+            logging.info(f"Loaded model from {best_checkpoint_path}")
+        except Exception as e:
+            logging.error(f"Error loading model from checkpoint: {e}")
+            sys.exit(1)
+
+        # For test-only, load the validation set for evaluation (assuming val is also test)
+        # If you have a dedicated 'test' folder, change 'val_path' to 'test_path' and split='test'
+        test_set = ImageFolder(val_path, args, split='val') 
+        test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
+
+        test_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, args.deep_supervision_weights, mode="Testing")
+        logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
+        return # Exit main function after testing
+
+    # --- Training Mode (existing logic) ---
+    optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     
+    # Load latest checkpoint for resuming training
     if os.path.exists(latest_checkpoint_path):
         try:
             ckpt = torch.load(latest_checkpoint_path, map_location=device)
@@ -161,7 +191,13 @@ def main():
             patience_counter = ckpt.get('patience_counter', 0)
             logging.info(f"Resuming from epoch {start_epoch}, best mIoU was {best_mIoU:.4f}, patience counter: {patience_counter}")
         except Exception as e:
-            logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
+            logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
+
+    train_set = ImageFolder(train_path, args, split='train') # Needs to be defined here if not in test_only
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
+    test_set = ImageFolder(val_path, args, split='val') # This is for validation during training
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
+
 
     for epoch in range(start_epoch, args.epochs):
         net.train()
@@ -183,7 +219,7 @@ def main():
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg)
             
-        current_mIoU = validate(net, test_loader, device, focal_loss_fn, args.deep_supervision_weights)
+        current_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, args.deep_supervision_weights, mode="Validating")
 
         if current_mIoU > best_mIoU:
             best_mIoU = current_mIoU
