@@ -116,28 +116,32 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility (can be
 
         # Decoder 4 (highest stride, lowest resolution decoder stage)
         # Upsample bottleneck to match e4_enhanced spatial size
-        d4 = F.interpolate(bottleneck, size=e4_enhanced.shape[2:], mode='bilinear', align_corners=True)
+        d4_interp_size = e4_enhanced.shape[2:] 
+        d4 = F.interpolate(bottleneck, size=d4_interp_size, mode='bilinear', align_corners=True)
         d4 = torch.cat([d4, e4_enhanced], dim=1) # Skip connection from LASA-enhanced e4
         d4_out = self.decoder4(d4) # Output of d4 block
         aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
         
         # Decoder 3
         # Upsample d4_out to match e3 spatial size
-        d3 = F.interpolate(d4_out, size=e3.shape[2:], mode='bilinear', align_corners=True)
+        d3_interp_size = e3.shape[2:]
+        d3 = F.interpolate(d4_out, size=d3_interp_size, mode='bilinear', align_corners=True)
         d3 = torch.cat([d3, e3], dim=1) # Skip connection from e3
         d3_out = self.decoder3(d3) # Output of d3 block
         aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
         # Decoder 2
         # Upsample d3_out to match e2 spatial size
-        d2 = F.interpolate(d3_out, size=e2.shape[2:], mode='bilinear', align_corners=True)
+        d2_interp_size = e2.shape[2:]
+        d2 = F.interpolate(d3_out, size=d2_interp_size, mode='bilinear', align_corners=True)
         d2 = torch.cat([d2, e2], dim=1) # Skip connection from e2
         d2_out = self.decoder2(d2) # Output of d2 block
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
         # Decoder 1 (Lowest stride, highest resolution decoder stage)
         # Upsample d2_out to match e1 spatial size
-        d1 = F.interpolate(d2_out, size=e1.shape[2:], mode='bilinear', align_corners=True)
+        d1_interp_size = e1.shape[2:]
+        d1 = F.interpolate(d2_out, size=d1_interp_size, mode='bilinear', align_corners=True)
         d1 = torch.cat([d1, e1], dim=1) # Skip connection from e1
         d1_out = self.decoder1(d1) # Output of d1 block
         aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True)) # Aux head for d1_out

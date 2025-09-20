@@ -1,11 +1,10 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for True Deep Supervision and --test-only)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for Combined Loss, LR Scheduler, Deep Supervision)
 import os
 import time
 import sys
 import logging
 import argparse
 import torch
-import numpy as np
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -51,6 +50,60 @@ class FocalLoss(nn.Module):
             return focal_loss
 # ===================================================================
 
+# ===================================================================
+#      ✅ DICE LOSS CLASS - NEWLY ADDED ✅
+# ===================================================================
+class DiceLoss(nn.Module):
+    """
+    Dice Loss for binary or multi-class segmentation.
+    Supports a single foreground class (target 1, background 0).
+    """
+    def __init__(self, smooth=1e-6, reduction='mean', ignore_index=255):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs, targets):
+        # inputs are logits (N, C, H, W)
+        # targets are class indices (N, H, W)
+        
+        # Convert targets to one-hot encoding if needed (for C > 1)
+        # For binary segmentation (C=2), we focus on the foreground class (index 1)
+        num_classes = inputs.shape[1]
+        
+        if num_classes > 1:
+            # Get probabilities for foreground class
+            pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) # (N, 1, H, W)
+            true_oh = (targets == 1).float().unsqueeze(1) # One-hot for foreground (N, 1, H, W)
+        else: # Single output channel for binary segmentation
+            pred_probs = F.sigmoid(inputs)
+            true_oh = targets.float().unsqueeze(1) # (N, 1, H, W)
+
+        # Handle ignore_index (if present, mask it out)
+        if self.ignore_index is not None:
+            mask = (targets != self.ignore_index).float()
+            pred_probs = pred_probs * mask.unsqueeze(1)
+            true_oh = true_oh * mask.unsqueeze(1)
+        
+        # Flatten label and prediction tensors
+        pred_probs = pred_probs.view(-1)
+        true_oh = true_oh.view(-1)
+
+        intersection = (pred_probs * true_oh).sum()
+        dice = (2. * intersection + self.smooth) / (pred_probs.sum() + true_oh.sum() + self.smooth)
+        
+        loss = 1. - dice
+        
+        if self.reduction == 'mean':
+            return loss
+        elif self.reduction == 'sum':
+            return loss * inputs.shape[0] # Scale by batch size for consistency
+        else:
+            return loss # Return per-sample loss if reduction is 'none' (though dice is typically aggregated)
+# ===================================================================
+
+
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Name of the dataset')
@@ -63,8 +116,22 @@ def get_args():
     parser.add_argument('--num-workers', type=int, default=2)
     parser.add_argument('--scale-h', type=int, default=448, help='Resize height for input images')
     parser.add_argument('--scale-w', type=int, default=448, help='Resize width for input images')
+    
+    # Deep Supervision weights (5 outputs: d4, d3, d2, d1_aux, final)
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
                         help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
+    
+    # Focal Loss specific hyperparameters
+    parser.add_argument('--focal-alpha', type=float, default=0.5, 
+                        help='Alpha parameter for Focal Loss. Balance between positive/negative examples.')
+    parser.add_argument('--focal-gamma', type=float, default=2.0, 
+                        help='Gamma parameter for Focal Loss. Focus on hard examples.')
+    parser.add_argument('--focal-loss-weight', type=float, default=1.0, 
+                        help='Weight for Focal Loss component in combined loss.')
+
+    # Dice Loss specific hyperparameters
+    parser.add_argument('--dice-loss-weight', type=float, default=1.0, 
+                        help='Weight for Dice Loss component in combined loss.')
     
     # Arguments for CenterAmplification
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, 
@@ -78,6 +145,14 @@ def get_args():
 
     # Test-only flag
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
+
+    # Learning Rate Scheduler parameters
+    parser.add_argument('--scheduler-patience', type=int, default=5, 
+                        help='Number of epochs with no improvement after which learning rate will be reduced.')
+    parser.add_argument('--scheduler-factor', type=float, default=0.5, 
+                        help='Factor by which the learning rate will be reduced.')
+    parser.add_argument('--scheduler-min-lr', type=float, default=1e-6, 
+                        help='Minimum learning rate.')
 
 
     try:
@@ -96,7 +171,7 @@ def setup_logging(log_dir):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-def evaluate_model(net, data_loader, device, focal_loss_fn, deep_supervision_weights, mode="Validating"):
+def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_supervision_weights, focal_loss_weight, dice_loss_weight, mode="Validating"):
     """
     Evaluates the model on a given data_loader.
     """
@@ -111,8 +186,15 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, deep_supervision_wei
             final_pred = outputs[-1] # The last output is always the final one for evaluation metrics
             
             total_loss = 0
-            for i, pred in enumerate(outputs):
-                total_loss += deep_supervision_weights[i] * focal_loss_fn(pred, labels.long())
+            for i, pred_output in enumerate(outputs):
+                # Calculate combined loss for each deep supervision output
+                current_focal_loss = focal_loss_fn(pred_output, labels.long())
+                current_dice_loss = dice_loss_fn(pred_output, labels.long())
+                
+                combined_loss_per_head = (focal_loss_weight * current_focal_loss) + \
+                                         (dice_loss_weight * current_dice_loss)
+                
+                total_loss += deep_supervision_weights[i] * combined_loss_per_head
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
             
@@ -133,7 +215,8 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    exp_name = f"{args.backbone}_LASA_Unet_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" # <<< CHANGED exp_name (DS for Deep Supervision)
+    # Naming convention for experiment folder
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" 
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
@@ -147,7 +230,9 @@ def main():
     # --- Instantiate the model ---
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
-    focal_loss_fn = FocalLoss(alpha=0.25, gamma=2).to(device)
+    # --- Initialize Loss Functions ---
+    focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
+    dice_loss_fn = DiceLoss().to(device)
 
     # --- Test-only Mode ---
     if args.test_only:
@@ -167,12 +252,17 @@ def main():
         test_set_for_eval = ImageFolder(val_path, args, split='val') 
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
-        test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, args.deep_supervision_weights, mode="Testing")
+        test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, dice_loss_fn, 
+                                   args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Testing")
         logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
         return # Exit main function after testing
 
     # --- Training Mode ---
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    
+    # Learning Rate Scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
+                                                     patience=args.scheduler_patience, min_lr=args.scheduler_min_lr, verbose=True)
 
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
@@ -183,6 +273,9 @@ def main():
             ckpt = torch.load(latest_checkpoint_path, map_location=device)
             net.load_state_dict(ckpt['model_state_dict'])
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            # Ensure scheduler state is also loaded
+            if 'scheduler_state_dict' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
             start_epoch = ckpt['epoch'] + 1
             best_mIoU = ckpt.get('best_mIoU', 0.0)
             patience_counter = ckpt.get('patience_counter', 0)
@@ -207,8 +300,15 @@ def main():
             outputs = net(inputs)
             
             total_loss = 0
-            for i, pred in enumerate(outputs):
-                total_loss += args.deep_supervision_weights[i] * focal_loss_fn(pred, labels.long())
+            for i, pred_output in enumerate(outputs):
+                # Calculate combined loss for each deep supervision output
+                current_focal_loss = focal_loss_fn(pred_output, labels.long())
+                current_dice_loss = dice_loss_fn(pred_output, labels.long())
+                
+                combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + \
+                                         (args.dice_loss_weight * current_dice_loss)
+                
+                total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
             
             total_loss.backward()
             optimizer.step()
@@ -216,7 +316,11 @@ def main():
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg)
             
-        current_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, args.deep_supervision_weights, mode="Validating")
+        current_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, 
+                                      args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Validating")
+
+        # Step the scheduler based on validation mIoU
+        scheduler.step(current_mIoU)
 
         if current_mIoU > best_mIoU:
             best_mIoU = current_mIoU
@@ -231,6 +335,7 @@ def main():
             'epoch': epoch,
             'model_state_dict': net.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(), # Save scheduler state
             'best_mIoU': best_mIoU,
             'patience_counter': patience_counter
         }, latest_checkpoint_path)
