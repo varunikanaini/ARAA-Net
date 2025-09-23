@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (MODIFIED for new datasets and EXP_NAME)
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py (MODIFIED for new datasets and KaggleHub download)
 import sys
 import os
 import torch
@@ -17,17 +17,15 @@ if project_path not in sys.path:
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
 from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS
-from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter 
-from config import DATA_ROOT, CKPT_ROOT 
+from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING # <<< MODIFIED IMPORTS
 
-# Import loss functions for consistent loss calculation if logging loss during test
 from train_lasa_vgg import FocalLoss, DiceLoss 
 
 
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
-    # <<< MODIFIED: Added new dataset choices >>>
+    # <<< MODIFIED: Use DATASET_CONFIGS.keys() for choices >>>
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface', 
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
     # <<< END MODIFIED >>>
@@ -47,11 +45,6 @@ def get_test_args():
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
-
-    # Removed Wavelet/HE arguments as per request
-    # parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
-    # parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
-    # parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
 
     try:
         args = parser.parse_args()
@@ -76,7 +69,6 @@ def main():
     
     # --- Construct the correct experiment name to find the checkpoint ---
     # This MUST match the naming convention used in train_lasa_vgg.py
-    # <<< MODIFIED: EXP_NAME removed "WaveletHE" and uses generic dataset name>>>
     EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir) # Ensure log directory exists
@@ -85,15 +77,35 @@ def main():
     logging.info(f"Starting FINAL TESTING for experiment '{EXP_NAME}'")
     logging.info(f"Arguments: {args}")
 
-    # --- Load the 'test' split of the data ---
-    dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
-    test_data_path = os.path.join(dataset_path, 'test') 
-    if not os.path.exists(test_data_path):
-        logging.warning(f"Test data not found at '{test_data_path}'. Falling back to 'val' split for testing.")
-        test_data_path = os.path.join(dataset_path, 'val')
-        if not os.path.exists(test_data_path):
-            logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for testing at '{test_data_path}'.")
+    # --- NEW: Handle KaggleHub dataset download and placement for testing ---
+    dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
+    if dataset_info and dataset_info['id']:
+        downloaded_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
+        if not downloaded_root:
+            logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
             sys.exit(1)
+        base_dataset_root_for_splits = downloaded_root
+    elif dataset_info and dataset_info['local_dir_name']:
+        base_dataset_root_for_splits = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        if not os.path.exists(base_dataset_root_for_splits):
+            logging.error(f"Local dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
+            sys.exit(1)
+    else:
+        base_dataset_root_for_splits = os.path.join(DATA_ROOT, args.dataset_name)
+        if not os.path.exists(base_dataset_root_for_splits):
+            logging.error(f"TSRS_RSNA dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
+            sys.exit(1)
+    
+    # Use 'test' split if available, otherwise 'val'
+    test_data_path = os.path.join(base_dataset_root_for_splits, 'test')
+    if not os.path.exists(test_data_path):
+        logging.warning(f"Test split not found at '{test_data_path}'. Falling back to 'val' split for testing.")
+        test_data_path = os.path.join(base_dataset_root_for_splits, 'val')
+        if not os.path.exists(test_data_path):
+            logging.error(f"❌ ERROR: Neither 'test' nor 'val' split data found for testing at '{base_dataset_root_for_splits}'.")
+            sys.exit(1)
+    logging.info(f"Using data from: {test_data_path}")
+    # --- END NEW ---
 
 
     test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
@@ -150,7 +162,7 @@ def main():
         f"\n\n--- Final Test Results ({timestamp}) ---\n"
         f"Model: LASA-Unet with {args.backbone} backbone\n"
         f"Experiment Name: {EXP_NAME}\n"
-        f"Dataset: {args.dataset_name} (evaluated on 'test' split)\n" 
+        f"Dataset: {args.dataset_name} (evaluated on 'test' split)\n" # Note: may be 'val' if 'test' not found
         f"Image scale for test: ({args.scale_h}, {args.scale_w})\n" 
         f"--------------------------------------------------\n"
         f"Global Accuracy = {global_acc.item():.4f}\n"

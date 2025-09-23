@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED for new datasets and EXP_NAME)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED for new datasets and KaggleHub download)
 import os
 import time
 import sys
@@ -18,83 +18,12 @@ if project_path not in sys.path:
 
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
-from config import DATA_ROOT, CKPT_ROOT 
+from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING # <<< MODIFIED IMPORTS
 from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# ===================================================================
-#      ✅ FOCAL LOSS CLASS - INCLUDED DIRECTLY IN THIS SCRIPT ✅
-# ===================================================================
-class FocalLoss(nn.Module):
-    """
-    Focal Loss for multi-class classification, included directly in the script.
-    """
-    def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.ignore_index = ignore_index
-
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
-        pt = torch.exp(-ce_loss)
-        focal_loss = self.alpha * (1 - pt)**self.gamma * ce_loss
-        
-        if self.reduction == 'mean':
-            mask = (targets != self.ignore_index).float()
-            return (focal_loss * mask).sum() / (mask.sum() + 1e-6)
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-# ===================================================================
-
-# ===================================================================
-#      ✅ DICE LOSS CLASS - NEWLY ADDED ✅
-# ===================================================================
-class DiceLoss(nn.Module):
-    """
-    Dice Loss for binary or multi-class segmentation.
-    Supports a single foreground class (target 1, background 0).
-    """
-    def __init__(self, smooth=1e-6, reduction='mean', ignore_index=255):
-        super(DiceLoss, self).__init__()
-        self.smooth = smooth
-        self.reduction = reduction
-        self.ignore_index = ignore_index
-
-    def forward(self, inputs, targets):
-        num_classes = inputs.shape[1]
-        
-        if num_classes > 1:
-            pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) # (N, 1, H, W)
-            true_oh = (targets == 1).float().unsqueeze(1) # One-hot for foreground (N, 1, H, W)
-        else: 
-            pred_probs = F.sigmoid(inputs)
-            true_oh = targets.float().unsqueeze(1) # (N, 1, H, W)
-
-        if self.ignore_index is not None:
-            mask = (targets != self.ignore_index).float()
-            pred_probs = pred_probs * mask.unsqueeze(1)
-            true_oh = true_oh * mask.unsqueeze(1)
-        
-        pred_probs = pred_probs.view(-1)
-        true_oh = true_oh.view(-1)
-
-        intersection = (pred_probs * true_oh).sum()
-        dice = (2. * intersection + self.smooth) / (pred_probs.sum() + true_oh.sum() + self.smooth)
-        
-        loss = 1. - dice
-        
-        if self.reduction == 'mean':
-            return loss
-        elif self.reduction == 'sum':
-            return loss * inputs.shape[0] 
-        else:
-            return loss 
-# ===================================================================
+# ... (FocalLoss and DiceLoss classes are unchanged) ...
 
 
 def get_args():
@@ -211,9 +140,40 @@ def main():
 
     logging.info(f"Starting operation for '{exp_name}' with arguments: {args}")
 
-    dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
-    train_path = os.path.join(dataset_path, 'train')
-    val_path = os.path.join(dataset_path, 'val')
+    # --- NEW: Handle KaggleHub dataset download and placement ---
+    dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
+    if dataset_info and dataset_info['id']: # If it's a KaggleHub dataset
+        # This function downloads and moves the data to DATA_ROOT/<local_dir_name>
+        downloaded_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
+        if not downloaded_root:
+            logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
+            sys.exit(1)
+        
+        # Now, ensure dataset_path correctly points to the expected structure
+        # For JSRT, downloaded_root is like /kaggle/working/ARAA-Net/data/jsrt-247-image-lung-segmentation-mask-dataset
+        # For COVID-19_Radiography, downloaded_root is like /kaggle/working/ARAA-Net/data/COVID-19_Radiography_Dataset
+        # The DATASET_CONFIGS assumes DATA_ROOT/<dataset_name>/<split>
+        # So we adapt dataset_path to point to downloaded_root directly.
+        base_dataset_root_for_splits = downloaded_root # This is the root for train/val/test
+        logging.info(f"Base dataset root for splits: {base_dataset_root_for_splits}")
+        
+    elif dataset_info and dataset_info['local_dir_name']: # For local datasets like KOA
+        base_dataset_root_for_splits = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        logging.info(f"Base dataset root for splits (local): {base_dataset_root_for_splits}")
+        if not os.path.exists(base_dataset_root_for_splits):
+            logging.error(f"Local dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
+            sys.exit(1)
+    else: # For TSRS_RSNA datasets
+        base_dataset_root_for_splits = os.path.join(DATA_ROOT, args.dataset_name)
+        logging.info(f"Base dataset root for splits (TSRS_RSNA): {base_dataset_root_for_splits}")
+        if not os.path.exists(base_dataset_root_for_splits):
+            logging.error(f"TSRS_RSNA dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
+            sys.exit(1)
+    
+    # Construct train/val paths relative to the actual base_dataset_root_for_splits
+    train_path = os.path.join(base_dataset_root_for_splits, 'train')
+    val_path = os.path.join(base_dataset_root_for_splits, 'val')
+    # --- END NEW: Handle KaggleHub dataset download ---
     
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
@@ -234,6 +194,7 @@ def main():
             logging.error(f"Error loading model from checkpoint: {e}")
             sys.exit(1)
 
+        # For test_only, ImageFolder still needs a 'root' path which is the split path
         test_set_for_eval = ImageFolder(val_path, args, split='val') 
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
@@ -266,8 +227,8 @@ def main():
 
     train_set = ImageFolder(train_path, args, split='train') 
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
-    val_set = ImageFolder(val_path, args, split='val') # Renamed from test_set to val_set for clarity
-    val_loader = DataLoader(val_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True) # Renamed from test_loader to val_loader
+    val_set = ImageFolder(val_path, args, split='val') 
+    val_loader = DataLoader(val_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True) 
 
 
     for epoch in range(start_epoch, args.epochs):

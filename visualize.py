@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/visualize_lasa_vgg.py (MODIFIED for new datasets and EXP_NAME)
+# /kaggle/working/ARAA-Net/visualize_lasa_vgg.py (MODIFIED for new datasets and KaggleHub download)
 import torch
 import argparse
 import os
@@ -15,7 +15,7 @@ if project_path not in sys.path:
 
 from lasa_vgg_model import LASA_Unet 
 from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS
-from config import DATA_ROOT, CKPT_ROOT 
+from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING # <<< MODIFIED IMPORTS
 from misc import check_mkdir
 
 def setup_logging_visualize(log_dir, filename='visualization.log'):
@@ -41,11 +41,6 @@ def main():
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
     
-    # Removed Wavelet/HE arguments as per request
-    # parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
-    # parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
-    # parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
-    
     try:
         args = parser.parse_args()
     except SystemExit:
@@ -55,13 +50,12 @@ def main():
     
     # Construct the experiment name to find the checkpoint
     # This MUST match the naming convention used in train_lasa_vgg.py
-    # <<< MODIFIED: EXP_NAME removed "WaveletHE" and uses generic dataset name>>>
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
-    output_dir = os.path.join(CKPT_ROOT, 'visual_results', exp_name)
+    EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    output_dir = os.path.join(CKPT_ROOT, 'visual_results', EXP_NAME)
     check_mkdir(output_dir)
     setup_logging_visualize(output_dir) # Setup logging for this specific visualization run
 
-    logging.info(f"Starting visualization for experiment '{exp_name}'")
+    logging.info(f"Starting visualization for experiment '{EXP_NAME}'")
     logging.info(f"Arguments: {args}")
 
     model_path = os.path.join(CKPT_ROOT, EXP_NAME, 'best_checkpoint.pth')
@@ -74,16 +68,36 @@ def main():
     net.eval()
     logging.info(f"✅ Model loaded from {model_path}")
 
-    # Load image from the 'test' split (or 'val' if no 'test' folder)
-    dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
-    test_data_path = os.path.join(dataset_path, 'test')
-    if not os.path.exists(test_data_path):
-        logging.warning(f"Test data not found at '{test_data_path}'. Using 'val' split for visualization.")
-        test_data_path = os.path.join(dataset_path, 'val')
-        if not os.path.exists(test_data_path):
-            logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for visualization at '{test_data_path}'.")
+    # --- NEW: Handle KaggleHub dataset download and placement for visualization ---
+    dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
+    if dataset_info and dataset_info['id']:
+        downloaded_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
+        if not downloaded_root:
+            logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
             sys.exit(1)
-            
+        base_dataset_root_for_splits = downloaded_root
+    elif dataset_info and dataset_info['local_dir_name']:
+        base_dataset_root_for_splits = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        if not os.path.exists(base_dataset_root_for_splits):
+            logging.error(f"Local dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
+            sys.exit(1)
+    else:
+        base_dataset_root_for_splits = os.path.join(DATA_ROOT, args.dataset_name)
+        if not os.path.exists(base_dataset_root_for_splits):
+            logging.error(f"TSRS_RSNA dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
+            sys.exit(1)
+    
+    # Use 'test' split if available, otherwise 'val'
+    test_data_path = os.path.join(base_dataset_root_for_splits, 'test')
+    if not os.path.exists(test_data_path):
+        logging.warning(f"Test split not found at '{test_data_path}'. Falling back to 'val' split for visualization.")
+        test_data_path = os.path.join(base_dataset_root_for_splits, 'val')
+        if not os.path.exists(test_data_path):
+            logging.error(f"❌ ERROR: Neither 'test' nor 'val' split data found for visualization at '{base_dataset_root_for_splits}'.")
+            sys.exit(1)
+    logging.info(f"Using data from: {test_data_path}")
+    # --- END NEW ---
+
     test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
 
     if args.image_index >= len(test_set) or args.image_index < 0:
@@ -94,7 +108,7 @@ def main():
     image_tensor = sample['image'].unsqueeze(0).to(device)
     label_tensor = sample['label']
     
-    image_name = sample['name'] # 'name' is now directly from the sample dict
+    image_name = sample['name'] 
     logging.info(f"✅ Visualizing image: {image_name} (index {args.image_index})")
 
     with torch.no_grad():

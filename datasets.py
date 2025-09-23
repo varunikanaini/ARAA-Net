@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/datasets.py (MODIFIED for new dataset support and improved logging)
+# /kaggle/working/ARAA-Net/datasets.py (MODIFIED for flexible make_dataset and DATASET_CONFIGS)
 
 import os
 import torch.utils.data as data
@@ -6,54 +6,73 @@ from PIL import Image
 import numpy as np
 from torchvision import transforms
 import glob 
-import logging # <<< ADDED for better warnings/errors
+import logging 
 
 import custom_transforms as tr 
+from config import DATA_ROOT, KAGGLE_DATASET_MAPPING # <<< NEW IMPORTS: For dynamic dataset paths
+
 
 # --- NEW: Dataset Configuration Dictionary ---
-# Define specific loading instructions for each dataset.
-# Adjust image_subpath/mask_subpath/mask_suffix based on actual dataset structures.
 DATASET_CONFIGS = {
+    # Existing RSNA datasets (assuming structure: DATA_ROOT/<dataset_name>/<split>/images/ or /GT/)
     'TSRS_RSNA-Epiphysis': {
         'image_ext': ('.jpg', '.jpeg'), 
-        'mask_subpath': 'GT', # Labels are in a 'GT' subdirectory relative to root (e.g., train/GT/)
+        'image_subpath': '', # Images are directly in split root (e.g., train/image.jpg)
+        'mask_subpath': 'GT', # Masks are in 'GT' subdirectory
         'mask_ext': '.png',
-        'is_nested': False # Images/labels are directly under train/val/test
+        'is_nested_split_only': False, # Not nested structure under split for images/masks
+        'has_class_folders_under_split': False,
+        'has_category_folders_under_split': False
     },
     'TSRS_RSNA-Articular-Surface': {
         'image_ext': ('.jpg', '.jpeg'),
+        'image_subpath': '',
         'mask_subpath': 'GT',
         'mask_ext': '.png',
-        'is_nested': False
+        'is_nested_split_only': False,
+        'has_class_folders_under_split': False,
+        'has_category_folders_under_split': False
     },
-    'KOA': { # Common structure: DATA_ROOT/KOA/train/images/, DATA_ROOT/KOA/train/labels/
-        'image_ext': ('.png', '.jpg', '.jpeg'),
-        'image_subpath': 'images', # Images are in an 'images' subdirectory
-        'mask_subpath': 'labels',  # Masks are in a 'labels' subdirectory
+    
+    # Your KOA dataset (lvv-koa) structure: DATA_ROOT/KOA/train/0/image.png, DATA_ROOT/KOA/train/0/image_mask.png
+    'KOA': { 
+        'image_ext': ('.png', '.jpg', '.jpeg'), 
         'mask_ext': '.png',
-        'is_nested': False
+        'is_nested_split_only': True, # Split folder contains further nested structures (class folders)
+        'has_class_folders_under_split': True, # Split folder contains class subfolders (0,1,2,3,4)
+        'has_category_folders_under_split': False,
+        'mask_suffix': '_mask' # CRUCIAL ASSUMPTION: Mask file is 'image_name_mask.png'
     },
-    'MURA': { # MURA is often nested. Example: MURA/train/study1/image.png, MURA/train/study1_mask.png
-              # This config supports recursive search and a mask_suffix convention.
+    
+    # COVID-19 Radiography Database: DATA_ROOT/COVID-19_Radiography_Dataset/COVID/images/image.png, .../COVID/masks/mask.png
+    'COVID-19_Radiography': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
-        'mask_suffix': '_mask', # Example: if mask for 'image.png' is 'image_mask.png'
         'mask_ext': '.png',
-        'is_nested': True, # Needs to search subdirectories
-        'image_subpath': '', # Images are directly in subfolders (e.g., study1)
-        'mask_subpath': '' # Masks are also directly in subfolders, found by suffix
+        'is_nested_split_only': True, # Split folder contains further nested structures (category folders)
+        'has_class_folders_under_split': False,
+        'has_category_folders_under_split': True, # Split folder contains category subfolders (COVID, Normal etc.)
+        'image_subpath_in_category': 'images', # Path relative to category folder
+        'mask_subpath_in_category': 'masks',   # Path relative to category folder
+        'mask_suffix': '' # Masks have same name as image
     },
-    'Chest-Xray': { # Common structure: DATA_ROOT/Chest-Xray/train/images/, DATA_ROOT/Chest-Xray/train/labels/
+    
+    # JSRT Dataset: DATA_ROOT/jsrt-247-image-lung-segmentation-mask-dataset/cxr/image.png, .../masks/mask.png
+    # Assuming user will create train/val/test folders *within* the downloaded root for splitting.
+    'JSRT': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
-        'image_subpath': 'images',
-        'mask_subpath': 'labels',
+        'image_subpath': 'cxr', # Images are in 'cxr' subdirectory relative to split root
+        'mask_subpath': 'masks', # Masks are in 'masks' subdirectory relative to split root
         'mask_ext': '.png',
-        'is_nested': False
+        'is_nested_split_only': False, # Not nested, simple flat images/masks under cxr/masks
+        'has_class_folders_under_split': False,
+        'has_category_folders_under_split': False,
+        'mask_suffix': '' # Masks have same name as image
     }
 }
 # --- END NEW: Dataset Configuration Dictionary ---
 
 
-def make_dataset(root, dataset_name): # <<< MODIFIED: Pass dataset_name
+def make_dataset(root, dataset_name): # Pass dataset_name
     config = DATASET_CONFIGS.get(dataset_name)
     if not config:
         logging.error(f"Dataset config not found for '{dataset_name}'. Please add it to DATASET_CONFIGS in datasets.py.")
@@ -63,57 +82,77 @@ def make_dataset(root, dataset_name): # <<< MODIFIED: Pass dataset_name
     mask_ext = config['mask_ext']
     
     dataset_items = []
+    
+    logging.info(f"Loading dataset '{dataset_name}' from '{root}' with config: {config}")
 
-    if config['is_nested']:
-        logging.info(f"Attempting to load nested dataset '{dataset_name}' from '{root}' (recursive search)...")
-        # Search for image files recursively in the root (e.g., train/study1/image.png)
-        image_paths_raw = []
-        for ext in image_exts:
-            image_paths_raw.extend(glob.glob(os.path.join(root, '**', '*' + ext), recursive=True))
+    if config['has_class_folders_under_split']: # For KOA (e.g., root/0/image.png, root/1/image.png)
+        logging.info(f"Handling class-folder-nested structure for '{dataset_name}'.")
+        class_subdirs = [os.path.join(root, d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+        class_subdirs.sort()
+
+        if not class_subdirs:
+            logging.warning(f"No class subdirectories found in '{root}' for dataset '{dataset_name}'.")
+            return []
         
-        if not image_paths_raw:
-            logging.warning(f"No images found recursively in '{root}' for dataset '{dataset_name}' with extensions {image_exts}. Check path and extensions.")
+        for class_dir in class_subdirs:
+            for ext in image_exts:
+                # Find images directly in class_dir
+                image_files = glob.glob(os.path.join(class_dir, '*' + ext), recursive=False)
+                for img_path in image_files:
+                    img_name_base = os.path.splitext(os.path.basename(img_path))[0]
+                    mask_path_attempt = None
+                    if 'mask_suffix' in config and config['mask_suffix']:
+                        mask_path_attempt = os.path.join(class_dir, img_name_base + config['mask_suffix'] + mask_ext)
+                    elif 'mask_subpath' in config and config['mask_subpath']:
+                         # This case unlikely for KOA, but fallback for flexibility
+                        mask_path_attempt = os.path.join(class_dir, config['mask_subpath'], img_name_base + mask_ext)
+                    else: # Default to same name, same dir, mask_ext
+                        mask_path_attempt = os.path.join(class_dir, img_name_base + mask_ext)
+                    
+                    if mask_path_attempt and os.path.exists(img_path) and os.path.exists(mask_path_attempt):
+                        dataset_items.append((img_path, mask_path_attempt))
+                    else:
+                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
 
-        for img_path in image_paths_raw:
-            img_name_base = os.path.splitext(os.path.basename(img_path))[0]
-            img_dir = os.path.dirname(img_path)
+    elif config['has_category_folders_under_split']: # For COVID-19 Radiography (e.g., root/COVID/images/img.png, root/COVID/masks/mask.png)
+        logging.info(f"Handling category-folder-nested structure for '{dataset_name}'.")
+        category_subdirs = [os.path.join(root, d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+        category_subdirs.sort()
 
-            mask_path_attempt = None
-            if 'mask_suffix' in config and config['mask_suffix']: 
-                # e.g., MURA/train/study1/image1_mask.png for image1.png
-                potential_mask_path = os.path.join(img_dir, img_name_base + config['mask_suffix'] + mask_ext)
-                if os.path.exists(potential_mask_path):
-                    mask_path_attempt = potential_mask_path
+        if not category_subdirs:
+            logging.warning(f"No category subdirectories found in '{root}' for dataset '{dataset_name}'.")
+            return []
+
+        for category_dir in category_subdirs:
+            image_category_path = os.path.join(category_dir, config['image_subpath_in_category'])
+            mask_category_path = os.path.join(category_dir, config['mask_subpath_in_category'])
+
+            if not os.path.exists(image_category_path):
+                logging.warning(f"Image category path not found: {image_category_path}. Skipping category '{os.path.basename(category_dir)}'.")
+                continue
+            if not os.path.exists(mask_category_path):
+                logging.warning(f"Mask category path not found: {mask_category_path}. Skipping category '{os.path.basename(category_dir)}'.")
+                continue
             
-            # If mask_suffix not used or didn't find, check parallel/same directory based on image_subpath/mask_subpath
-            if not mask_path_attempt and 'image_subpath' in config and 'mask_subpath' in config and config['image_subpath'] and config['mask_subpath']:
-                # Example: images in /train/images/study1/ and masks in /train/labels/study1/
-                if config['image_subpath'] in img_dir: # Check if img_dir contains the image_subpath
-                    # Replace image_subpath with mask_subpath in the path
-                    mask_dir_for_image = img_dir.replace(os.path.sep + config['image_subpath'], os.path.sep + config['mask_subpath'])
-                    potential_mask_path = os.path.join(mask_dir_for_image, img_name_base + mask_ext)
-                    if os.path.exists(potential_mask_path):
-                        mask_path_attempt = potential_mask_path
-            
-            # Final fallback: Assume mask is in the exact same directory as image, with same name but mask_ext
-            if not mask_path_attempt:
-                potential_mask_path = os.path.join(img_dir, img_name_base + mask_ext)
-                if os.path.exists(potential_mask_path):
-                    mask_path_attempt = potential_mask_path
-
-            if mask_path_attempt and os.path.exists(img_path) and os.path.exists(mask_path_attempt):
-                dataset_items.append((img_path, mask_path_attempt))
-            else:
-                logging.warning(f"Skipping: Missing image or mask for '{img_name_base}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
+            for ext in image_exts:
+                image_files = glob.glob(os.path.join(image_category_path, '*' + ext), recursive=False)
+                for img_path in image_files:
+                    img_name_base = os.path.splitext(os.path.basename(img_path))[0]
+                    mask_path_attempt = os.path.join(mask_category_path, img_name_base + mask_ext) # Assume same name, mask_ext in masks folder
+                    
+                    if os.path.exists(img_path) and os.path.exists(mask_path_attempt):
+                        dataset_items.append((img_path, mask_path_attempt))
+                    else:
+                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
 
 
-    else: # Flat structure (e.g., Epiphysis, Articular-Surface, KOA, Chest-Xray)
+    else: # Flat structure (e.g., RSNA, JSRT, Chest-Xray)
         image_subpath = config.get('image_subpath', '')
         mask_subpath = config.get('mask_subpath', '')
         image_dir = os.path.join(root, image_subpath)
         mask_dir = os.path.join(root, mask_subpath)
         
-        logging.info(f"Attempting to load flat dataset '{dataset_name}' from '{root}'...")
+        logging.info(f"Handling flat structure for '{dataset_name}'.")
         logging.info(f"Expected image directory: '{image_dir}'")
         logging.info(f"Expected mask directory: '{mask_dir}'")
         logging.info(f"Expected image extensions: {image_exts}")
@@ -142,11 +181,16 @@ def make_dataset(root, dataset_name): # <<< MODIFIED: Pass dataset_name
                     break
 
             if found_img_path:
-                potential_mask_path = os.path.join(mask_dir, img_name_base + mask_ext)
-                if os.path.exists(potential_mask_path):
-                    dataset_items.append((found_img_path, potential_mask_path))
+                mask_path_attempt = None
+                if 'mask_suffix' in config and config['mask_suffix']:
+                    mask_path_attempt = os.path.join(mask_dir, img_name_base + config['mask_suffix'] + mask_ext)
+                else: # Default to same name, different ext
+                    mask_path_attempt = os.path.join(mask_dir, img_name_base + mask_ext)
+
+                if mask_path_attempt and os.path.exists(mask_path_attempt):
+                    dataset_items.append((found_img_path, mask_path_attempt))
                 else:
-                    logging.warning(f"Skipping: Missing mask for '{img_name_base}'. (Image: {found_img_path}, Mask attempt: {potential_mask_path})")
+                    logging.warning(f"Skipping: Missing mask for '{img_name_base}'. (Image: {found_img_path}, Mask attempt: {mask_path_attempt})")
             else:
                 logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
 
@@ -165,7 +209,6 @@ class ImageFolder(data.Dataset):
         self.split = split
         self.dataset_name = args.dataset_name 
 
-        # Pass dataset_name to make_dataset
         self.imgs = make_dataset(root, self.dataset_name) 
 
         min_lesion_area = args.min_lesion_area_pixels
@@ -185,7 +228,7 @@ class ImageFolder(data.Dataset):
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
-        else: # Validation/Test - no data augmentation or complex preprocessing
+        else: # Validation/Test
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
