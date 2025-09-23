@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED for new datasets and KaggleHub download)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (FINAL & CORRECTED with Loss Class Definitions)
 import os
 import time
 import sys
@@ -18,20 +18,89 @@ if project_path not in sys.path:
 
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
-from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING # <<< MODIFIED IMPORTS
-from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS
+from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
+from datasets import ImageFolder, DATASET_CONFIGS
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# ... (FocalLoss and DiceLoss classes are unchanged) ...
+# ===================================================================
+#      ✅ FOCAL LOSS CLASS - INCLUDED DIRECTLY IN THIS SCRIPT ✅
+# ===================================================================
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for multi-class classification, included directly in the script.
+    """
+    def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt)**self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            mask = (targets != self.ignore_index).float()
+            return (focal_loss * mask).sum() / (mask.sum() + 1e-6)
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+# ===================================================================
+
+# ===================================================================
+#      ✅ DICE LOSS CLASS - NEWLY ADDED ✅
+# ===================================================================
+class DiceLoss(nn.Module):
+    """
+    Dice Loss for binary or multi-class segmentation.
+    Supports a single foreground class (target 1, background 0).
+    """
+    def __init__(self, smooth=1e-6, reduction='mean', ignore_index=255):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs, targets):
+        num_classes = inputs.shape[1]
+        
+        if num_classes > 1:
+            pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) # (N, 1, H, W)
+            true_oh = (targets == 1).float().unsqueeze(1) # One-hot for foreground (N, 1, H, W)
+        else: 
+            pred_probs = F.sigmoid(inputs)
+            true_oh = targets.float().unsqueeze(1) # (N, 1, H, W)
+
+        if self.ignore_index is not None:
+            mask = (targets != self.ignore_index).float()
+            pred_probs = pred_probs * mask.unsqueeze(1)
+            true_oh = true_oh * mask.unsqueeze(1)
+        
+        pred_probs = pred_probs.view(-1)
+        true_oh = true_oh.view(-1)
+
+        intersection = (pred_probs * true_oh).sum()
+        dice = (2. * intersection + self.smooth) / (pred_probs.sum() + true_oh.sum() + self.smooth)
+        
+        loss = 1. - dice
+        
+        if self.reduction == 'mean':
+            return loss
+        elif self.reduction == 'sum':
+            return loss * inputs.shape[0] 
+        else:
+            return loss 
+# ===================================================================
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
-    # <<< MODIFIED: Use DATASET_CONFIGS.keys() for choices >>>
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
                         choices=list(DATASET_CONFIGS.keys()), help='Name of the dataset')
-    # <<< END MODIFIED >>>
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to use')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=3)
@@ -140,14 +209,14 @@ def main():
 
     logging.info(f"Starting operation for '{exp_name}' with arguments: {args}")
 
-    # --- NEW: Handle KaggleHub dataset download and placement ---
     dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
+    base_dataset_root_for_splits = None # Initialize to None
+
     if dataset_info and dataset_info['id']: # If it's a KaggleHub dataset
         downloaded_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
         if not downloaded_root:
             logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
             sys.exit(1)
-        # Use the local_dir_name from config for consistency with DATASET_CONFIGS
         base_dataset_root_for_splits = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
         logging.info(f"Base dataset root for splits (KaggleHub): {base_dataset_root_for_splits}")
         
@@ -164,10 +233,8 @@ def main():
             logging.error(f"TSRS_RSNA dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
             sys.exit(1)
     
-    # Construct train/val paths relative to the actual base_dataset_root_for_splits
     train_path = os.path.join(base_dataset_root_for_splits, 'train')
     val_path = os.path.join(base_dataset_root_for_splits, 'val')
-    # --- END NEW: Handle KaggleHub dataset download ---
     
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
