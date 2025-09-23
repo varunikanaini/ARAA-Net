@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED for new datasets and EXP_NAME)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (CORRECTED for Dataset Choices)
 import os
 import time
 import sys
@@ -19,16 +19,87 @@ if project_path not in sys.path:
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
 from config import DATA_ROOT, CKPT_ROOT 
-from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS
+from datasets import ImageFolder, DATASET_CONFIGS # <<< CORRECTED: Import DATASET_CONFIGS
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# ... (FocalLoss and DiceLoss classes are unchanged) ...
+# ===================================================================
+#      ✅ FOCAL LOSS CLASS - INCLUDED DIRECTLY IN THIS SCRIPT ✅
+# ===================================================================
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for multi-class classification, included directly in the script.
+    """
+    def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt)**self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            mask = (targets != self.ignore_index).float()
+            return (focal_loss * mask).sum() / (mask.sum() + 1e-6)
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+# ===================================================================
+
+# ===================================================================
+#      ✅ DICE LOSS CLASS - NEWLY ADDED ✅
+# ===================================================================
+class DiceLoss(nn.Module):
+    """
+    Dice Loss for binary or multi-class segmentation.
+    Supports a single foreground class (target 1, background 0).
+    """
+    def __init__(self, smooth=1e-6, reduction='mean', ignore_index=255):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs, targets):
+        num_classes = inputs.shape[1]
+        
+        if num_classes > 1:
+            pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) # (N, 1, H, W)
+            true_oh = (targets == 1).float().unsqueeze(1) # One-hot for foreground (N, 1, H, W)
+        else: 
+            pred_probs = F.sigmoid(inputs)
+            true_oh = targets.float().unsqueeze(1) # (N, 1, H, W)
+
+        if self.ignore_index is not None:
+            mask = (targets != self.ignore_index).float()
+            pred_probs = pred_probs * mask.unsqueeze(1)
+            true_oh = true_oh * mask.unsqueeze(1)
+        
+        pred_probs = pred_probs.view(-1)
+        true_oh = true_oh.view(-1)
+
+        intersection = (pred_probs * true_oh).sum()
+        dice = (2. * intersection + self.smooth) / (pred_probs.sum() + true_oh.sum() + self.smooth)
+        
+        loss = 1. - dice
+        
+        if self.reduction == 'mean':
+            return loss
+        elif self.reduction == 'sum':
+            return loss * inputs.shape[0] 
+        else:
+            return loss 
+# ===================================================================
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
-    # <<< MODIFIED: Added new dataset choices >>>
+    # <<< MODIFIED: Use DATASET_CONFIGS.keys() for choices >>>
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
                         choices=list(DATASET_CONFIGS.keys()), help='Name of the dataset')
     # <<< END MODIFIED >>>
@@ -64,11 +135,6 @@ def get_args():
     parser.add_argument('--min-bbox-w', type=int, default=32, 
                         help='Minimum width of the expanded bounding box in pixels for CenterAmplification')
 
-    # Removed Wavelet/HE arguments as per request to revert to previous working version
-    # parser.add_argument('--wavelet-type', type=str, default='haar', help='Wavelet type for DWT-based contrast enhancement.')
-    # parser.add_argument('--wavelet-level', type=int, default=1, help='Decomposition level for DWT-based contrast enhancement.')
-    # parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Scaling factor for detail coefficients.')
-
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
 
     parser.add_argument('--scheduler-patience', type=int, default=5, 
@@ -89,7 +155,46 @@ def get_args():
     
     return args
 
-# ... (setup_logging, evaluate_model are unchanged) ...
+def setup_logging(log_dir):
+    log_file = os.path.join(log_dir, 'training.log')
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
+                        handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
+
+def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_supervision_weights, focal_loss_weight, dice_loss_weight, mode="Validating"):
+    """
+    Evaluates the model on a given data_loader.
+    """
+    net.eval()
+    confmat = ConfusionMatrix(num_classes=2)
+    loss_recorder = AvgMeter()
+    with torch.no_grad():
+        for data in tqdm(data_loader, desc=mode, leave=False):
+            inputs, labels = data['image'].to(device), data['label'].to(device)
+            
+            outputs = net(inputs) 
+            final_pred = outputs[-1] 
+            
+            total_loss = 0
+            for i, pred_output in enumerate(outputs):
+                current_focal_loss = focal_loss_fn(pred_output, labels.long())
+                current_dice_loss = dice_loss_fn(pred_output, labels.long())
+                
+                combined_loss_per_head = (focal_loss_weight * current_focal_loss) + \
+                                         (dice_loss_weight * current_dice_loss)
+                
+                total_loss += deep_supervision_weights[i] * combined_loss_per_head
+            
+            loss_recorder.update(total_loss.item(), inputs.size(0))
+            
+            confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
+            
+    _, _, class_iou, _, _ = confmat.compute()
+    mIoU = class_iou.mean().item()
+    logging.info(f"--- {mode} mIoU: {mIoU:.4f} | {mode} Loss: {loss_recorder.avg:.4f} ---")
+    if mode == "Validating": 
+        net.train()
+    return mIoU
 
 def main():
     args = get_args()
@@ -99,7 +204,6 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    # <<< MODIFIED: EXP_NAME removed "WaveletHE" and uses generic dataset name>>>
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" 
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
@@ -116,7 +220,27 @@ def main():
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
     dice_loss_fn = DiceLoss().to(device)
 
-    # ... (test_only logic is unchanged) ...
+    if args.test_only:
+        logging.info("Running in TEST ONLY mode.")
+        best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
+        if not os.path.exists(best_checkpoint_path):
+            logging.error(f"Best checkpoint not found at {best_checkpoint_path}. Please train a model first or specify correct path.")
+            sys.exit(1)
+
+        try:
+            net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
+            logging.info(f"Loaded model from {best_checkpoint_path}")
+        except Exception as e:
+            logging.error(f"Error loading model from checkpoint: {e}")
+            sys.exit(1)
+
+        test_set_for_eval = ImageFolder(val_path, args, split='val') 
+        test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
+
+        test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, dice_loss_fn, 
+                                   args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Testing")
+        logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
+        return 
 
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
@@ -126,7 +250,19 @@ def main():
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     
-    # ... (checkpoint loading logic is unchanged) ...
+    if os.path.exists(latest_checkpoint_path):
+        try:
+            ckpt = torch.load(latest_checkpoint_path, map_location=device)
+            net.load_state_dict(ckpt['model_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            if 'scheduler_state_dict' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            start_epoch = ckpt['epoch'] + 1
+            best_mIoU = ckpt.get('best_mIoU', 0.0)
+            patience_counter = ckpt.get('patience_counter', 0)
+            logging.info(f"Resuming from epoch {start_epoch}, best mIoU was {best_mIoU:.4f}, patience counter: {patience_counter}")
+        except Exception as e:
+            logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
 
     train_set = ImageFolder(train_path, args, split='train') 
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
@@ -160,7 +296,7 @@ def main():
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg)
             
-        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, # <<< MODIFIED: Use val_loader
+        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, 
                                       args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Validating")
 
         scheduler.step(current_mIoU)
