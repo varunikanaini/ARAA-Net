@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/benchmark_fps.py
+# /kaggle/working/ARAA-Net/benchmark_fps.py (MODIFIED for EXP_NAME)
 import torch
 import argparse
 import time
@@ -10,9 +10,9 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-from lasa_vgg_model import LASA_Unet # Use generalized LASA_Unet
+from lasa_vgg_model import LASA_Unet 
 from misc import check_mkdir
-from config import CKPT_ROOT # For logging output path
+from config import CKPT_ROOT 
 
 
 def setup_logging_benchmark(log_dir, filename='benchmark_results.log'):
@@ -79,15 +79,12 @@ def main():
     logging.info(f"--- Benchmarking LASA-Unet with {args.backbone} backbone and input size {args.input_h}x{args.input_w} ---")
     logging.info(f"Arguments: {args}")
 
-    # --- Instantiate the model ---
-    model = LASA_Unet(num_classes=2, backbone_name=args.backbone) # Instantiate with correct backbone
+    model = LASA_Unet(num_classes=2, backbone_name=args.backbone) 
 
-    # --- Calculate Parameters ---
     total_trainable_params = count_parameters(model)
     logging.info(f"Total Trainable Parameters in LASA-Unet ({args.backbone}): {total_trainable_params}")
     logging.info(f"Total Trainable Parameters (Millions): {total_trainable_params / 1_000_000:.2f} M")
 
-    # --- Benchmark FPS ---
     fps = benchmark_fps(model, device, args.input_h, args.input_w, args.num_warmup, args.num_inference)
     
     logging.info("\n--- FPS Benchmark Results ---")

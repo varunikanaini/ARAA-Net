@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/visualize_lasa_vgg.py
+# /kaggle/working/ARAA-Net/visualize_lasa_vgg.py (MODIFIED for new datasets and EXP_NAME)
 import torch
 import argparse
 import os
@@ -13,9 +13,9 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-from lasa_vgg_model import LASA_Unet # Use generalized LASA_Unet
-from datasets import ImageFolder
-from config import DATA_ROOT, CKPT_ROOT
+from lasa_vgg_model import LASA_Unet 
+from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS
+from config import DATA_ROOT, CKPT_ROOT 
 from misc import check_mkdir
 
 def setup_logging_visualize(log_dir, filename='visualization.log'):
@@ -26,17 +26,25 @@ def setup_logging_visualize(log_dir, filename='visualization.log'):
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize LASA-Unet predictions')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', help='Dataset used for training')
+    # <<< MODIFIED: Added new dataset choices >>>
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface', 
+                        choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
+    # <<< END MODIFIED >>>
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
-    parser.add_argument('--image-index', type=int, default=0, help='Index of the test image to visualize (0-indexed)') # Default to 0 for first image
+    parser.add_argument('--image-index', type=int, default=0, help='Index of the test image to visualize (0-indexed)') 
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
     
-    # Dummy args for ImageFolder to instantiate correctly (CenterAmplification is training-only but args are parsed)
+    # Dummy args for ImageFolder to instantiate correctly (these are training-only but must be parsed)
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
+    
+    # Removed Wavelet/HE arguments as per request
+    # parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
+    # parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
+    # parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     
     try:
         args = parser.parse_args()
@@ -47,6 +55,7 @@ def main():
     
     # Construct the experiment name to find the checkpoint
     # This MUST match the naming convention used in train_lasa_vgg.py
+    # <<< MODIFIED: EXP_NAME removed "WaveletHE" and uses generic dataset name>>>
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     output_dir = os.path.join(CKPT_ROOT, 'visual_results', exp_name)
     check_mkdir(output_dir)
@@ -55,22 +64,22 @@ def main():
     logging.info(f"Starting visualization for experiment '{exp_name}'")
     logging.info(f"Arguments: {args}")
 
-    model_path = os.path.join(CKPT_ROOT, exp_name, 'best_checkpoint.pth')
+    model_path = os.path.join(CKPT_ROOT, EXP_NAME, 'best_checkpoint.pth')
     if not os.path.exists(model_path):
         logging.error(f"❌ ERROR: Checkpoint not found at {model_path}. Please train a model first.")
         sys.exit(1)
 
-    # Instantiate the model with the correct backbone
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     net.load_state_dict(torch.load(model_path, map_location=device))
     net.eval()
     logging.info(f"✅ Model loaded from {model_path}")
 
     # Load image from the 'test' split (or 'val' if no 'test' folder)
-    test_data_path = os.path.join(DATA_ROOT, args.dataset_name, 'test')
+    dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
+    test_data_path = os.path.join(dataset_path, 'test')
     if not os.path.exists(test_data_path):
         logging.warning(f"Test data not found at '{test_data_path}'. Using 'val' split for visualization.")
-        test_data_path = os.path.join(DATA_ROOT, args.dataset_name, 'val')
+        test_data_path = os.path.join(dataset_path, 'val')
         if not os.path.exists(test_data_path):
             logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for visualization at '{test_data_path}'.")
             sys.exit(1)
@@ -85,8 +94,7 @@ def main():
     image_tensor = sample['image'].unsqueeze(0).to(device)
     label_tensor = sample['label']
     
-    # Ensure 'name' is retrieved correctly, it's a list from ImageFolder if batch_size > 1, but here batch_size=1
-    image_name = sample['name'] if not isinstance(sample['name'], list) else sample['name'][0]
+    image_name = sample['name'] # 'name' is now directly from the sample dict
     logging.info(f"✅ Visualizing image: {image_name} (index {args.image_index})")
 
     with torch.no_grad():
@@ -108,7 +116,6 @@ def main():
     axes[1].imshow(ground_truth_mask, cmap='gray'); axes[1].set_title('Ground Truth Mask'); axes[1].axis('off')
     axes[2].imshow(prediction_mask, cmap='gray'); axes[2].set_title("Model's Prediction"); axes[2].axis('off')
 
-    # Save path includes experiment name and image identifier
     save_path = os.path.join(output_dir, f"visual_result_{image_name}_index_{args.image_index}.png")
     plt.savefig(save_path, bbox_inches='tight')
     logging.info(f"✅ Visualization saved to {save_path}")
