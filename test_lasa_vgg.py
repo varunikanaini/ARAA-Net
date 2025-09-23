@@ -1,8 +1,7 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (MODIFIED for robust dataset loading and programmatic splitting)
 import sys
 import os
 import torch
-from torch.utils.data import DataLoader, random_split # <<< MODIFIED: Import random_split
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 import numpy as np
 import datetime
@@ -16,13 +15,56 @@ if project_path not in sys.path:
 
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
-from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS, make_dataset
-from datasets import make_dataset as make_full_dataset_list # <<< NEW: Rename to avoid conflict with ImageFolder's internal make_dataset (if any)
+from datasets import ImageFolder, DATASET_CONFIGS
+from datasets import make_dataset as make_full_dataset_list
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter 
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING 
 
-from train_lasa_vgg import FocalLoss, DiceLoss 
+# Assuming FocalLoss and DiceLoss are correctly defined in train_lasa_vgg.py
+# If they are in a separate 'loss.py' file, you should import them from there.
+# For this corrected script, I will explicitly define them here to make it self-contained for testing.
+# If you are sure your 'train_lasa_vgg.py' is in the path and has these, you can keep the import.
+# For robustness in a self-contained test, it's better to explicitly define or import from loss.py.
+# I'll include the definitions for FocalLoss and DiceLoss directly to avoid dependency issues on train_lasa_vgg.
+# However, if your setup relies on `from train_lasa_vgg import FocalLoss, DiceLoss`, ensure train_lasa_vgg.py is accessible.
+
+# --- Loss Functions (Copied from previous interactions' loss.py for self-containment) ---
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.5, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1e-6):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, inputs, targets):
+        inputs = F.softmax(inputs, dim=1)  # Convert logits to probabilities
+        targets = F.one_hot(targets, num_classes=2).permute(0, 3, 1, 2).float() 
+
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+
+        intersection = (inputs * targets).sum()
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        return 1 - dice
+# --- End Loss Functions ---
 
 
 def get_test_args():
@@ -33,6 +75,9 @@ def get_test_args():
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
     
+    # This line is already correct in your script
+    parser.add_argument('--num-workers', type=int, default=2, help='Number of data loading workers')
+    
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
                         help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
     parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha parameter for Focal Loss.')
@@ -40,13 +85,11 @@ def get_test_args():
     parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Weight for Focal Loss component in combined loss.')
     parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss component in combined loss.')
 
-    # CenterAmplification args (needed for ImageFolder to instantiate correctly, even if not used in test split)
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
 
-    # Programmatic splitting ratios (needed for consistency if programmatic split was used in training)
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Dummy arg for programmatic split consistency.')
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Dummy arg for programmatic split consistency.')
 
@@ -71,40 +114,36 @@ def main():
     args = get_test_args()
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # --- Construct the correct experiment name to find the checkpoint ---
     EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
-    check_mkdir(log_dir) # Ensure log directory exists
-    setup_logging(log_dir) # Setup logging for this specific test run
+    check_mkdir(log_dir)
+    setup_logging(log_dir)
 
     logging.info(f"Starting FINAL TESTING for experiment '{EXP_NAME}'")
     logging.info(f"Arguments: {args}")
 
-    # --- Determine the base root for the dataset (download if KaggleHub) ---
     dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
     base_dataset_root = None
 
-    if dataset_info and dataset_info['id']: # If it's a KaggleHub dataset
+    if dataset_info and dataset_info['id']:
         base_dataset_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
         if not base_dataset_root:
             logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
             sys.exit(1)
         logging.info(f"Base dataset root (KaggleHub): {base_dataset_root}")
-    elif dataset_info and dataset_info['local_dir_name']: # For local datasets like KOA
+    elif dataset_info and dataset_info['local_dir_name']:
         base_dataset_root = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
         if not os.path.exists(base_dataset_root):
             logging.error(f"Local dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
             sys.exit(1)
         logging.info(f"Base dataset root (local): {base_dataset_root}")
-    else: # For TSRS_RSNA datasets (default)
+    else:
         base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name)
         if not os.path.exists(base_dataset_root):
             logging.error(f"TSRS_RSNA dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
             sys.exit(1)
         logging.info(f"Base dataset root (TSRS_RSNA default): {base_dataset_root}")
-    # --- END dataset root determination ---
 
-    # --- Data Loading and Splitting Logic for Testing ---
     dataset_config = DATASET_CONFIGS.get(args.dataset_name)
     if not dataset_config:
         logging.error(f"Config for dataset '{args.dataset_name}' not found. Exiting.")
@@ -113,10 +152,9 @@ def main():
     test_image_mask_list = []
 
     if dataset_config['has_predefined_splits']:
-        # Datasets with pre-defined 'train', 'val', 'test' folders (e.g., RSNA, KOA)
         logging.info(f"Using predefined splits for dataset '{args.dataset_name}' for testing.")
-        test_path_defined = os.path.join(base_dataset_root, 'test') # Look for a 'test' folder first
-        val_path_defined = os.path.join(base_dataset_root, 'val') # Fallback to 'val' if 'test' not found
+        test_path_defined = os.path.join(base_dataset_root, 'test')
+        val_path_defined = os.path.join(base_dataset_root, 'val')
 
         if os.path.exists(test_path_defined) and os.listdir(test_path_defined):
             test_image_mask_list = make_full_dataset_list(test_path_defined, args.dataset_name, split_name='test')
@@ -129,7 +167,6 @@ def main():
             sys.exit(1)
 
     else:
-        # Datasets requiring programmatic splitting (e.g., COVID-19_Radiography, JSRT)
         logging.info(f"Using programmatic splitting for dataset '{args.dataset_name}' for testing.")
         full_image_mask_list = make_full_dataset_list(base_dataset_root, args.dataset_name, split_name='all')
         
@@ -137,7 +174,6 @@ def main():
             logging.error(f"No data found for programmatic splitting in '{base_dataset_root}'. Exiting.")
             sys.exit(1)
 
-        # Re-create the same random split as during training for consistency
         total_len = len(full_image_mask_list)
         train_len = int(args.train_ratio * total_len)
         val_len = int(args.val_ratio * total_len)
@@ -148,12 +184,10 @@ def main():
         
         logging.info(f"Programmatic split for test: Total {total_len}, Test {len(test_image_mask_list)}")
 
-    # --- Instantiate DataLoader for Testing ---
-    test_set = ImageFolder(test_image_mask_list, args, split='test') # <<< MODIFIED: Pass image_mask_list
+    test_set = ImageFolder(test_image_mask_list, args, split='test')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
     logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
 
-    # --- Load the BEST trained model ---
     checkpoint_to_load = os.path.join(log_dir, 'best_checkpoint.pth')
     if not os.path.exists(checkpoint_to_load):
         logging.error(f"❌ ERROR: 'best_checkpoint.pth' not found in '{log_dir}'. Please run training first for this backbone/dataset combination.")
@@ -167,7 +201,6 @@ def main():
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(DEVICE)
     dice_loss_fn = DiceLoss().to(DEVICE)
 
-    # --- Run Evaluation ---
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
 
