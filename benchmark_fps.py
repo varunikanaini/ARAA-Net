@@ -70,8 +70,6 @@ def main():
 
     device = torch.device("cuda")
 
-    # Set up logging for benchmark results
-    # We'll use a generic directory for benchmarks, outside of specific dataset runs
     benchmark_log_dir = os.path.join(CKPT_ROOT, 'benchmark_results')
     check_mkdir(benchmark_log_dir)
     setup_logging_benchmark(benchmark_log_dir, filename=f'{args.backbone}_benchmark.log')

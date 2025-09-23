@@ -20,7 +20,8 @@ DATASET_CONFIGS = {
         'image_subpath': '', # Images are directly in split root (e.g., train/image.jpg)
         'mask_subpath': 'GT', # Masks are in 'GT' subdirectory relative to split root
         'mask_ext': '.png',
-        'is_nested': False, 
+        'has_predefined_splits': True, # <<< NEW: Explicitly state it has train/val/test folders
+        'is_nested_under_split_root': False, # Images/masks directly under split_root or simple subpaths
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
         'mask_suffix': ''
@@ -30,7 +31,8 @@ DATASET_CONFIGS = {
         'image_subpath': '',
         'mask_subpath': 'GT',
         'mask_ext': '.png',
-        'is_nested': False,
+        'has_predefined_splits': True, # <<< NEW
+        'is_nested_under_split_root': False,
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
         'mask_suffix': ''
@@ -40,7 +42,8 @@ DATASET_CONFIGS = {
     'KOA': { 
         'image_ext': ('.png', '.jpg', '.jpeg'), 
         'mask_ext': '.png',
-        'is_nested': True, # Needs recursive search due to class folders
+        'has_predefined_splits': True, # <<< NEW: train/val/test folders exist under lvv-koa
+        'is_nested_under_split_root': True, # Split folder contains further nested structures (class folders)
         'has_class_folders_under_split': True, # Split folder contains class subfolders (0,1,2,3,4)
         'has_category_folders_under_split': False,
         'mask_suffix': '_mask' # CRUCIAL ASSUMPTION: Mask file is 'image_name_mask.png'
@@ -50,23 +53,24 @@ DATASET_CONFIGS = {
     'COVID-19_Radiography': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
         'mask_ext': '.png',
-        'is_nested': True, # Split folder contains further nested structures (category folders)
+        'has_predefined_splits': False, # <<< NEW: No train/val/test folders, programmatic split needed
+        'is_nested_under_split_root': True, # Contains category folders directly
         'has_class_folders_under_split': False,
-        'has_category_folders_under_split': True, # Split folder contains category subfolders (COVID, Normal etc.)
+        'has_category_folders_under_split': True, # Root folder contains category subfolders (COVID, Normal etc.)
         'image_subpath_in_category': 'images', # Path relative to category folder
         'mask_subpath_in_category': 'masks',   # Path relative to category folder
         'mask_suffix': '' # Masks have same name as image
     },
     
     # JSRT Dataset: DATA_ROOT/jsrt/cxr/image.png, .../masks/mask.png
-    # Assuming user will create train/val/test folders *within* the downloaded root for splitting,
-    # and then copy 'cxr' and 'masks' into them.
+    # This dataset typically doesn't have predefined train/val/test splits.
     'JSRT': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
-        'image_subpath': 'cxr', # Images are in 'cxr' subdirectory relative to split root
-        'mask_subpath': 'masks', # Masks are in 'masks' subdirectory relative to split root
+        'image_subpath': 'cxr', # Images are in 'cxr' subdirectory relative to root
+        'mask_subpath': 'masks', # Masks are in 'masks' subdirectory relative to root
         'mask_ext': '.png',
-        'is_nested': False, # Not nested structure under split root
+        'has_predefined_splits': False, # <<< NEW: No train/val/test folders, programmatic split needed
+        'is_nested_under_split_root': False, # Flat images/masks under cxr/masks
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
         'mask_suffix': '' # Masks have same name as image
@@ -75,7 +79,13 @@ DATASET_CONFIGS = {
 # --- END NEW: Dataset Configuration Dictionary ---
 
 
-def make_dataset(root, dataset_name): 
+def make_dataset(root_path_for_dataset, dataset_name, split_name='all'): # <<< MODIFIED: root is now dataset_base_path, added split_name
+    """
+    Collects all image/mask pairs for a given dataset and split configuration.
+    root_path_for_dataset: The base path for the *entire* dataset (e.g., DATA_ROOT/COVID-19_Radiography_Dataset)
+    dataset_name: The key from DATASET_CONFIGS
+    split_name: 'train', 'val', 'test', or 'all'. For programmatic splits, 'all' collects everything.
+    """
     config = DATASET_CONFIGS.get(dataset_name)
     if not config:
         logging.error(f"Dataset config not found for '{dataset_name}'. Please add it to DATASET_CONFIGS in datasets.py.")
@@ -83,24 +93,35 @@ def make_dataset(root, dataset_name):
 
     image_exts = config['image_ext']
     mask_ext = config['mask_ext']
-    mask_suffix = config.get('mask_suffix', '') # Get suffix if defined
+    mask_suffix = config.get('mask_suffix', '') 
     
     dataset_items = []
     
-    logging.info(f"Loading dataset '{dataset_name}' from '{root}' with config: {config}")
+    logging.info(f"Collecting data for dataset '{dataset_name}' (split: '{split_name}') from '{root_path_for_dataset}' with config: {config}")
 
-    if not os.path.exists(root):
-        logging.error(f"Root directory for split not found: '{root}'. Please check data path.")
+    if not os.path.exists(root_path_for_dataset):
+        logging.error(f"Dataset base directory not found: '{root_path_for_dataset}'. Please check data path.")
         return []
 
-    # --- Case 1: Nested Class Folders (e.g., KOA: train/0/image.png) ---
+    # --- Determine the actual root for image/mask searching based on predefined splits ---
+    search_root = root_path_for_dataset
+    if config['has_predefined_splits'] and split_name != 'all':
+        # For datasets with predefined train/val/test folders (e.g., RSNA, KOA)
+        search_root = os.path.join(root_path_for_dataset, split_name)
+        if not os.path.exists(search_root):
+            logging.error(f"Predefined split directory '{split_name}' not found at '{search_root}'.")
+            return []
+        logging.info(f"Searching within predefined split directory: '{search_root}'")
+
+
+    # --- Case 1: Nested Class Folders (e.g., KOA: search_root/0/image.png) ---
     if config['has_class_folders_under_split']:
         logging.info(f"Handling class-folder-nested structure for '{dataset_name}'.")
-        class_subdirs = [os.path.join(root, d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+        class_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
         class_subdirs.sort()
 
         if not class_subdirs:
-            logging.warning(f"No class subdirectories found in '{root}'. Expected structure like '{root}/0/', '{root}/1/', etc.")
+            logging.warning(f"No class subdirectories found in '{search_root}'. Expected structure like '{search_root}/0/', '{search_root}/1/', etc.")
             return []
         
         for class_dir in class_subdirs:
@@ -120,14 +141,14 @@ def make_dataset(root, dataset_name):
                     else:
                         logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
 
-    # --- Case 2: Nested Category Folders (e.g., COVID-19 Radiography: root/COVID/images/img.png) ---
+    # --- Case 2: Nested Category Folders (e.g., COVID-19 Radiography: search_root/COVID/images/img.png) ---
     elif config['has_category_folders_under_split']:
         logging.info(f"Handling category-folder-nested structure for '{dataset_name}'.")
-        category_subdirs = [os.path.join(root, d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+        category_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
         category_subdirs.sort()
 
         if not category_subdirs:
-            logging.warning(f"No category subdirectories found in '{root}'. Expected structure like '{root}/COVID/', '{root}/Normal/', etc.")
+            logging.warning(f"No category subdirectories found in '{search_root}'. Expected structure like '{search_root}/COVID/', '{search_root}/Normal/', etc.")
             return []
 
         for category_dir in category_subdirs:
@@ -135,10 +156,10 @@ def make_dataset(root, dataset_name):
             mask_category_path = os.path.join(category_dir, config['mask_subpath_in_category'])
 
             if not os.path.exists(image_category_path):
-                logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category.")
+                logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category '{os.path.basename(category_dir)}'.")
                 continue
             if not os.path.exists(mask_category_path):
-                logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category.")
+                logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category '{os.path.basename(category_dir)}'.")
                 continue
             
             for ext in image_exts:
@@ -152,12 +173,12 @@ def make_dataset(root, dataset_name):
                     else:
                         logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
 
-    # --- Case 3: Flat Structure (e.g., RSNA, JSRT, Chest-Xray with images/labels subdirs) ---
+    # --- Case 3: Flat Structure (e.g., RSNA, JSRT: search_root/images/img.png or search_root/cxr/img.png) ---
     else: 
         image_subpath_relative = config.get('image_subpath', '')
         mask_subpath_relative = config.get('mask_subpath', '')
-        image_dir = os.path.join(root, image_subpath_relative)
-        mask_dir = os.path.join(root, mask_subpath_relative)
+        image_dir = os.path.join(search_root, image_subpath_relative)
+        mask_dir = os.path.join(search_root, mask_subpath_relative)
         
         logging.info(f"Handling flat structure for '{dataset_name}'.")
         logging.info(f"Expected images in: '{image_dir}'")
@@ -169,6 +190,9 @@ def make_dataset(root, dataset_name):
         if not os.path.exists(mask_dir):
             logging.error(f"Mask directory not found for flat dataset '{dataset_name}': {mask_dir}")
             return []
+
+        logging.info(f"Image directory '{image_dir}' exists.")
+        logging.info(f"Mask directory '{mask_dir}' exists.")
 
         img_list_basenames = []
         for ext in image_exts:
@@ -197,22 +221,19 @@ def make_dataset(root, dataset_name):
                 logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
 
     if not dataset_items:
-        logging.error(f"No valid image/mask pairs found in '{root}' for dataset '{dataset_name}'. "
+        logging.error(f"No valid image/mask pairs found in '{search_root}' for dataset '{dataset_name}'. "
                       f"Please ensure the data exists and matches the config in datasets.py. Current config: {config}")
         
     return dataset_items
 
 
 class ImageFolder(data.Dataset):
-    def __init__(self, root, args, split='train'):
-        self.root = root
+    def __init__(self, image_mask_paths, args, split='train'): # <<< MODIFIED: Now takes list of (image_path, mask_path)
+        self.imgs = image_mask_paths # This is the list from make_dataset
         self.args = args 
         self.split = split
         self.dataset_name = args.dataset_name 
 
-        self.imgs = make_dataset(root, self.dataset_name) 
-
-        # Default CenterAmplification args, ensure they exist even if not used by this split
         min_lesion_area = getattr(args, 'min_lesion_area_pixels', 576)
         expansion_factor = getattr(args, 'expansion_factor', 1.5)
         min_bbox_h = getattr(args, 'min_bbox_h', 32)
