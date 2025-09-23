@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 import numpy as np
+import torch.nn as nn
 import datetime
 import argparse
 import logging
