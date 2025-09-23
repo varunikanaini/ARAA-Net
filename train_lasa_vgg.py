@@ -1,4 +1,5 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED for robust dataset loading and programmatic splitting)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED to import FocalLoss and DiceLoss from loss.py)
+
 import os
 import time
 import sys
@@ -23,9 +24,7 @@ from datasets import ImageFolder, DATASET_CONFIGS # MODIFIED: Import DATASET_CON
 from datasets import make_dataset as make_full_dataset_list # Rename to avoid conflict
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
-
-# ... (FocalLoss and DiceLoss classes are unchanged) ...
-
+from loss import FocalLoss, DiceLoss  # NEW: Import FocalLoss and DiceLoss from loss.py
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
