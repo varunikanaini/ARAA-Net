@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (CORRECTED for Dataset Choices)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED for new datasets and EXP_NAME)
 import os
 import time
 import sys
@@ -19,7 +19,7 @@ if project_path not in sys.path:
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
 from config import DATA_ROOT, CKPT_ROOT 
-from datasets import ImageFolder, DATASET_CONFIGS # <<< CORRECTED: Import DATASET_CONFIGS
+from datasets import ImageFolder, DATASET_CONFIGS # <<< MODIFIED: Import DATASET_CONFIGS
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
