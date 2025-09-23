@@ -1,9 +1,9 @@
 # /kaggle/working/ARAA-Net/custom_transforms.py
 import torch
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps # <<< ADDED ImageOps for equalize
+from PIL import Image, ImageFilter, ImageOps 
 from torchvision import transforms
-import pywt # <<< ADDED for Wavelet Transformation
+import pywt 
 
 
 class RandomHorizontalFlip(object):
@@ -151,7 +151,7 @@ class CenterAmplification(object):
         return {'image': img, 'label': label}
 
 
-class HistogramEqualization(object): # <<< NEW TRANSFORM
+class HistogramEqualization(object):
     """
     Applies histogram equalization to the PIL image for contrast enhancement.
     If RGB, converts to YCbCr, equalizes Y channel, then converts back to RGB.
@@ -169,7 +169,7 @@ class HistogramEqualization(object): # <<< NEW TRANSFORM
         return sample
 
 
-class WaveletContrastEnhancement(object): # <<< NEW TRANSFORM
+class WaveletContrastEnhancement(object):
     """
     Applies Discrete Wavelet Transform (DWT) based contrast enhancement.
     This version performs level 1 decomposition, scales detail coefficients,
@@ -180,7 +180,6 @@ class WaveletContrastEnhancement(object): # <<< NEW TRANSFORM
         self.level = level
         self.detail_scale_factor = detail_scale_factor
         
-        # Ensure the wavelet family is valid
         if self.wavelet not in pywt.wavelist(kind='discrete'):
             print(f"Warning: Wavelet '{self.wavelet}' not found. Falling back to 'haar'.")
             self.wavelet = 'haar'
@@ -188,7 +187,6 @@ class WaveletContrastEnhancement(object): # <<< NEW TRANSFORM
     def __call__(self, sample):
         img_pil = sample['image']
         
-        # Convert to grayscale for DWT processing
         if img_pil.mode == 'RGB':
             img_gray = img_pil.convert('L')
             original_mode = 'RGB'
@@ -196,36 +194,27 @@ class WaveletContrastEnhancement(object): # <<< NEW TRANSFORM
             img_gray = img_pil
             original_mode = 'L'
 
-        img_np = np.array(img_gray, dtype=np.float32) / 255.0 # Normalize to [0, 1]
+        img_np = np.array(img_gray, dtype=np.float32) / 255.0
 
         # Perform 2D DWT
-        # pywt.dwt2 returns cA, (cH, cV, cD)
-        # Using mode='periodization' is generally good for image processing to avoid boundary artifacts
-        coeffs = pywt.wavedec2(img_np, self.wavelet, mode='periodization', level=self.level)
+        coeffs_list = pywt.wavedec2(img_np, self.wavelet, mode='periodization', level=self.level)
         
-        # Extract approximation and detail coefficients
-        cA = coeffs[0]
-        detail_coeffs = coeffs[1:]
+        # Modify detail coefficients directly within the coeffs_list structure
+        modified_coeffs_list = [coeffs_list[0]] # Approximation coefficients (cA)
+        for d_level in coeffs_list[1:]: # Iterate through each level's detail coefficients tuple (cH, cV, cD)
+            cH, cV, cD = d_level
+            cH_e = cH * self.detail_scale_factor
+            cV_e = cV * self.detail_scale_factor
+            cD_e = cD * self.detail_scale_factor
+            modified_coeffs_list.append((cH_e, cV_e, cD_e)) # Add modified tuple back to the list
 
-        # Enhance detail coefficients by scaling
-        enhanced_detail_coeffs = []
-        for d in detail_coeffs:
-            # Each 'd' is a tuple (cH, cV, cD) for a given level
-            cH_e = d[0] * self.detail_scale_factor
-            cV_e = d[1] * self.detail_scale_factor
-            cD_e = d[2] * self.detail_scale_factor
-            enhanced_detail_coeffs.append((cH_e, cV_e, cD_e))
+        # Reconstruct the image from the modified coefficients list
+        img_reconstructed = pywt.waverec2(modified_coeffs_list, self.wavelet, mode='periodization') # <<< FIXED THIS LINE
 
-        # Reconstruct the image from modified coefficients
-        img_reconstructed = pywt.waverec2((cA, enhanced_detail_coeffs), self.wavelet, mode='periodization')
-
-        # Clip values to valid range [0, 1] and convert back to PIL Image
         img_reconstructed = np.clip(img_reconstructed, 0, 1)
         img_enhanced_pil = Image.fromarray((img_reconstructed * 255).astype(np.uint8))
 
         if original_mode == 'RGB':
-            # If original was RGB, convert grayscale enhanced back to RGB (simple replication for now)
-            # A more sophisticated way would be to apply DWT to each channel, but this adds complexity/overhead
             img_enhanced_pil = img_enhanced_pil.convert('RGB')
         
         sample['image'] = img_enhanced_pil
