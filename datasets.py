@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/datasets.py (FINAL VERSION WITH CENTERAMPLIFICATION)
+# /kaggle/working/ARAA-Net/datasets.py (FINAL VERSION WITH NEW PREPROCESSING)
 
 import os
 import torch.utils.data as data
@@ -57,13 +57,17 @@ class ImageFolder(data.Dataset):
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)),
+                # <<< NEW PREPROCESSING STEPS >>>
+                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
+                tr.HistogramEqualization(),
+                # <<< END NEW PREPROCESSING >>>
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((args.scale_h, args.scale_w)), 
                 tr.RandomGaussianBlur(),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
-        else: # Validation/Test
+        else: # Validation/Test - no data augmentation or complex preprocessing
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),

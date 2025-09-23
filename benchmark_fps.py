@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/benchmark_fps.py
+# /kaggle/working/ARAA-Net/benchmark_fps.py (FINAL & CORRECTED - Includes Parameter Counting)
 import torch
 import argparse
 import time
@@ -12,7 +12,7 @@ if project_path not in sys.path:
 
 from lasa_vgg_model import LASA_Unet # Use generalized LASA_Unet
 from misc import check_mkdir
-from config import CKPT_ROOT # For logging output path
+from config import CKPT_ROOT # <<< FIXED: Import CKPT_ROOT from config
 
 
 def setup_logging_benchmark(log_dir, filename='benchmark_results.log'):

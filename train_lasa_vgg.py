@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for Combined Loss, LR Scheduler, Deep Supervision)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for new preprocessing arguments)
 import os
 import time
 import sys
@@ -66,9 +66,6 @@ class DiceLoss(nn.Module):
         self.ignore_index = ignore_index
 
     def forward(self, inputs, targets):
-        # inputs are logits (N, C, H, W)
-        # targets are class indices (N, H, W)
-        
         num_classes = inputs.shape[1]
         
         if num_classes > 1:
@@ -134,6 +131,15 @@ def get_args():
                         help='Minimum height of the expanded bounding box in pixels for CenterAmplification')
     parser.add_argument('--min-bbox-w', type=int, default=32, 
                         help='Minimum width of the expanded bounding box in pixels for CenterAmplification')
+
+    # <<< NEW ARGS FOR PREPROCESSING >>>
+    parser.add_argument('--wavelet-type', type=str, default='haar', 
+                        help='Wavelet type for DWT-based contrast enhancement (e.g., haar, db1, db2).')
+    parser.add_argument('--wavelet-level', type=int, default=1, 
+                        help='Decomposition level for DWT-based contrast enhancement.')
+    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, 
+                        help='Scaling factor for detail coefficients in wavelet enhancement.')
+    # <<< END NEW ARGS >>>
 
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
 
@@ -204,7 +210,7 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" 
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" # <<< CHANGED exp_name
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)

@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/visualize_lasa_vgg.py
+# /kaggle/working/ARAA-Net/visualize_lasa_vgg.py (FINAL & CORRECTED)
 import torch
 import argparse
 import os
@@ -15,7 +15,7 @@ if project_path not in sys.path:
 
 from lasa_vgg_model import LASA_Unet # Use generalized LASA_Unet
 from datasets import ImageFolder
-from config import DATA_ROOT, CKPT_ROOT
+from config import DATA_ROOT, CKPT_ROOT # <<< FIXED: Import CKPT_ROOT from config
 from misc import check_mkdir
 
 def setup_logging_visualize(log_dir, filename='visualization.log'):
@@ -26,17 +26,22 @@ def setup_logging_visualize(log_dir, filename='visualization.log'):
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize LASA-Unet predictions')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', help='Dataset used for training')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface', help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
     parser.add_argument('--image-index', type=int, default=0, help='Index of the test image to visualize (0-indexed)') # Default to 0 for first image
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
     
-    # Dummy args for ImageFolder to instantiate correctly (CenterAmplification is training-only but args are parsed)
+    # Dummy args for ImageFolder to instantiate correctly (these are training-only but must be parsed)
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
+
+    # Wavelet Preprocessing args (needed for ImageFolder to instantiate correctly)
+    parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
+    parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     
     try:
         args = parser.parse_args()
@@ -47,7 +52,7 @@ def main():
     
     # Construct the experiment name to find the checkpoint
     # This MUST match the naming convention used in train_lasa_vgg.py
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     output_dir = os.path.join(CKPT_ROOT, 'visual_results', exp_name)
     check_mkdir(output_dir)
     setup_logging_visualize(output_dir) # Setup logging for this specific visualization run

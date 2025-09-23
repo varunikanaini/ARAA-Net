@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (FINAL VERSION with DETAILED METRICS - CKPT_ROOT Fixed)
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py (FINAL & CORRECTED)
 import sys
 import os
 import torch
@@ -15,10 +15,10 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_Unet
+from lasa_vgg_model import LASA_Unet # Use the generalized LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
-from misc import check_mkdir, AvgMeter
+from misc import check_mkdir, AvgMeter # Import AvgMeter for loss logging in test
 from config import DATA_ROOT, CKPT_ROOT # <<< FIXED: Import CKPT_ROOT from config
 
 # Import loss functions for consistent loss calculation if logging loss during test
@@ -27,7 +27,7 @@ from train_lasa_vgg import FocalLoss, DiceLoss
 
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Dataset used for training')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
@@ -35,11 +35,11 @@ def get_test_args():
     # Deep Supervision weights (needed for loss calculation in evaluate_model if you log loss)
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
                         help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
-    # Focal Loss specific hyperparameters
+    # Focal Loss specific hyperparameters (for consistent loss calculation)
     parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha parameter for Focal Loss.')
     parser.add_argument('--focal-gamma', type=float, default=2.0, help='Gamma parameter for Focal Loss.')
     parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Weight for Focal Loss component in combined loss.')
-    # Dice Loss specific hyperparameters
+    # Dice Loss specific hyperparameters (for consistent loss calculation)
     parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss component in combined loss.')
 
     # CenterAmplification args (needed for ImageFolder to instantiate correctly, even if not used in test split)
@@ -47,6 +47,11 @@ def get_test_args():
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
+
+    # Wavelet Preprocessing args (needed for ImageFolder to instantiate correctly, even if not used in test split)
+    parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
+    parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
 
     try:
         args = parser.parse_args()
@@ -72,7 +77,7 @@ def main():
     
     # --- Construct the correct experiment name to find the checkpoint ---
     # This MUST match the naming convention used in train_lasa_vgg.py
-    EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir) # Ensure log directory exists
     setup_logging(log_dir) # Setup logging for this specific test run
@@ -92,7 +97,7 @@ def main():
             sys.exit(1)
 
 
-    test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for correct transforms
+    test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False)
     logging.info(f"Found {len(test_set)} testing images in '{test_data_path}'.")
 
