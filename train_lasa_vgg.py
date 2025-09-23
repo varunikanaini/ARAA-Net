@@ -143,19 +143,13 @@ def main():
     # --- NEW: Handle KaggleHub dataset download and placement ---
     dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
     if dataset_info and dataset_info['id']: # If it's a KaggleHub dataset
-        # This function downloads and moves the data to DATA_ROOT/<local_dir_name>
         downloaded_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
         if not downloaded_root:
             logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
             sys.exit(1)
-        
-        # Now, ensure dataset_path correctly points to the expected structure
-        # For JSRT, downloaded_root is like /kaggle/working/ARAA-Net/data/jsrt-247-image-lung-segmentation-mask-dataset
-        # For COVID-19_Radiography, downloaded_root is like /kaggle/working/ARAA-Net/data/COVID-19_Radiography_Dataset
-        # The DATASET_CONFIGS assumes DATA_ROOT/<dataset_name>/<split>
-        # So we adapt dataset_path to point to downloaded_root directly.
-        base_dataset_root_for_splits = downloaded_root # This is the root for train/val/test
-        logging.info(f"Base dataset root for splits: {base_dataset_root_for_splits}")
+        # Use the local_dir_name from config for consistency with DATASET_CONFIGS
+        base_dataset_root_for_splits = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        logging.info(f"Base dataset root for splits (KaggleHub): {base_dataset_root_for_splits}")
         
     elif dataset_info and dataset_info['local_dir_name']: # For local datasets like KOA
         base_dataset_root_for_splits = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
@@ -163,9 +157,9 @@ def main():
         if not os.path.exists(base_dataset_root_for_splits):
             logging.error(f"Local dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
             sys.exit(1)
-    else: # For TSRS_RSNA datasets
+    else: # For TSRS_RSNA datasets (default)
         base_dataset_root_for_splits = os.path.join(DATA_ROOT, args.dataset_name)
-        logging.info(f"Base dataset root for splits (TSRS_RSNA): {base_dataset_root_for_splits}")
+        logging.info(f"Base dataset root for splits (TSRS_RSNA default): {base_dataset_root_for_splits}")
         if not os.path.exists(base_dataset_root_for_splits):
             logging.error(f"TSRS_RSNA dataset directory not found at '{base_dataset_root_for_splits}'. Please place it there. Exiting.")
             sys.exit(1)
@@ -194,7 +188,6 @@ def main():
             logging.error(f"Error loading model from checkpoint: {e}")
             sys.exit(1)
 
-        # For test_only, ImageFolder still needs a 'root' path which is the split path
         test_set_for_eval = ImageFolder(val_path, args, split='val') 
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
