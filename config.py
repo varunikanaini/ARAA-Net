@@ -1,4 +1,3 @@
-# /kaggle/working/ARAA-Net/config.py
 import os
 import kagglehub
 import shutil
@@ -59,6 +58,22 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
     if not final_destination_folder_name:
         logging.error(f"Kaggle Dataset ID '{dataset_id}' not found in KAGGLE_DATASET_MAPPING. Exiting.")
         return None
+
+    # --- NEW ADDITION START ---
+    # Heuristic: If the determined source_dataset_root contains a single subdirectory
+    # that matches the expected final_destination_folder_name,
+    # then the actual content is likely nested one level deeper.
+    if source_dataset_root:
+        try:
+            nested_items = [d for d in os.listdir(source_dataset_root) if os.path.isdir(os.path.join(source_dataset_root, d))]
+            if len(nested_items) == 1 and nested_items[0] == final_destination_folder_name:
+                logging.info(f"Detected nested dataset structure: '{os.path.basename(source_dataset_root)}/{nested_items[0]}'. Adjusting source root for copy.")
+                source_dataset_root = os.path.join(source_dataset_root, nested_items[0])
+        except FileNotFoundError:
+            logging.warning(f"Source dataset root '{source_dataset_root}' not found during nested check. Skipping adjustment.")
+        except Exception as e:
+            logging.warning(f"Error during nested directory check in '{source_dataset_root}': {e}. Skipping adjustment.")
+    # --- NEW ADDITION END ---
 
     final_destination_path = os.path.join(target_dir, final_destination_folder_name)
 
