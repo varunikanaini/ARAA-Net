@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/datasets.py (MODIFIED for precise structures and robust make_dataset)
+# /kaggle/working/ARAA-Net/datasets.py (MODIFIED for precise structures and robust make_dataset - convert_label fix)
 
 import os
 import torch.utils.data as data
@@ -20,7 +20,7 @@ DATASET_CONFIGS = {
         'image_subpath': '', # Images are directly in split root (e.g., train/image.jpg)
         'mask_subpath': 'GT', # Masks are in 'GT' subdirectory relative to split root
         'mask_ext': '.png',
-        'has_predefined_splits': True, # <<< NEW: Explicitly state it has train/val/test folders
+        'has_predefined_splits': True, # Explicitly state it has train/val/test folders
         'is_nested_under_split_root': False, # Images/masks directly under split_root or simple subpaths
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
@@ -31,7 +31,7 @@ DATASET_CONFIGS = {
         'image_subpath': '',
         'mask_subpath': 'GT',
         'mask_ext': '.png',
-        'has_predefined_splits': True, # <<< NEW
+        'has_predefined_splits': True, 
         'is_nested_under_split_root': False,
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
@@ -42,8 +42,8 @@ DATASET_CONFIGS = {
     'KOA': { 
         'image_ext': ('.png', '.jpg', '.jpeg'), 
         'mask_ext': '.png',
-        'has_predefined_splits': True, # <<< NEW: train/val/test folders exist under lvv-koa
-        'is_nested_under_split_root': True, # Split folder contains further nested structures (class folders)
+        'is_nested': True, # Needs recursive search due to class folders
+        'has_predefined_splits': True, # train/val/test folders exist under lvv-koa
         'has_class_folders_under_split': True, # Split folder contains class subfolders (0,1,2,3,4)
         'has_category_folders_under_split': False,
         'mask_suffix': '_mask' # CRUCIAL ASSUMPTION: Mask file is 'image_name_mask.png'
@@ -53,8 +53,8 @@ DATASET_CONFIGS = {
     'COVID-19_Radiography': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
         'mask_ext': '.png',
-        'has_predefined_splits': False, # <<< NEW: No train/val/test folders, programmatic split needed
-        'is_nested_under_split_root': True, # Contains category folders directly
+        'has_predefined_splits': False, # No train/val/test folders, programmatic split needed
+        'is_nested': True, # Root folder contains further nested structures (category folders)
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': True, # Root folder contains category subfolders (COVID, Normal etc.)
         'image_subpath_in_category': 'images', # Path relative to category folder
@@ -69,8 +69,8 @@ DATASET_CONFIGS = {
         'image_subpath': 'cxr', # Images are in 'cxr' subdirectory relative to root
         'mask_subpath': 'masks', # Masks are in 'masks' subdirectory relative to root
         'mask_ext': '.png',
-        'has_predefined_splits': False, # <<< NEW: No train/val/test folders, programmatic split needed
-        'is_nested_under_split_root': False, # Flat images/masks under cxr/masks
+        'has_predefined_splits': False, # No train/val/test folders, programmatic split needed
+        'is_nested': False, # Not nested structure under root, simple subpaths
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
         'mask_suffix': '' # Masks have same name as image
@@ -79,7 +79,7 @@ DATASET_CONFIGS = {
 # --- END NEW: Dataset Configuration Dictionary ---
 
 
-def make_dataset(root_path_for_dataset, dataset_name, split_name='all'): # <<< MODIFIED: root is now dataset_base_path, added split_name
+def make_dataset(root_path_for_dataset, dataset_name, split_name='all'): 
     """
     Collects all image/mask pairs for a given dataset and split configuration.
     root_path_for_dataset: The base path for the *entire* dataset (e.g., DATA_ROOT/COVID-19_Radiography_Dataset)
@@ -228,8 +228,8 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'): # <<< M
 
 
 class ImageFolder(data.Dataset):
-    def __init__(self, image_mask_paths, args, split='train'): # <<< MODIFIED: Now takes list of (image_path, mask_path)
-        self.imgs = image_mask_paths # This is the list from make_dataset
+    def __init__(self, image_mask_paths, args, split='train'): 
+        self.imgs = image_mask_paths 
         self.args = args 
         self.split = split
         self.dataset_name = args.dataset_name 
@@ -262,7 +262,7 @@ class ImageFolder(data.Dataset):
         img_path, gt_path = self.imgs[index]
         img = Image.open(img_path).convert('RGB')
         target = Image.open(gt_path)
-        label = self.convert_label(target)
+        label = self.convert_label(target) # <<< Original line
         
         sample = {'image': img, 'label': label, 'name': os.path.basename(img_path)}
         transformed_sample = self.composed_transforms(sample)
@@ -270,10 +270,12 @@ class ImageFolder(data.Dataset):
         return transformed_sample
     
     def convert_label(self, label):
-        label_np = np.array(label, dtype=np.uint8)
+        # FIX: Explicitly convert to grayscale 'L' before converting to numpy array.
+        label_gray = label.convert('L') # <<< NEW LINE
+        label_np = np.array(label_gray, dtype=np.uint8) # <<< MODIFIED to use label_gray
         label_index = np.zeros_like(label_np, dtype=np.uint8)
         label_index[label_np > 0] = 1
-        return Image.fromarray(label_index, mode='P')
+        return Image.fromarray(label_index, mode='P') # This now receives a 2D array, fixing the ValueError
 
     def __len__(self):
         return len(self.imgs)

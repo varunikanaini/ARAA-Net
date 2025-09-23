@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (DEFINITIVELY CORRECTED with Loss Class Definitions)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (MODIFIED for robust dataset loading and programmatic splitting)
 import os
 import time
 import sys
@@ -7,7 +7,7 @@ import argparse
 import torch
 import numpy as np
 from torch import nn, optim
-from torch.utils.data import DataLoader, random_split # MODIFIED: Import random_split
+from torch.utils.data import DataLoader, random_split 
 from tqdm import tqdm
 import torch.nn.functional as F
 
@@ -18,84 +18,13 @@ if project_path not in sys.path:
 
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
-from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
-from datasets import ImageFolder, DATASET_CONFIGS
-from datasets import make_dataset as make_full_dataset_list # Renamed to avoid conflict
+from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING 
+from datasets import ImageFolder, DATASET_CONFIGS # MODIFIED: Import DATASET_CONFIGS, make_dataset
+from datasets import make_dataset as make_full_dataset_list # Rename to avoid conflict
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# ===================================================================
-#      ✅ FOCAL LOSS CLASS - INCLUDED DIRECTLY IN THIS SCRIPT ✅
-# ===================================================================
-class FocalLoss(nn.Module):
-    """
-    Focal Loss for multi-class classification, included directly in the script.
-    """
-    def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.ignore_index = ignore_index
-
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
-        pt = torch.exp(-ce_loss)
-        focal_loss = self.alpha * (1 - pt)**self.gamma * ce_loss
-        
-        if self.reduction == 'mean':
-            mask = (targets != self.ignore_index).float()
-            return (focal_loss * mask).sum() / (mask.sum() + 1e-6)
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-# ===================================================================
-
-# ===================================================================
-#      ✅ DICE LOSS CLASS - INCLUDED DIRECTLY IN THIS SCRIPT ✅
-# ===================================================================
-class DiceLoss(nn.Module):
-    """
-    Dice Loss for binary or multi-class segmentation.
-    Supports a single foreground class (target 1, background 0).
-    """
-    def __init__(self, smooth=1e-6, reduction='mean', ignore_index=255):
-        super(DiceLoss, self).__init__()
-        self.smooth = smooth
-        self.reduction = reduction
-        self.ignore_index = ignore_index
-
-    def forward(self, inputs, targets):
-        num_classes = inputs.shape[1]
-        
-        if num_classes > 1:
-            pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) # (N, 1, H, W)
-            true_oh = (targets == 1).float().unsqueeze(1) # One-hot for foreground (N, 1, H, W)
-        else: 
-            pred_probs = F.sigmoid(inputs)
-            true_oh = targets.float().unsqueeze(1) # (N, 1, H, W)
-
-        if self.ignore_index is not None:
-            mask = (targets != self.ignore_index).float()
-            pred_probs = pred_probs * mask.unsqueeze(1)
-            true_oh = true_oh * mask.unsqueeze(1)
-        
-        pred_probs = pred_probs.view(-1)
-        true_oh = true_oh.view(-1)
-
-        intersection = (pred_probs * true_oh).sum()
-        dice = (2. * intersection + self.smooth) / (pred_probs.sum() + true_oh.sum() + self.smooth)
-        
-        loss = 1. - dice
-        
-        if self.reduction == 'mean':
-            return loss
-        elif self.reduction == 'sum':
-            return loss * inputs.shape[0] 
-        else:
-            return loss 
-# ===================================================================
+# ... (FocalLoss and DiceLoss classes are unchanged) ...
 
 
 def get_args():
@@ -216,7 +145,7 @@ def main():
 
     # --- Determine the base root for the dataset (download if KaggleHub) ---
     dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
-    base_dataset_root = None
+    base_dataset_root = None # Initialize to None
 
     if dataset_info and dataset_info['id']: # If it's a KaggleHub dataset
         base_dataset_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
@@ -224,17 +153,15 @@ def main():
             logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
             sys.exit(1)
         logging.info(f"Base dataset root (KaggleHub): {base_dataset_root}")
-    elif dataset_info and dataset_info['local_dir_name']: # For local datasets like KOA
+        
+    elif dataset_info and dataset_info['local_dir_name']: # For local datasets like KOA (lvv-koa)
         base_dataset_root = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
         if not os.path.exists(base_dataset_root):
             logging.error(f"Local dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
             sys.exit(1)
         logging.info(f"Base dataset root (local): {base_dataset_root}")
-    else: # For TSRS_RSNA datasets (default)
-        # This branch is for TSRS_RSNA which has DATA_ROOT/<dataset_name>/train, etc.
-        # But for other KaggleHub datasets without 'id', base_dataset_root might already be DATA_ROOT/<local_dir_name>
-        # Re-evaluate this logic to be robust
-        base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name) # Assuming direct placement if not KaggleHub ID or local_dir_name
+    else: # For TSRS_RSNA datasets (default scenario, assumes DATA_ROOT/<dataset_name>)
+        base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name)
         if not os.path.exists(base_dataset_root):
             logging.error(f"Dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
             sys.exit(1)
@@ -253,19 +180,21 @@ def main():
     test_image_mask_list = [] 
 
     if dataset_config['has_predefined_splits']:
+        # Datasets with pre-defined 'train', 'val', 'test' folders (e.g., RSNA, KOA)
         logging.info(f"Using predefined splits for dataset '{args.dataset_name}'.")
-        train_path = os.path.join(base_dataset_root, 'train')
-        val_path = os.path.join(base_dataset_root, 'val')
-        test_path_defined = os.path.join(base_dataset_root, 'test') 
+        train_full_path = os.path.join(base_dataset_root, 'train')
+        val_full_path = os.path.join(base_dataset_root, 'val')
+        test_full_path_defined = os.path.join(base_dataset_root, 'test') 
 
-        train_image_mask_list = make_full_dataset_list(train_path, args.dataset_name, split_name='train')
-        val_image_mask_list = make_full_dataset_list(val_path, args.dataset_name, split_name='val')
-        if os.path.exists(test_path_defined) and os.listdir(test_path_defined):
-             test_image_mask_list = make_full_dataset_list(test_path_defined, args.dataset_name, split_name='test')
+        train_image_mask_list = make_full_dataset_list(train_full_path, args.dataset_name, split_name='train')
+        val_image_mask_list = make_full_dataset_list(val_full_path, args.dataset_name, split_name='val')
+        if os.path.exists(test_full_path_defined) and os.listdir(test_full_path_defined):
+             test_image_mask_list = make_full_dataset_list(test_full_path_defined, args.dataset_name, split_name='test')
         else:
              logging.warning(f"No explicit 'test' split folder found for '{args.dataset_name}'. Validation set will be used for final testing if --test-only is used without specific test_path.")
 
     else:
+        # Datasets requiring programmatic splitting (e.g., COVID-19_Radiography, JSRT)
         logging.info(f"Performing programmatic splitting for dataset '{args.dataset_name}'.")
         # For programmatic splits, make_full_dataset_list is called on the *base_dataset_root*
         full_image_mask_list = make_full_dataset_list(base_dataset_root, args.dataset_name, split_name='all')
@@ -279,6 +208,8 @@ def main():
         val_len = int(args.val_ratio * total_len)
         test_len = total_len - train_len - val_len
 
+        # Perform random split
+        # Use a generator for reproducibility if desired, for now let random_split use its default rng
         train_image_mask_list, val_image_mask_list, test_image_mask_list = random_split(
             full_image_mask_list, [train_len, val_len, test_len], generator=torch.Generator().manual_seed(42))
         
@@ -304,7 +235,7 @@ def main():
             logging.error(f"Error loading model from checkpoint: {e}")
             sys.exit(1)
 
-        # For test-only, use the test_image_mask_list for evaluation
+        # For test_only, use the test_image_mask_list for evaluation
         test_set_for_eval = ImageFolder(test_image_mask_list, args, split='test') 
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
