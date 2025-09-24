@@ -218,17 +218,17 @@ class ImageFolder(data.Dataset):
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.RandomHorizontalFlip(),
-                # CHANGE THIS LINE: Pass w and h as separate arguments
-                tr.FixedResize(scale_w, scale_h), # Fixed: Pass w, h as separate arguments
-                tr.RandomCrop((crop_h, crop_w)),      # Pass (H, W) tuple to RandomCrop
+                # CHANGE THIS LINE: Pass h and w as separate arguments in (H, W) order
+                tr.FixedResize(scale_h, scale_w), # Fixed: Pass h, w as separate arguments (assuming FixedResize(h,w))
+                tr.RandomCrop((crop_h, crop_w)),      # Pass (H, W) tuple to RandomCrop (this remains a tuple)
                 tr.RandomGaussianBlur(),
                 transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
         else: # Validation/Test
             self.composed_transforms = transforms.Compose([
-                # CHANGE THIS LINE: Pass w and h as separate arguments
-                tr.FixedResize(scale_w, scale_h), # Fixed: Pass w, h as separate arguments
+                # CHANGE THIS LINE: Pass h and w as separate arguments in (H, W) order
+                tr.FixedResize(scale_h, scale_w), # Fixed: Pass h, w as separate arguments (assuming FixedResize(h,w))
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
 
