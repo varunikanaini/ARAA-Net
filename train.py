@@ -308,37 +308,25 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # --- REMOVED: Intermediate validation calls ---
-                # if (i % (len(train_loader) // 5 + 1) == 0 and i != 0) or (i == len(train_loader) - 1):
-                #     current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
-                #     logging.info(f"Validation at Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
-                # --- END REMOVED ---
-
             # --- VALIDATE ONLY AT THE END OF EACH EPOCH ---
             # This call happens *after* the entire training loop for the epoch has completed.
+            # We pass the final curr_iter for TensorBoard logging.
             current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
-            logging.info(f"Epoch {epoch+1} End Validation: mIoU = {current_mIoU:.4f}") # Logs to file & console
-
-            # --- SAVE CHECKPOINT AT THE END OF EACH EPOCH WITH EPOCH NUMBER ---
-            epoch_checkpoint_path = os.path.join(exp_path, f'epoch_{epoch:03d}_checkpoint.pth')
-            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, epoch_checkpoint_path)
-            logging.info(f"Saved epoch checkpoint to {epoch_checkpoint_path}")
-            # Optional: Persist this to Kaggle output if you want all epoch checkpoints
-            # shutil.copy(epoch_checkpoint_path, f'/kaggle/working/epoch_{epoch:03d}_checkpoint.pth')
+            logging.info(f"Epoch {epoch+1} End Validation: mIoU = {current_mIoU:.4f}")
 
 
             # Save best model
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
                 best_model_path = os.path.join(exp_path, 'best_checkpoint.pth')
-                torch.save(net.state_dict(), best_model_path)
+                torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, best_model_path) # Save full checkpoint for best
                 logging.info(f"✅ New best model saved at {best_model_path} with mIoU: {best_mIoU:.4f}")
                 # Persist to Kaggle output
                 shutil.copy(best_model_path, '/kaggle/working/best_checkpoint.pth')
             
             # Save latest checkpoint (always overwrites previous latest)
             latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
-            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, latest_checkpoint_path)
+            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, latest_checkpoint_path) # Save full checkpoint for latest
             logging.info(f"Saved latest checkpoint to {latest_checkpoint_path}")
             # Persist to Kaggle output
             shutil.copy(latest_checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
