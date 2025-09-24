@@ -27,6 +27,8 @@ import loss # Assuming loss.py contains structure_loss, IOU
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 import shutil
+import torch.nn.functional as F # <--- Ensure F is imported here for loss.py's internal usage
+
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support and dynamic dataset/transforms')
@@ -74,16 +76,17 @@ def validate(net, test_loader, device, bce_iou_loss_fn, structure_loss_fn, ce_lo
         for data in tqdm(test_loader, desc="Validating", leave=False):
             inputs, labels = data['image'].to(device), data['label'].to(device)
             predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
-            binary_labels = labels.unsqueeze(1).float()
-            ce_labels = labels.long()
+            binary_labels = labels.unsqueeze(1).float() # (B, 1, H, W)
+            ce_labels = labels.long() # (B, H, W)
             
-            # Ensure consistency with how BCEWithLogitsLoss expects input (1 channel for predict_1)
-            # predict_1 is (B,1,H,W) or (B,H,W), BCEWithLogitsLoss expects (B,H,W) and target (B,H,W)
-            loss_1 = bce_iou_loss_fn(predict_1.squeeze(1), binary_labels.squeeze(1)) # Squeeze predict_1 and binary_labels
+            # --- FIX: Removed .squeeze(1) here ---
+            loss_1 = bce_iou_loss_fn(predict_1, binary_labels) 
+            # predict_2,3,4 are (B,1,H,W), binary_labels is (B,1,H,W) - correct for structure_loss
             loss_2 = structure_loss_fn(predict_2, binary_labels)
             loss_3 = structure_loss_fn(predict_3, binary_labels)
             loss_4 = structure_loss_fn(predict_4, binary_labels)
-            loss_0 = ce_loss_fn(predict_0, ce_labels) # CrossEntropyLoss takes logits, (N,C,H,W) and (N,H,W)
+            # predict_0 is (B, num_classes, H, W), ce_labels is (B, H, W) - correct for CrossEntropyLoss
+            loss_0 = ce_loss_fn(predict_0, ce_labels)
             
             loss_total = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
             loss_recorder.update(loss_total.item(), inputs.size(0))
@@ -281,16 +284,19 @@ def main():
                 optimizer.param_groups[1]['lr'] = base_lr
             
                 inputs, labels = data['image'].to(device), data['label'].to(device)
-                binary_labels = labels.unsqueeze(1).float()
-                ce_labels = labels.long()
+                binary_labels = labels.unsqueeze(1).float() # (B, 1, H, W)
+                ce_labels = labels.long() # (B, H, W)
                 optimizer.zero_grad(set_to_none=True)
                 
                 predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
                 
-                loss_1 = bce_iou_loss_fn_wrapper(predict_1.squeeze(1), binary_labels.squeeze(1))
+                # --- FIX: Removed .squeeze(1) here ---
+                loss_1 = bce_iou_loss_fn_wrapper(predict_1, binary_labels)
+                # predict_2,3,4 are (B,1,H,W), binary_labels is (B,1,H,W) - correct for structure_loss
                 loss_2 = structure_loss_fn(predict_2, binary_labels)
                 loss_3 = structure_loss_fn(predict_3, binary_labels)
                 loss_4 = structure_loss_fn(predict_4, binary_labels)
+                # predict_0 is (B, num_classes, H, W), ce_labels is (B, H, W) - correct for CrossEntropyLoss
                 loss_0 = ce_loss_fn(predict_0, ce_labels)
                 
                 total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
