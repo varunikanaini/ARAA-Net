@@ -46,13 +46,12 @@ def get_args():
     parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to for ImageFolder transforms.')
     parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to for ImageFolder transforms.')
 
-    # These are specific to CenterAmplification which was in a previous ImageFolder reference, 
-    # but not explicitly used in the ImageFolder provided above, but kept as args for compatibility 
-    # if ImageFolder were modified to use them later. They will be ignored in the current ImageFolder.
-    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder (if CenterAmplification used).')
-    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder (if CenterAmplification used).')
-    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder (if CenterAmplification used).')
-    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder (if CenterAmplification used).')
+    # These arguments are now truly unused as CenterAmplification is removed from the pipeline.
+    # They are kept only to avoid argparse errors if you try to pass them.
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='(UNUSED) Dummy arg for ImageFolder (if CenterAmplification used).')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='(UNUSED) Dummy arg for ImageFolder (if CenterAmplification used).')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='(UNUSED) Dummy arg for ImageFolder (if CenterAmplification used).')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='(UNUSED) Dummy arg for ImageFolder (if CenterAmplification used).')
     
     # Programmatic splitting ratios (used for COVID-19_Radiography)
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Train split ratio for programmatic splitting.')

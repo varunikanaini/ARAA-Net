@@ -44,12 +44,12 @@ def get_test_args():
     parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to for ImageFolder transforms.')
     parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to for ImageFolder transforms.')
 
-    # These are specific to CenterAmplification which was in a previous ImageFolder reference.
-    # Kept as args for compatibility/future use, but largely ignored by current ImageFolder test transforms.
-    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
+    # These arguments are now truly unused as CenterAmplification is removed from the pipeline.
+    # They are kept only to avoid argparse errors if you try to pass them.
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='(UNUSED) Dummy arg for ImageFolder.')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='(UNUSED) Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='(UNUSED) Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='(UNUSED) Dummy arg for ImageFolder.')
 
     # Programmatic splitting ratios (needed for consistency if programmatic split was used in training)
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Dummy arg for programmatic split consistency.')
@@ -83,7 +83,7 @@ def main():
     
     logging.info("✅ Environment setup complete.")
 
-    EXP_NAME = f"{args.backbone}_ARAA-Net_{args.dataset-name.replace('TSRS_RSNA-', '').lower()}"
+    EXP_NAME = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir)
     setup_logging(log_dir)
@@ -224,7 +224,7 @@ def main():
         f"Crop size for test: ({args.crop_size_h}, {args.crop_size_w})\n"
         f"--------------------------------------------------\n"
         f"Global Accuracy = {global_acc.item():.4f}\n"
-        f"Mean IoU (mIoU) = {mIoU:.4f}\n"
+        f"Mean IoU (mIoU) = {mIoU:.4f}\n" 
         f"Mean Dice       = {mDice:.4f}\n"
         f"FWIoU           = {fwiou.item():.4f}\n"
         f"Class IoU       = {class_iou.cpu().numpy()}\n" 

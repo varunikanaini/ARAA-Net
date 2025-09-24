@@ -133,10 +133,10 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
 
             if not os.path.exists(image_category_path): 
                 logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category.")
-                continue # FIX: Changed `and continue` to a standard `continue`
+                continue 
             if not os.path.exists(mask_category_path): 
                 logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category.")
-                continue # FIX: Changed `and continue` to a standard `continue`
+                continue 
             
             for ext in image_exts:
                 image_files = glob.glob(os.path.join(image_category_path, '*' + ext), recursive=False)
@@ -214,15 +214,15 @@ class ImageFolder(data.Dataset):
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.RandomHorizontalFlip(),
-                tr.FixedResize(h=scale_h, w=scale_w), # First, resize to scale_h, scale_w
-                tr.RandomCrop((crop_h, crop_w)),      # Then, random crop to crop_h, crop_w
+                tr.FixedResize((scale_h, scale_w)), # Pass (H, W) tuple to FixedResize
+                tr.RandomCrop((crop_h, crop_w)),      # Pass (H, W) tuple to RandomCrop
                 tr.RandomGaussianBlur(),
-                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1), # Added from original train.py logic
+                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1), # From original train.py logic
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
         else: # Validation/Test
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(h=scale_h, w=scale_w), # Only FixedResize for val/test, no explicit cropping
+                tr.FixedResize((scale_h, scale_w)), # Pass (H, W) tuple to FixedResize
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
 
