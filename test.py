@@ -83,7 +83,7 @@ def main():
     
     logging.info("✅ Environment setup complete.")
 
-    EXP_NAME = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    EXP_NAME = f"{args.backbone}_ARAA-Net_{args.dataset-name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir)
     setup_logging(log_dir)
