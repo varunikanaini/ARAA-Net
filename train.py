@@ -16,7 +16,7 @@ from daseg import daseg # Your model
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
 from datasets import ImageFolder, DATASET_CONFIGS
 from datasets import make_dataset as make_full_dataset_list
-import joint_transforms
+import joint_transforms # Keep if custom_transforms relies on it, otherwise can be removed
 import loss # Assuming loss.py contains structure_loss, IOU, etc.
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
@@ -29,9 +29,9 @@ def get_args():
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     
-    # Renamed arguments for consistency with user's command
-    parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=10, help='Batch size for training')
+    # Arguments matching user's request
+    parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
+    parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
     
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
@@ -44,10 +44,15 @@ def get_args():
     # Arguments for ImageFolder and programmatic splitting
     parser.add_argument('--scale-h', type=int, default=576, help='Height images were resized to for ImageFolder transforms')
     parser.add_argument('--scale-w', type=int, default=896, help='Width images were resized to for ImageFolder transforms')
-    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Min lesion area for CenterAmplification in ImageFolder.')
-    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Expansion factor for CenterAmplification in ImageFolder.')
-    parser.add_argument('--min-bbox-h', type=int, default=32, help='Min bbox height for CenterAmplification in ImageFolder.')
-    parser.add_argument('--min-bbox-w', type=int, default=32, help='Min bbox width for CenterAmplification in ImageFolder.')
+    parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to for ImageFolder transforms.') # Added
+    parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to for ImageFolder transforms.') # Added
+
+    # These are specific to CenterAmplification, currently not explicitly used in ImageFolder's transform, but kept for consistency
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Min lesion area for CenterAmplification in ImageFolder (if used).')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Expansion factor for CenterAmplification in ImageFolder (if used).')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='Min bbox height for CenterAmplification in ImageFolder (if used).')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='Min bbox width for CenterAmplification in ImageFolder (if used).')
+    
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Train split ratio for programmatic splitting.')
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Validation split ratio for programmatic splitting.')
     
@@ -55,20 +60,8 @@ def get_args():
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[1.0, 1.0, 2.0, 4.0, 10.0],
                         help='Weights for deep supervision losses for predict_1 to predict_0 (total 5 values).')
 
-    # NEW: Added for early stopping in this script
-    parser.add_argument('--patience', type=int, default=20, help='Number of epochs with no improvement after which training will stop.')
-
-    # Placeholder arguments (for compatibility with user's example, but NOT actively used by daseg model's current loss setup)
-    parser.add_argument('--focal-alpha', type=float, default=0.5, help='Placeholder: Alpha parameter for Focal Loss (not used in daseg loss).')
-    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Placeholder: Gamma parameter for Focal Loss (not used in daseg loss).')
-    parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Placeholder: Weight for Focal Loss component (not used in daseg loss).')
-    parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Placeholder: Weight for Dice Loss component (not used in daseg loss).')
-    
-    # Placeholder arguments for scheduler (daseg uses polynomial LR decay, not ReduceLROnPlateau)
-    parser.add_argument('--scheduler-patience', type=int, default=5, help='Placeholder: Patience for ReduceLROnPlateau (not used in daseg LR decay).')
-    parser.add_argument('--scheduler-factor', type=float, default=0.5, help='Placeholder: Factor for ReduceLROnPlateau (not used in daseg LR decay).')
-    parser.add_argument('--scheduler-min-lr', type=float, default=1e-6, help='Placeholder: Min LR for ReduceLROnPlateau (not used in daseg LR decay).')
-
+    # Arguments like --patience, focal/dice loss params, scheduler params were removed as they are not
+    # part of the daseg model's native training logic or requested in your specific command examples.
 
     try:
         args = parser.parse_args()
@@ -107,9 +100,9 @@ def validate(net, test_loader, device, writer=None, curr_iter=None, args=None):
             loss_2 = structure_loss_fn(predict_2, binary_labels) * args.deep_supervision_weights[1]
             loss_3 = structure_loss_fn(predict_3, binary_labels) * args.deep_supervision_weights[2]
             loss_4 = structure_loss_fn(predict_4, binary_labels) * args.deep_supervision_weights[3]
-            loss_0 = ce_loss_fn(predict_0, ce_labels) * args.deep_supervision_weights[4] # For the final output
+            loss_0 = ce_loss_fn(predict_0, ce_labels) * args.deep_supervision_weights[4]
             
-            total_loss = loss_1 + loss_2 + loss_3 + loss_4 + loss_0 # Sum of weighted losses
+            total_loss = loss_1 + loss_2 + loss_3 + loss_4 + loss_0
             loss_recorder.update(total_loss.item(), inputs.size(0))
             confmat.update(labels.flatten(), predict_0.argmax(1).flatten())
             
@@ -130,7 +123,7 @@ def validate(net, test_loader, device, writer=None, curr_iter=None, args=None):
         writer.add_scalar('validation/mIoU', mIoU, curr_iter)
         writer.add_scalar('validation/loss', loss_recorder.avg, curr_iter)
     
-    net.train() # Set back to train mode after validation
+    net.train()
     return mIoU
 
 def main():
@@ -214,7 +207,7 @@ def main():
         total_len = len(full_image_mask_list)
         train_len = int(args.train_ratio * total_len)
         val_len = int(args.val_ratio * total_len)
-        test_len = total_len - train_len - val_len # Remaining for test, not used in train but good for consistency
+        test_len = total_len - train_len - val_len
 
         train_image_mask_list, val_image_mask_list, _ = random_split(
             full_image_mask_list, [train_len, val_len, test_len], generator=torch.Generator().manual_seed(42))
@@ -222,7 +215,7 @@ def main():
         logging.info(f"Programmatic split: Total {total_len}, Train {len(train_image_mask_list)}, Val {len(val_image_mask_list)}")
 
     train_set = ImageFolder(train_image_mask_list, args, split='train')
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
+    train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
     
     test_set = ImageFolder(val_image_mask_list, args, split='val')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
@@ -252,7 +245,6 @@ def main():
 
     start_epoch = 0
     best_mIoU = 0.0
-    patience_counter = 0 # NEW: for early stopping
     latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     
     if args.snapshot:
@@ -269,11 +261,10 @@ def main():
                     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
                     start_epoch = ckpt['epoch'] + 1
                     best_mIoU = ckpt.get('best_mIoU', 0.0)
-                    patience_counter = ckpt.get('patience_counter', 0) # Load patience counter
-                logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}, patience_counter: {patience_counter}")
+                logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}")
             except Exception as e:
                 logging.error(f"Could not load snapshot: {e}. Starting from scratch.")
-                start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
+                start_epoch, best_mIoU = 0, 0.0
     elif os.path.exists(latest_ckpt_path):
         logging.info(f"Resuming from checkpoint: {latest_ckpt_path}")
         try:
@@ -285,19 +276,18 @@ def main():
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt['epoch'] + 1
             best_mIoU = ckpt.get('best_mIoU', 0.0)
-            patience_counter = ckpt.get('patience_counter', 0) # Load patience counter
-            logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}, patience_counter: {patience_counter}")
+            logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}")
         except Exception as e:
             logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
-            start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
+            start_epoch, best_mIoU = 0, 0.0
 
-    total_iterations = len(train_loader) * args.epochs # Use args.epochs
+    total_iterations = len(train_loader) * args.epoch_num
     
     try:
-        for epoch in range(start_epoch, args.epochs): # Use args.epochs
+        for epoch in range(start_epoch, args.epoch_num):
             net.train()
             loss_recorder = AvgMeter()
-            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]") # Use args.epochs
+            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch_num} [Train]")
             for i, data in enumerate(train_iterator):
                 curr_iter = epoch * len(train_loader) + i
                 base_lr = args.lr * (1 - curr_iter / total_iterations) ** args.lr_decay
@@ -310,7 +300,6 @@ def main():
                 optimizer.zero_grad(set_to_none=True)
                 predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
                 
-                # Apply deep supervision weights for training losses
                 loss_1 = bce_iou_loss(predict_1, binary_labels) * args.deep_supervision_weights[0]
                 loss_2 = structure_loss_fn(predict_2, binary_labels) * args.deep_supervision_weights[1]
                 loss_3 = structure_loss_fn(predict_3, binary_labels) * args.deep_supervision_weights[2]
@@ -331,40 +320,24 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # Validate less frequently during training for daseg, e.g., end of epoch
-                # if (i + 1) % (len(train_loader) // 10) == 0 or (i + 1) == len(train_loader):
-                #     current_mIoU = validate(net, test_loader, device, writer, curr_iter, args)
-                #     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
-
-            # Final validation at the end of the epoch
             current_mIoU = validate(net, test_loader, device, writer, (epoch + 1) * len(train_loader), args)
             
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
-                patience_counter = 0
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
                 shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth')
-            else:
-                patience_counter += 1
-                logging.info(f"⚠️ No improvement for {patience_counter} epoch(s). Best mIoU: {best_mIoU:.4f}.")
-
-            # Save latest checkpoint
+            
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': net.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_mIoU': best_mIoU,
-                'patience_counter': patience_counter
             }, latest_checkpoint_path)
             logging.info(f"Saved latest checkpoint to {checkpoint_path}")
             shutil.copy(checkpoint_path, f'/kaggle/working/latest_checkpoint_{exp_name}.pth')
-            
-            if patience_counter >= args.patience: # Use args.patience for early stopping
-                logging.info(f"Early stopping triggered after {args.patience} epochs with no improvement.")
-                break
             
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")

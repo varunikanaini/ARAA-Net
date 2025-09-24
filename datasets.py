@@ -7,19 +7,17 @@ import glob
 import logging 
 
 import custom_transforms as tr 
-from config import DATA_ROOT, KAGGLE_DATASET_MAPPING # NEW IMPORTS: For dynamic dataset paths
+from config import DATA_ROOT, KAGGLE_DATASET_MAPPING
 
 
-# --- NEW: Dataset Configuration Dictionary ---
 DATASET_CONFIGS = {
-    # Existing RSNA datasets (assuming structure: DATA_ROOT/<dataset_name>/<split>/images/ or /GT/)
     'TSRS_RSNA-Epiphysis': {
         'image_ext': ('.jpg', '.jpeg'), 
-        'image_subpath': '', # Images are directly in split root (e.g., train/image.jpg)
-        'mask_subpath': 'GT', # Masks are in 'GT' subdirectory relative to split root
+        'image_subpath': '',
+        'mask_subpath': 'GT',
         'mask_ext': '.png',
-        'has_predefined_splits': True, # Explicitly state it has train/val/test folders
-        'is_nested_under_split_root': False, # Images/masks directly under split_root or simple subpaths
+        'has_predefined_splits': True,
+        'is_nested_under_split_root': False,
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
         'mask_suffix': ''
@@ -36,54 +34,43 @@ DATASET_CONFIGS = {
         'mask_suffix': ''
     },
     
-    # Your KOA dataset (lvv-koa) structure: DATA_ROOT/lvv-koa/train/0/image.png, .../0/image_mask.png
     'KOA': { 
         'image_ext': ('.png', '.jpg', '.jpeg'), 
         'mask_ext': '.png',
-        'is_nested': True, # Needs recursive search due to class folders
-        'has_predefined_splits': True, # train/val/test folders exist under lvv-koa
-        'has_class_folders_under_split': True, # Split folder contains class subfolders (0,1,2,3,4)
+        'is_nested': True,
+        'has_predefined_splits': True,
+        'has_class_folders_under_split': True,
         'has_category_folders_under_split': False,
-        'mask_suffix': '_mask' # CRUCIAL ASSUMPTION: Mask file is 'image_name_mask.png'
+        'mask_suffix': '_mask'
     },
     
-    # COVID-19 Radiography Database: DATA_ROOT/COVID-19_Radiography_Dataset/COVID/images/image.png, .../COVID/masks/mask.png
     'COVID-19_Radiography': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
         'mask_ext': '.png',
-        'has_predefined_splits': False, # No train/val/test folders, programmatic split needed
-        'is_nested': True, # Root folder contains further nested structures (category folders)
+        'has_predefined_splits': False,
+        'is_nested': True,
         'has_class_folders_under_split': False,
-        'has_category_folders_under_split': True, # Root folder contains category subfolders (COVID, Normal etc.)
-        'image_subpath_in_category': 'images', # Path relative to category folder
-        'mask_subpath_in_category': 'masks',   # Path relative to category folder
-        'mask_suffix': '' # Masks have same name as image
+        'has_category_folders_under_split': True,
+        'image_subpath_in_category': 'images',
+        'mask_subpath_in_category': 'masks',
+        'mask_suffix': ''
     },
     
-    # JSRT Dataset: DATA_ROOT/jsrt/cxr/image.png, .../masks/mask.png
-    # This dataset typically doesn't have predefined train/val/test splits.
     'JSRT': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
-        'image_subpath': 'cxr', # Images are in 'cxr' subdirectory relative to root
-        'mask_subpath': 'masks', # Masks are in 'masks' subdirectory relative to root
+        'image_subpath': 'cxr',
+        'mask_subpath': 'masks',
         'mask_ext': '.png',
-        'has_predefined_splits': False, # No train/val/test folders, programmatic split needed
-        'is_nested': False, # Not nested structure under root, simple subpaths
+        'has_predefined_splits': False,
+        'is_nested': False,
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
-        'mask_suffix': '' # Masks have same name as image
+        'mask_suffix': ''
     }
 }
-# --- END NEW: Dataset Configuration Dictionary ---
 
 
 def make_dataset(root_path_for_dataset, dataset_name, split_name='all'): 
-    """
-    Collects all image/mask pairs for a given dataset and split configuration.
-    root_path_for_dataset: The base path for the *entire* dataset (e.g., DATA_ROOT/COVID-19_Radiography_Dataset)
-    dataset_name: The key from DATASET_CONFIGS
-    split_name: 'train', 'val', 'test', or 'all'. For programmatic splits, 'all' collects everything.
-    """
     config = DATASET_CONFIGS.get(dataset_name)
     if not config:
         logging.error(f"Dataset config not found for '{dataset_name}'. Please add it to DATASET_CONFIGS in datasets.py.")
@@ -101,18 +88,14 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
         logging.error(f"Dataset base directory not found: '{root_path_for_dataset}'. Please check data path.")
         return []
 
-    # --- Determine the actual root for image/mask searching based on predefined splits ---
     search_root = root_path_for_dataset
     if config['has_predefined_splits'] and split_name != 'all':
-        # For datasets with predefined train/val/test folders (e.g., RSNA, KOA)
         search_root = os.path.join(root_path_for_dataset, split_name)
         if not os.path.exists(search_root):
             logging.error(f"Predefined split directory '{split_name}' not found at '{search_root}'.")
             return []
         logging.info(f"Searching within predefined split directory: '{search_root}'")
 
-
-    # --- Case 1: Nested Class Folders (e.g., KOA: search_root/0/image.png) ---
     if config['has_class_folders_under_split']:
         logging.info(f"Handling class-folder-nested structure for '{dataset_name}'.")
         class_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
@@ -139,7 +122,6 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                     else:
                         logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
 
-    # --- Case 2: Nested Category Folders (e.g., COVID-19 Radiography: search_root/COVID/images/img.png) ---
     elif config['has_category_folders_under_split']:
         logging.info(f"Handling category-folder-nested structure for '{dataset_name}'.")
         category_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
@@ -164,14 +146,13 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                 image_files = glob.glob(os.path.join(image_category_path, '*' + ext), recursive=False)
                 for img_path in image_files:
                     img_name_base = os.path.splitext(os.path.basename(img_path))[0]
-                    mask_path_attempt = os.path.join(mask_category_path, img_name_base + mask_ext) # Assume same name, mask_ext in masks folder
+                    mask_path_attempt = os.path.join(mask_category_path, img_name_base + mask_ext)
                     
                     if os.path.exists(img_path) and os.path.exists(mask_path_attempt):
                         dataset_items.append((img_path, mask_path_attempt))
                     else:
                         logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
 
-    # --- Case 3: Flat Structure (e.g., RSNA, JSRT: search_root/images/img.png or search_root/cxr/img.png) ---
     else: 
         image_subpath_relative = config.get('image_subpath', '')
         mask_subpath_relative = config.get('mask_subpath', '')
@@ -216,7 +197,7 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                 else:
                     logging.warning(f"Skipping: Missing mask for '{img_name_base}'. (Image: {found_img_path}, Mask attempt: {mask_path_attempt})")
             else:
-                logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
+                    logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
 
     if not dataset_items:
         logging.error(f"No valid image/mask pairs found in '{search_root}' for dataset '{dataset_name}'. "
@@ -230,46 +211,39 @@ class ImageFolder(data.Dataset):
         self.imgs = image_mask_paths 
         self.args = args 
         self.split = split
-        # self.dataset_name = args.dataset_name # Not directly used here, but good for context if needed
 
-        # Ensure args has required attributes, provide defaults if not set
-        min_lesion_area = getattr(args, 'min_lesion_area_pixels', 576)
-        expansion_factor = getattr(args, 'expansion_factor', 1.5)
-        min_bbox_h = getattr(args, 'min_bbox_h', 32)
-        min_bbox_w = getattr(args, 'min_bbox_w', 32)
+        # Retrieve dimensions from args with defaults
+        scale_h = getattr(args, 'scale_h', 576)
+        scale_w = getattr(args, 'scale_w', 896)
+        # Use crop_size_h/w from args if available, otherwise default to scale_h/w
+        crop_h = getattr(args, 'crop_size_h', scale_h)
+        crop_w = getattr(args, 'crop_size_w', scale_w)
         
-        # Determine scaling dimensions from args
-        scale_h = getattr(args, 'scale_h', 576) # Default if not provided
-        scale_w = getattr(args, 'scale_w', 896) # Default if not provided
-        
-        # Adjusted crop_size based on backbone (for 'inception_v3')
-        crop_size_h = 299 if getattr(args, 'backbone', '') == 'inception_v3' else 576
-        crop_size_w = 299 if getattr(args, 'backbone', '') == 'inception_v3' else 576
+        # Ensure crop dimensions are not larger than scale dimensions if a fixed resize is applied first
+        crop_h = min(crop_h, scale_h)
+        crop_w = min(crop_w, scale_w)
 
 
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.RandomHorizontalFlip(),
-                # Use scale_h and scale_w from args for resizing
-                tr.FixedResize(h=scale_h, w=scale_w), 
-                # tr.RandomScaleCrop(base_size=self.args.base_size, crop_size=self.args.crop_size), # Removed, as it's from reference
-                tr.RandomCrop((crop_size_h, crop_size_w)), # Use calculated crop_size
+                tr.FixedResize(h=scale_h, w=scale_w), # Resize first
+                tr.RandomCrop((crop_h, crop_w)), # Then random crop
                 tr.RandomGaussianBlur(),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
         else: # Validation/Test
             self.composed_transforms = transforms.Compose([
-                # tr.FixScaleCrop(crop_size=self.args.crop_size), # Removed, as it's from reference
-                tr.FixedResize(h=scale_h, w=scale_w), # Use scale_h and scale_w from args for resizing
+                tr.FixedResize(h=scale_h, w=scale_w), # Resize first
+                tr.CenterCrop((crop_h, crop_w)), # Then center crop for consistency
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
-
 
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]
         img = Image.open(img_path).convert('RGB')
         target = Image.open(gt_path)
-        label = self.convert_label(target) 
+        label = self.convert_label(target)
         
         sample = {'image': img, 'label': label, 'name': os.path.basename(img_path)}
         transformed_sample = self.composed_transforms(sample)
@@ -277,12 +251,11 @@ class ImageFolder(data.Dataset):
         return transformed_sample
     
     def convert_label(self, label):
-        # FIX: Explicitly convert to grayscale 'L' before converting to numpy array.
-        label_gray = label.convert('L') # <<< NEW LINE
-        label_np = np.array(label_gray, dtype=np.uint8) # <<< MODIFIED to use label_gray
+        label_gray = label.convert('L')
+        label_np = np.array(label_gray, dtype=np.uint8)
         label_index = np.zeros_like(label_np, dtype=np.uint8)
-        label_index[label_np > 0] = 1 # Assuming binary segmentation (lesion vs background)
-        return Image.fromarray(label_index, mode='P') # This now receives a 2D array, fixing the ValueError
+        label_index[label_np > 0] = 1
+        return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
         return len(self.imgs)

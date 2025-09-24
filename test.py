@@ -23,8 +23,7 @@ from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
 
-# Assuming loss.py contains structure_loss, IOU, etc.
-import loss
+import loss # Assuming loss.py contains structure_loss, IOU, etc.
 from torch import nn
 structure_loss_fn = loss.structure_loss()
 bce_loss_fn = nn.BCEWithLogitsLoss()
@@ -40,8 +39,10 @@ def get_test_args():
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Backbone architecture used for training')
     parser.add_argument('--scale-h', type=int, default=576, help='Height images were resized to for ImageFolder transforms')
     parser.add_argument('--scale-w', type=int, default=896, help='Width images were resized to for ImageFolder transforms')
+    parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to for ImageFolder transforms.') # Added
+    parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to for ImageFolder transforms.') # Added
 
-    # Dummy args for ImageFolder instantiation (even if not strictly used in test transform logic)
+    # Dummy args for ImageFolder instantiation (if CenterAmplification is used in ImageFolder for test)
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
@@ -56,11 +57,8 @@ def get_test_args():
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[1.0, 1.0, 2.0, 4.0, 10.0],
                         help='Weights for deep supervision losses for predict_1 to predict_0 (total 5 values).')
 
-    # Placeholder arguments (for compatibility with user's example, but NOT actively used by daseg model's current loss setup)
-    parser.add_argument('--focal-alpha', type=float, default=0.5, help='Placeholder: Alpha parameter for Focal Loss (not used in daseg loss).')
-    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Placeholder: Gamma parameter for Focal Loss (not used in daseg loss).')
-    parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Placeholder: Weight for Focal Loss component (not used in daseg loss).')
-    parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Placeholder: Weight for Dice Loss component (not used in daseg loss).')
+    # Arguments like focal/dice loss params were removed as they are not
+    # part of the daseg model's native training logic or requested in your specific command examples.
 
     try:
         args = parser.parse_args()
@@ -221,6 +219,7 @@ def main():
         f"Experiment Name: {EXP_NAME}\n"
         f"Dataset: {args.dataset_name} (evaluated on test split)\n" 
         f"Image scale for test: ({args.scale_h}, {args.scale_w})\n" 
+        f"Crop size for test: ({args.crop_size_h}, {args.crop_size_w})\n" # Added crop size to output
         f"--------------------------------------------------\n"
         f"Global Accuracy = {global_acc.item():.4f}\n"
         f"Mean IoU (mIoU) = {mIoU:.4f}\n"
@@ -232,7 +231,7 @@ def main():
         f"--------------------------------------------------\n"
     )
     
-    log_file_path = os.path.join(log_dir, 'final_testing_results.log') # Ensure this is defined
+    log_file_path = os.path.join(log_dir, 'final_testing_results.log')
     logging.info(results_text)
     with open(log_file_path, 'w') as f:
         f.write(results_text)
