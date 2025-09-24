@@ -137,7 +137,7 @@ def main():
 
     # Preprocess dataset to ensure mask sizes match image sizes for each category
     if args.dataset_name == 'COVID-19_Radiography':
-        for category in ['COVID', 'Normal', 'Pneumonia', 'Lung_Opacity']:  # Corrected category names
+        for category in ['COVID', 'Normal', 'Pneumonia', 'Lung_Opacity']:
             image_dir = os.path.join(base_dataset_root, category, 'images')
             mask_dir = os.path.join(base_dataset_root, category, 'masks')
             output_mask_dir = os.path.join(base_dataset_root, category, 'masks_resized')
@@ -246,10 +246,7 @@ def main():
 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
 
-                if (i + 1) % 10 == 0 or (i + 1) == len(train_loader):
-                    current_mIoU = validate(net, test_loader, device, writer, curr_iter, args)
-                    logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
-
+            # Validate only at the end of the epoch
             current_mIoU = validate(net, test_loader, device, writer, (epoch + 1) * len(train_loader), args)
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
