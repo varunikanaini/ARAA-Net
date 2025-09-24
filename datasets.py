@@ -189,6 +189,10 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
     return dataset_items
 
 
+# /kaggle/working/ARAA-Net/datasets.py
+
+# ... (rest of the file remains unchanged)
+
 class ImageFolder(data.Dataset):
     """
     A custom dataset class that loads image and mask pairs. 
@@ -214,15 +218,17 @@ class ImageFolder(data.Dataset):
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.RandomHorizontalFlip(),
-                tr.FixedResize((scale_h, scale_w)), # Pass (H, W) tuple to FixedResize
+                # CHANGE THIS LINE: Pass w and h as separate arguments
+                tr.FixedResize(scale_w, scale_h), # Fixed: Pass w, h as separate arguments
                 tr.RandomCrop((crop_h, crop_w)),      # Pass (H, W) tuple to RandomCrop
                 tr.RandomGaussianBlur(),
-                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1), # From original train.py logic
+                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
         else: # Validation/Test
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize((scale_h, scale_w)), # Pass (H, W) tuple to FixedResize
+                # CHANGE THIS LINE: Pass w and h as separate arguments
+                tr.FixedResize(scale_w, scale_h), # Fixed: Pass w, h as separate arguments
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
 
@@ -241,7 +247,7 @@ class ImageFolder(data.Dataset):
         label_gray = label.convert('L')
         label_np = np.array(label_gray, dtype=np.uint8)
         label_index = np.zeros_like(label_np, dtype=np.uint8)
-        label_index[label_np > 0] = 1 # Assuming binary segmentation (lesion vs background)
+        label_index[label_np > 0] = 1
         return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
