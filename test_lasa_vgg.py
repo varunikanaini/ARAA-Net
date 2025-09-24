@@ -27,13 +27,13 @@ from train_lasa_vgg import FocalLoss, DiceLoss
 
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface', 
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface',
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
-    
-    parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
+
+    parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0],
                         help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
     parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha parameter for Focal Loss.')
     parser.add_argument('--focal-gamma', type=float, default=2.0, help='Gamma parameter for Focal Loss.')
@@ -50,14 +50,17 @@ def get_test_args():
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Dummy arg for programmatic split consistency.')
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Dummy arg for programmatic split consistency.')
 
+    # Add num_workers argument
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of worker processes for data loading.') # ADD THIS LINE
+
     try:
         args = parser.parse_args()
     except SystemExit:
         args = parser.parse_args([])
-    
+
     if len(args.deep_supervision_weights) != 5:
         parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
-    
+
     return args
 
 def setup_logging(log_dir, filename='final_testing_results.log'):
