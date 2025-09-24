@@ -43,9 +43,6 @@ def get_args():
     # So, you don't need to manually type 'TSRS_RSNA-Epiphysis', 'JSRT', 'COVID-19_Radiography'.
     # If 'COVID-19_Radiography' is correctly defined in datasets.DATASET_CONFIGS,
     # then this line should automatically include it.
-    # Let's ensure DATASET_CONFIGS is fully populated in datasets.py.
-    # It appears it is, so the error implies the current `train.py` you are running
-    # has an older version of `get_args()` or is picking up an older `datasets.py`.
     # Let's make sure `datasets.py` is fully up to date for this to work.
 
     # Assuming `datasets.py` has:
@@ -293,7 +290,8 @@ def main():
     try:
         for epoch in range(start_epoch, args.epoch_num):
             net.train()
-            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch-num} [Train]")
+            # CORRECTED LINE: epoch-num instead of epoch
+            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch_num} [Train]") 
             for i, data in enumerate(train_iterator):
                 curr_iter = epoch * len(train_loader) + i
                 base_lr = args.lr * (1 - curr_iter / total_iterations) ** args.lr_decay
