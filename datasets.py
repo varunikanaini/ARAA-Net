@@ -11,37 +11,6 @@ from config import DATA_ROOT, KAGGLE_DATASET_MAPPING
 
 # Dataset Configuration
 DATASET_CONFIGS = {
-    'TSRS_RSNA-Epiphysis': {
-        'image_ext': ('.jpg', '.jpeg'),
-        'image_subpath': '',
-        'mask_subpath': 'GT',
-        'mask_ext': '.png',
-        'has_predefined_splits': True,
-        'is_nested_under_split_root': False,
-        'has_class_folders_under_split': False,
-        'has_category_folders_under_split': False,
-        'mask_suffix': ''
-    },
-    'TSRS_RSNA-Articular-Surface': {
-        'image_ext': ('.jpg', '.jpeg'),
-        'image_subpath': '',
-        'mask_subpath': 'GT',
-        'mask_ext': '.png',
-        'has_predefined_splits': True,
-        'is_nested_under_split_root': False,
-        'has_class_folders_under_split': False,
-        'has_category_folders_under_split': False,
-        'mask_suffix': ''
-    },
-    'KOA': {
-        'image_ext': ('.png', '.jpg', '.jpeg'),
-        'mask_ext': '.png',
-        'is_nested': True,
-        'has_predefined_splits': True,
-        'has_class_folders_under_split': True,
-        'has_category_folders_under_split': False,
-        'mask_suffix': '_mask'
-    },
     'COVID-19_Radiography': {
         'image_ext': ('.png', '.jpg', '.jpeg'),
         'mask_ext': '.png',
@@ -50,18 +19,7 @@ DATASET_CONFIGS = {
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': True,
         'image_subpath_in_category': 'images',
-        'mask_subpath_in_category': 'masks',
-        'mask_suffix': ''
-    },
-    'JSRT': {
-        'image_ext': ('.png', '.jpg', '.jpeg'),
-        'image_subpath': 'cxr',
-        'mask_subpath': 'masks',
-        'mask_ext': '.png',
-        'has_predefined_splits': False,
-        'is_nested': False,
-        'has_class_folders_under_split': False,
-        'has_category_folders_under_split': False,
+        'mask_subpath_in_category': 'masks_resized',  # Use resized masks
         'mask_suffix': ''
     }
 }
@@ -143,20 +101,23 @@ class ImageFolder(data.Dataset):
         self.args = args
         self.split = split
 
-        scale_h = getattr(args, 'scale_h', 576)
-        scale_w = getattr(args, 'scale_w', 896)
+        scale_h = getattr(args, 'scale_h', 256)
+        scale_w = getattr(args, 'scale_w', 256)
         crop_h = getattr(args, 'crop_size_h', scale_h)
         crop_w = getattr(args, 'crop_size_w', scale_w)
         crop_h = min(crop_h, scale_h)
         crop_w = min(crop_w, scale_w)
 
+        # Custom transform to handle dictionary and apply ColorJitter only to image
+        self.color_jitter = transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1)
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.RandomHorizontalFlip(),
                 tr.FixedResize(scale_h, scale_w),
                 tr.RandomCrop((crop_h, crop_w)),
                 tr.RandomGaussianBlur(),
-                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+                # Apply ColorJitter as a custom transform to handle dictionary
+                lambda x: {'image': self.color_jitter(x['image']), 'label': x['label'], 'name': x['name']},
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
         else:

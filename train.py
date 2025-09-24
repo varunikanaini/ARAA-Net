@@ -27,7 +27,7 @@ def get_args():
     parser.add_argument('--dataset-name', type=str, default='COVID-19_Radiography',
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
-    parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
+    parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
@@ -137,7 +137,7 @@ def main():
 
     # Preprocess dataset to ensure mask sizes match image sizes for each category
     if args.dataset_name == 'COVID-19_Radiography':
-        for category in ['COVID', 'Lung_Opacity', 'Normal', 'Viral Pneumonia']:
+        for category in ['COVID', 'Normal', 'Pneumonia', 'Lung_Opacity']:  # Corrected category names
             image_dir = os.path.join(base_dataset_root, category, 'images')
             mask_dir = os.path.join(base_dataset_root, category, 'masks')
             output_mask_dir = os.path.join(base_dataset_root, category, 'masks_resized')
