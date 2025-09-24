@@ -27,7 +27,7 @@ import loss # Assuming loss.py contains structure_loss, IOU
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 import shutil
-import torch.nn.functional as F # <--- Ensure F is imported here for loss.py's internal usage
+import torch.nn.functional as F # Ensure F is imported here for loss.py's internal usage
 
 
 def get_args():
@@ -93,6 +93,7 @@ def validate(net, test_loader, device, bce_iou_loss_fn, structure_loss_fn, ce_lo
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
+    # --- LOGGING VALIDATION RESULTS TO FILE AND CONSOLE ---
     logging.info("\n--- Validation Results ---")
     logging.info(f"global_acc = {global_acc.item():.4f}")
     logging.info(f"class_acc  = {class_acc}")
@@ -102,6 +103,7 @@ def validate(net, test_loader, device, bce_iou_loss_fn, structure_loss_fn, ce_lo
     logging.info(f"mDice      = {mDice:.4f}")
     logging.info(f"Validation Loss = {loss_recorder.avg:.4f}")
     logging.info("--------------------------")
+    # --- END LOGGING ---
     
     if writer and curr_iter is not None:
         writer.add_scalar('validation/mIoU', mIoU, curr_iter)
@@ -125,10 +127,12 @@ def main():
     check_mkdir(vis_path)
     writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
     
+    # --- SETUP LOGGING TO FILE AND CONSOLE ---
     log_file_path = os.path.join(exp_path, 'training.log')
-    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler) # Clear previous handlers
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                         handlers=[logging.FileHandler(log_file_path), logging.StreamHandler(sys.stdout)])
+    # --- END SETUP LOGGING ---
     
     logging.info(f"Starting Training with Arguments: {args}")
     logging.info(f"Using device: {device}")
@@ -308,14 +312,18 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
+                # Validate multiple times per epoch (e.g., 5 times + end)
                 if (i % (len(train_loader) // 5 + 1) == 0 and i != 0) or (i == len(train_loader) - 1):
                     current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
-                    logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
+                    logging.info(f"Validation at Iteration {curr_iter}: mIoU = {current_mIoU:.4f}") # Logs to file & console
 
-            # End of epoch validation (redundant if last iter already validated)
-            current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
+            # --- Explicit Epoch-End Validation (if not covered by last iteration) ---
+            # This ensures validation metrics are always logged at the strict end of an epoch.
+            if len(train_loader) > 0 and (len(train_loader) - 1) % (len(train_loader) // 5 + 1) != 0: # Avoid double logging if last iter already did it
+                current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
+                logging.info(f"Epoch {epoch+1} Final Validation: mIoU = {current_mIoU:.4f}")
 
-            # --- NEW: Save checkpoint at the end of each epoch with epoch number ---
+            # --- SAVE CHECKPOINT AT THE END OF EACH EPOCH WITH EPOCH NUMBER ---
             epoch_checkpoint_path = os.path.join(exp_path, f'epoch_{epoch:03d}_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, epoch_checkpoint_path)
             logging.info(f"Saved epoch checkpoint to {epoch_checkpoint_path}")
