@@ -12,7 +12,7 @@ CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
 # Configure logging for this module
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
-# --- NEW: Function to download and prepare KaggleHub datasets (Necessary for COVID-19_Radiography) ---
+# --- Function to download and prepare KaggleHub datasets (Essential for COVID-19_Radiography) ---
 def download_and_extract_kaggle_dataset(dataset_id, target_dir):
     """
     Downloads a KaggleHub dataset and extracts it to the target directory.
@@ -73,7 +73,7 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
         logging.error(f"Error copying dataset: {e}. Source: '{source_dataset_root}', Dest: '{final_destination_path}'")
         return None
 
-# --- Specific KaggleHub Dataset IDs and their target names in DATA_ROOT (Necessary for COVID-19_Radiography) ---
+# --- Specific KaggleHub Dataset IDs and their target names in DATA_ROOT (Essential for COVID-19_Radiography) ---
 KAGGLE_DATASET_MAPPING = {
     'TSRS_RSNA-Epiphysis': {'id': None, 'local_dir_name': 'TSRS_RSNA-Epiphysis'}, 
     'TSRS_RSNA-Articular-Surface': {'id': None, 'local_dir_name': 'TSRS_RSNA-Articular-Surface'}, 

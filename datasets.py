@@ -10,7 +10,7 @@ import custom_transforms as tr
 from config import DATA_ROOT, KAGGLE_DATASET_MAPPING
 
 
-# --- NEW: Dataset Configuration Dictionary (Necessary for COVID-19_Radiography) ---
+# --- Dataset Configuration Dictionary (Essential for COVID-19_Radiography) ---
 DATASET_CONFIGS = {
     'TSRS_RSNA-Epiphysis': {
         'image_ext': ('.jpg', '.jpeg'), 
@@ -106,7 +106,8 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
         logging.info(f"Handling class-folder-nested structure for '{dataset_name}'.")
         class_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
         class_subdirs.sort()
-        if not class_subdirs: logging.warning(f"No class subdirectories found in '{search_root}'.")
+        if not class_subdirs: 
+            logging.warning(f"No class subdirectories found in '{search_root}'.")
         
         for class_dir in class_subdirs:
             for ext in image_exts:
@@ -116,20 +117,26 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                     mask_path_attempt = os.path.join(class_dir, img_name_base + mask_suffix + mask_ext) if mask_suffix else os.path.join(class_dir, img_name_base + mask_ext)
                     if mask_path_attempt and os.path.exists(img_path) and os.path.exists(mask_path_attempt):
                         dataset_items.append((img_path, mask_path_attempt))
-                    else: logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'.")
+                    else: 
+                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'.")
 
     elif config['has_category_folders_under_split']:
         logging.info(f"Handling category-folder-nested structure for '{dataset_name}'.")
         category_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
         category_subdirs.sort()
-        if not category_subdirs: logging.warning(f"No category subdirectories found in '{search_root}'.")
+        if not category_subdirs: 
+            logging.warning(f"No category subdirectories found in '{search_root}'.")
 
         for category_dir in category_subdirs:
             image_category_path = os.path.join(category_dir, config['image_subpath_in_category'])
             mask_category_path = os.path.join(category_dir, config['mask_subpath_in_category'])
 
-            if not os.path.exists(image_category_path): logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category.") and continue
-            if not os.path.exists(mask_category_path): logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category.") and continue
+            if not os.path.exists(image_category_path): 
+                logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category.")
+                continue
+            if not os.path.exists(mask_category_path): 
+                logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category.")
+                continue
             
             for ext in image_exts:
                 image_files = glob.glob(os.path.join(image_category_path, '*' + ext), recursive=False)
@@ -138,9 +145,10 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                     mask_path_attempt = os.path.join(mask_category_path, img_name_base + mask_ext)
                     if os.path.exists(img_path) and os.path.exists(mask_path_attempt):
                         dataset_items.append((img_path, mask_path_attempt))
-                    else: logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'.")
+                    else: 
+                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'.")
 
-    else: 
+    else: # Flat Structure
         image_subpath_relative = config.get('image_subpath', '')
         mask_subpath_relative = config.get('mask_subpath', '')
         image_dir = os.path.join(search_root, image_subpath_relative)
@@ -148,8 +156,12 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
         
         logging.info(f"Handling flat structure for '{dataset_name}'. Expected images in: '{image_dir}', masks in: '{mask_dir}'")
 
-        if not os.path.exists(image_dir): logging.error(f"Image directory not found: {image_dir}"); return []
-        if not os.path.exists(mask_dir): logging.error(f"Mask directory not found: {mask_dir}"); return []
+        if not os.path.exists(image_dir): 
+            logging.error(f"Image directory not found: {image_dir}")
+            return []
+        if not os.path.exists(mask_dir): 
+            logging.error(f"Mask directory not found: {mask_dir}")
+            return []
 
         img_list_basenames = []
         for ext in image_exts:
@@ -166,8 +178,10 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                 mask_path_attempt = os.path.join(mask_dir, img_name_base + mask_suffix + mask_ext) if mask_suffix else os.path.join(mask_dir, img_name_base + mask_ext)
                 if mask_path_attempt and os.path.exists(mask_path_attempt):
                     dataset_items.append((found_img_path, mask_path_attempt))
-                else: logging.warning(f"Skipping: Missing mask for '{img_name_base}'.")
-            else: logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
+                else: 
+                    logging.warning(f"Skipping: Missing mask for '{img_name_base}'.")
+            else: 
+                logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
 
     if not dataset_items:
         logging.error(f"No valid image/mask pairs found in '{search_root}' for dataset '{dataset_name}'. Please ensure data exists and matches config.")
@@ -188,6 +202,7 @@ class ImageFolder(data.Dataset):
         # Retrieve dimensions from args with defaults if not present
         scale_h = getattr(args, 'scale_h', 576)
         scale_w = getattr(args, 'scale_w', 896)
+        # Use crop_size_h/w from args if available, otherwise default to scale_h/w
         crop_h = getattr(args, 'crop_size_h', scale_h)
         crop_w = getattr(args, 'crop_size_w', scale_w)
         

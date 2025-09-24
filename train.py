@@ -248,25 +248,7 @@ def main():
     best_mIoU = 0.0
     latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     
-    if args.snapshot:
-        snapshot_path = os.path.join(CKPT_ROOT, exp_name, args.snapshot + '.pth')
-        if os.path.exists(snapshot_path):
-            logging.info(f"Resuming from snapshot: {snapshot_path}")
-            try:
-                ckpt = torch.load(snapshot_path, map_location=device, weights_only=False)
-                state_dict = ckpt if args.snapshot else ckpt['model_state_dict']
-                if 'module.' in list(state_dict.keys())[0]:
-                    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-                net.load_state_dict(state_dict)
-                if not args.snapshot:
-                    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-                    start_epoch = ckpt['epoch'] + 1
-                    best_mIoU = ckpt.get('best_mIoU', 0.0)
-                logging.info(f"Loaded epoch: {start_epoch}, best_mIoU: {best_mIoU}")
-            except Exception as e:
-                logging.error(f"Could not load snapshot: {e}. Starting from scratch.")
-                start_epoch, best_mIoU = 0, 0.0
-    elif os.path.exists(latest_ckpt_path):
+    if os.path.exists(latest_ckpt_path):
         logging.info(f"Resuming from checkpoint: {latest_ckpt_path}")
         try:
             ckpt = torch.load(latest_ckpt_path, map_location=device, weights_only=False)
@@ -321,12 +303,10 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # Original validation frequency (every 10 iterations)
-                if (i + 1) % 10 == 0 or (i + 1) == len(train_loader): # Added (i + 1) == len(train_loader) for consistency
+                if (i + 1) % 10 == 0 or (i + 1) == len(train_loader):
                     current_mIoU = validate(net, test_loader, device, writer, curr_iter, args)
                     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
 
-            # Final validation at the end of the epoch
             current_mIoU = validate(net, test_loader, device, writer, (epoch + 1) * len(train_loader), args)
             
             if current_mIoU > best_mIoU:
@@ -334,14 +314,12 @@ def main():
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
-                # Persist to Kaggle output
-                shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth') # Unique name for each experiment
+                shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth')
             
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
             logging.info(f"Saved latest checkpoint to {checkpoint_path}")
-            # Persist to Kaggle output
-            shutil.copy(checkpoint_path, f'/kaggle/working/latest_checkpoint_{exp_name}.pth') # Unique name for each experiment
+            shutil.copy(checkpoint_path, f'/kaggle/working/latest_checkpoint_{exp_name}.pth')
             
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")
