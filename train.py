@@ -12,12 +12,12 @@ from tensorboardX import SummaryWriter
 import sys
 sys.path.append('/kaggle/working/ARAA-Net/')
 
-from daseg import daseg # Your model
+from daseg import daseg
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
 from datasets import ImageFolder, DATASET_CONFIGS
 from datasets import make_dataset as make_full_dataset_list
-import joint_transforms # Keep if custom_transforms relies on it, otherwise can be removed
-import loss # Assuming loss.py contains structure_loss, IOU, etc.
+import joint_transforms # Keep if custom_transforms relies on it, though ImageFolder handles most
+import loss
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 import shutil
@@ -29,10 +29,9 @@ def get_args():
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     
-    # Arguments matching user's request
+    # Arguments directly from your requested command
     parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
-    
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
@@ -41,27 +40,27 @@ def get_args():
     parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming (relative to ckpt_path)')
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
     
-    # Arguments for ImageFolder and programmatic splitting
+    # Image transformation related arguments (required by ImageFolder)
     parser.add_argument('--scale-h', type=int, default=576, help='Height images were resized to for ImageFolder transforms')
     parser.add_argument('--scale-w', type=int, default=896, help='Width images were resized to for ImageFolder transforms')
-    parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to for ImageFolder transforms.') # Added
-    parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to for ImageFolder transforms.') # Added
+    parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to for ImageFolder transforms.')
+    parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to for ImageFolder transforms.')
 
-    # These are specific to CenterAmplification, currently not explicitly used in ImageFolder's transform, but kept for consistency
-    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Min lesion area for CenterAmplification in ImageFolder (if used).')
-    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Expansion factor for CenterAmplification in ImageFolder (if used).')
-    parser.add_argument('--min-bbox-h', type=int, default=32, help='Min bbox height for CenterAmplification in ImageFolder (if used).')
-    parser.add_argument('--min-bbox-w', type=int, default=32, help='Min bbox width for CenterAmplification in ImageFolder (if used).')
+    # These are specific to CenterAmplification which was in a previous ImageFolder reference, 
+    # but not explicitly used in the ImageFolder provided above, but kept as args for compatibility 
+    # if ImageFolder were modified to use them later. They will be ignored in the current ImageFolder.
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder (if CenterAmplification used).')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder (if CenterAmplification used).')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder (if CenterAmplification used).')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder (if CenterAmplification used).')
     
+    # Programmatic splitting ratios (used for COVID-19_Radiography)
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Train split ratio for programmatic splitting.')
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Validation split ratio for programmatic splitting.')
     
     # Deep supervision weights (these are actively used by the daseg model's loss function)
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[1.0, 1.0, 2.0, 4.0, 10.0],
                         help='Weights for deep supervision losses for predict_1 to predict_0 (total 5 values).')
-
-    # Arguments like --patience, focal/dice loss params, scheduler params were removed as they are not
-    # part of the daseg model's native training logic or requested in your specific command examples.
 
     try:
         args = parser.parse_args()
@@ -151,6 +150,7 @@ def main():
     logging.info(f"Arguments: {args}")
     logging.info(f"Using device: {device}")
 
+    # --- Determine the base root for the dataset (download if KaggleHub) ---
     dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
     base_dataset_root = None
 
@@ -173,6 +173,7 @@ def main():
             sys.exit(1)
         logging.info(f"Base dataset root (default): {base_dataset_root}")
 
+    # --- Data Loading and Splitting Logic ---
     dataset_config = DATASET_CONFIGS.get(args.dataset_name)
     if not dataset_config:
         logging.error(f"Config for dataset '{args.dataset_name}' not found. Exiting.")
@@ -320,6 +321,12 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
+                # Original validation frequency (every 10 iterations)
+                if (i + 1) % 10 == 0 or (i + 1) == len(train_loader): # Added (i + 1) == len(train_loader) for consistency
+                    current_mIoU = validate(net, test_loader, device, writer, curr_iter, args)
+                    logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
+
+            # Final validation at the end of the epoch
             current_mIoU = validate(net, test_loader, device, writer, (epoch + 1) * len(train_loader), args)
             
             if current_mIoU > best_mIoU:
@@ -327,17 +334,14 @@ def main():
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
-                shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth')
+                # Persist to Kaggle output
+                shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth') # Unique name for each experiment
             
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': net.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'best_mIoU': best_mIoU,
-            }, latest_checkpoint_path)
+            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
             logging.info(f"Saved latest checkpoint to {checkpoint_path}")
-            shutil.copy(checkpoint_path, f'/kaggle/working/latest_checkpoint_{exp_name}.pth')
+            # Persist to Kaggle output
+            shutil.copy(checkpoint_path, f'/kaggle/working/latest_checkpoint_{exp_name}.pth') # Unique name for each experiment
             
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")

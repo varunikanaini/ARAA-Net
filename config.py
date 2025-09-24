@@ -4,7 +4,7 @@ import shutil
 import logging
 
 # READ data from the original, read-only INPUT directory
-DATA_ROOT = '/kaggle/working/ARAA-Net/data' # Adjusted path to be consistent
+DATA_ROOT = '/kaggle/working/ARAA-Net/data' 
 
 # WRITE checkpoints to the new, writable WORKING directory
 CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
@@ -12,7 +12,7 @@ CKPT_ROOT = '/kaggle/working/ARAA-Net/ckpt'
 # Configure logging for this module
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
-# --- NEW: Function to download and prepare KaggleHub datasets ---
+# --- NEW: Function to download and prepare KaggleHub datasets (Necessary for COVID-19_Radiography) ---
 def download_and_extract_kaggle_dataset(dataset_id, target_dir):
     """
     Downloads a KaggleHub dataset and extracts it to the target directory.
@@ -23,7 +23,6 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
     
     logging.info(f"Attempting to download KaggleHub dataset '{dataset_id}' to a temporary location...")
     try:
-        # kagglehub.dataset_download returns a path to the downloaded content (often a temp dir or cache)
         downloaded_path_input = kagglehub.dataset_download(dataset_id)
         logging.info(f"Downloaded temporarily to: {downloaded_path_input}")
     except Exception as e:
@@ -36,7 +35,6 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
         return None
     
     source_dataset_root = None
-    # Prioritize single directory if it exists, otherwise assume input_path is root
     if len(top_level_items) == 1 and os.path.isdir(os.path.join(downloaded_path_input, top_level_items[0])):
         source_dataset_root = os.path.join(downloaded_path_input, top_level_items[0])
     else:
@@ -47,7 +45,6 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
         logging.error("Could not determine source dataset root from downloaded path.")
         return None
 
-    # Determine the final destination path within DATA_ROOT based on KAGGLE_DATASET_MAPPING
     final_destination_folder_name = None
     for ds_name, ds_info in KAGGLE_DATASET_MAPPING.items():
         if ds_info and ds_info.get('id') == dataset_id:
@@ -55,7 +52,6 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
             break
     
     if not final_destination_folder_name:
-        # Fallback if ID is not in mapping, use last part of ID as folder name
         logging.warning(f"Kaggle Dataset ID '{dataset_id}' not found in KAGGLE_DATASET_MAPPING. Using '{dataset_id.split('/')[-1]}' as local folder name.")
         final_destination_folder_name = dataset_id.split('/')[-1]
 
@@ -70,8 +66,6 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
     
     logging.info(f"Copying contents from '{source_dataset_root}' to '{final_destination_path}'...")
     try:
-        # Use distutils.dir_util.copy_tree for robustness or implement custom copy
-        # For simplicity, using shutil.copytree, but be aware of its limitations (e.g., target must not exist)
         shutil.copytree(source_dataset_root, final_destination_path)
         logging.info(f"✅ Successfully copied dataset to: '{final_destination_path}'")
         return final_destination_path
@@ -79,7 +73,7 @@ def download_and_extract_kaggle_dataset(dataset_id, target_dir):
         logging.error(f"Error copying dataset: {e}. Source: '{source_dataset_root}', Dest: '{final_destination_path}'")
         return None
 
-# --- Specific KaggleHub Dataset IDs and their target names in DATA_ROOT ---
+# --- Specific KaggleHub Dataset IDs and their target names in DATA_ROOT (Necessary for COVID-19_Radiography) ---
 KAGGLE_DATASET_MAPPING = {
     'TSRS_RSNA-Epiphysis': {'id': None, 'local_dir_name': 'TSRS_RSNA-Epiphysis'}, 
     'TSRS_RSNA-Articular-Surface': {'id': None, 'local_dir_name': 'TSRS_RSNA-Articular-Surface'}, 
@@ -93,10 +87,10 @@ KAGGLE_DATASET_MAPPING = {
     },
     'COVID-19_Radiography': { 
         'id': 'tawsifurrahman/covid19-radiography-database',
-        'local_dir_name': 'COVID-19_Radiography_Dataset' # Actual extracted folder name
+        'local_dir_name': 'COVID-19_Radiography_Dataset'
     },
     'JSRT': { 
         'id': 'abduzzami/jsrt-247-image-lung-segmentation-mask-dataset',
-        'local_dir_name': 'jsrt' # Common extracted folder name
+        'local_dir_name': 'jsrt'
     }
 }

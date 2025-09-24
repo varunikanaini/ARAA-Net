@@ -10,6 +10,7 @@ import custom_transforms as tr
 from config import DATA_ROOT, KAGGLE_DATASET_MAPPING
 
 
+# --- NEW: Dataset Configuration Dictionary (Necessary for COVID-19_Radiography) ---
 DATASET_CONFIGS = {
     'TSRS_RSNA-Epiphysis': {
         'image_ext': ('.jpg', '.jpeg'), 
@@ -47,12 +48,12 @@ DATASET_CONFIGS = {
     'COVID-19_Radiography': { 
         'image_ext': ('.png', '.jpg', '.jpeg'),
         'mask_ext': '.png',
-        'has_predefined_splits': False,
+        'has_predefined_splits': False, # Needs programmatic splitting
         'is_nested': True,
         'has_class_folders_under_split': False,
-        'has_category_folders_under_split': True,
-        'image_subpath_in_category': 'images',
-        'mask_subpath_in_category': 'masks',
+        'has_category_folders_under_split': True, # Has COVID, Normal, etc. folders
+        'image_subpath_in_category': 'images', # images are in category/images
+        'mask_subpath_in_category': 'masks',   # masks are in category/masks
         'mask_suffix': ''
     },
     
@@ -71,6 +72,10 @@ DATASET_CONFIGS = {
 
 
 def make_dataset(root_path_for_dataset, dataset_name, split_name='all'): 
+    """
+    Collects all image/mask pairs for a given dataset and split configuration.
+    This function has been enhanced to handle various dataset structures based on DATASET_CONFIGS.
+    """
     config = DATASET_CONFIGS.get(dataset_name)
     if not config:
         logging.error(f"Dataset config not found for '{dataset_name}'. Please add it to DATASET_CONFIGS in datasets.py.")
@@ -96,62 +101,44 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
             return []
         logging.info(f"Searching within predefined split directory: '{search_root}'")
 
+
     if config['has_class_folders_under_split']:
         logging.info(f"Handling class-folder-nested structure for '{dataset_name}'.")
         class_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
         class_subdirs.sort()
-
-        if not class_subdirs:
-            logging.warning(f"No class subdirectories found in '{search_root}'. Expected structure like '{search_root}/0/', '{search_root}/1/', etc.")
-            return []
+        if not class_subdirs: logging.warning(f"No class subdirectories found in '{search_root}'.")
         
         for class_dir in class_subdirs:
             for ext in image_exts:
                 image_files = glob.glob(os.path.join(class_dir, '*' + ext), recursive=False)
                 for img_path in image_files:
                     img_name_base = os.path.splitext(os.path.basename(img_path))[0]
-                    
-                    mask_path_attempt = None
-                    if mask_suffix:
-                        mask_path_attempt = os.path.join(class_dir, img_name_base + mask_suffix + mask_ext)
-                    else: 
-                        mask_path_attempt = os.path.join(class_dir, img_name_base + mask_ext)
-                    
+                    mask_path_attempt = os.path.join(class_dir, img_name_base + mask_suffix + mask_ext) if mask_suffix else os.path.join(class_dir, img_name_base + mask_ext)
                     if mask_path_attempt and os.path.exists(img_path) and os.path.exists(mask_path_attempt):
                         dataset_items.append((img_path, mask_path_attempt))
-                    else:
-                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
+                    else: logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'.")
 
     elif config['has_category_folders_under_split']:
         logging.info(f"Handling category-folder-nested structure for '{dataset_name}'.")
         category_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
         category_subdirs.sort()
-
-        if not category_subdirs:
-            logging.warning(f"No category subdirectories found in '{search_root}'. Expected structure like '{search_root}/COVID/', '{search_root}/Normal/', etc.")
-            return []
+        if not category_subdirs: logging.warning(f"No category subdirectories found in '{search_root}'.")
 
         for category_dir in category_subdirs:
             image_category_path = os.path.join(category_dir, config['image_subpath_in_category'])
             mask_category_path = os.path.join(category_dir, config['mask_subpath_in_category'])
 
-            if not os.path.exists(image_category_path):
-                logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category '{os.path.basename(category_dir)}'.")
-                continue
-            if not os.path.exists(mask_category_path):
-                logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category '{os.path.basename(category_dir)}'.")
-                continue
+            if not os.path.exists(image_category_path): logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category.") and continue
+            if not os.path.exists(mask_category_path): logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category.") and continue
             
             for ext in image_exts:
                 image_files = glob.glob(os.path.join(image_category_path, '*' + ext), recursive=False)
                 for img_path in image_files:
                     img_name_base = os.path.splitext(os.path.basename(img_path))[0]
                     mask_path_attempt = os.path.join(mask_category_path, img_name_base + mask_ext)
-                    
                     if os.path.exists(img_path) and os.path.exists(mask_path_attempt):
                         dataset_items.append((img_path, mask_path_attempt))
-                    else:
-                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'. (Image: {img_path}, Mask attempt: {mask_path_attempt})")
+                    else: logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'.")
 
     else: 
         image_subpath_relative = config.get('image_subpath', '')
@@ -159,19 +146,10 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
         image_dir = os.path.join(search_root, image_subpath_relative)
         mask_dir = os.path.join(search_root, mask_subpath_relative)
         
-        logging.info(f"Handling flat structure for '{dataset_name}'.")
-        logging.info(f"Expected images in: '{image_dir}'")
-        logging.info(f"Expected masks in: '{mask_dir}'")
+        logging.info(f"Handling flat structure for '{dataset_name}'. Expected images in: '{image_dir}', masks in: '{mask_dir}'")
 
-        if not os.path.exists(image_dir):
-            logging.error(f"Image directory not found for flat dataset '{dataset_name}': {image_dir}")
-            return []
-        if not os.path.exists(mask_dir):
-            logging.error(f"Mask directory not found for flat dataset '{dataset_name}': {mask_dir}")
-            return []
-
-        logging.info(f"Image directory '{image_dir}' exists.")
-        logging.info(f"Mask directory '{mask_dir}' exists.")
+        if not os.path.exists(image_dir): logging.error(f"Image directory not found: {image_dir}"); return []
+        if not os.path.exists(mask_dir): logging.error(f"Mask directory not found: {mask_dir}"); return []
 
         img_list_basenames = []
         for ext in image_exts:
@@ -184,38 +162,32 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                 if os.path.exists(potential_img_path):
                     found_img_path = potential_img_path
                     break
-
             if found_img_path:
-                mask_path_attempt = None
-                if mask_suffix:
-                    mask_path_attempt = os.path.join(mask_dir, img_name_base + mask_suffix + mask_ext)
-                else: 
-                    mask_path_attempt = os.path.join(mask_dir, img_name_base + mask_ext)
-
+                mask_path_attempt = os.path.join(mask_dir, img_name_base + mask_suffix + mask_ext) if mask_suffix else os.path.join(mask_dir, img_name_base + mask_ext)
                 if mask_path_attempt and os.path.exists(mask_path_attempt):
                     dataset_items.append((found_img_path, mask_path_attempt))
-                else:
-                    logging.warning(f"Skipping: Missing mask for '{img_name_base}'. (Image: {found_img_path}, Mask attempt: {mask_path_attempt})")
-            else:
-                    logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
+                else: logging.warning(f"Skipping: Missing mask for '{img_name_base}'.")
+            else: logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
 
     if not dataset_items:
-        logging.error(f"No valid image/mask pairs found in '{search_root}' for dataset '{dataset_name}'. "
-                      f"Please ensure the data exists and matches the config in datasets.py. Current config: {config}")
+        logging.error(f"No valid image/mask pairs found in '{search_root}' for dataset '{dataset_name}'. Please ensure data exists and matches config.")
         
     return dataset_items
 
 
 class ImageFolder(data.Dataset):
+    """
+    A custom dataset class that loads image and mask pairs. 
+    It applies transformations based on provided arguments for scaling and cropping.
+    """
     def __init__(self, image_mask_paths, args, split='train'): 
         self.imgs = image_mask_paths 
         self.args = args 
         self.split = split
 
-        # Retrieve dimensions from args with defaults
+        # Retrieve dimensions from args with defaults if not present
         scale_h = getattr(args, 'scale_h', 576)
         scale_w = getattr(args, 'scale_w', 896)
-        # Use crop_size_h/w from args if available, otherwise default to scale_h/w
         crop_h = getattr(args, 'crop_size_h', scale_h)
         crop_w = getattr(args, 'crop_size_w', scale_w)
         
@@ -227,15 +199,16 @@ class ImageFolder(data.Dataset):
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.RandomHorizontalFlip(),
-                tr.FixedResize(h=scale_h, w=scale_w), # Resize first
-                tr.RandomCrop((crop_h, crop_w)), # Then random crop
+                tr.FixedResize(h=scale_h, w=scale_w), # First, resize to scale_h, scale_w
+                tr.RandomCrop((crop_h, crop_w)),      # Then, random crop to crop_h, crop_w
                 tr.RandomGaussianBlur(),
+                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1), # Added from original train.py logic
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
         else: # Validation/Test
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(h=scale_h, w=scale_w), # Resize first
-                tr.CenterCrop((crop_h, crop_w)), # Then center crop for consistency
+                tr.FixedResize(h=scale_h, w=scale_w), # First, resize to scale_h, scale_w
+                tr.CenterCrop((crop_h, crop_w)),      # Then, center crop to crop_h, crop_w for consistency
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
 
@@ -254,7 +227,7 @@ class ImageFolder(data.Dataset):
         label_gray = label.convert('L')
         label_np = np.array(label_gray, dtype=np.uint8)
         label_index = np.zeros_like(label_np, dtype=np.uint8)
-        label_index[label_np > 0] = 1
+        label_index[label_np > 0] = 1 # Assuming binary segmentation (lesion vs background)
         return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
