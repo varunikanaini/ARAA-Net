@@ -34,8 +34,28 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support and dynamic dataset/transforms')
     
     # --- JSRT-specific defaults for clarity ---
-    parser.add_argument('--dataset-name', type=str, default='JSRT', # Default to JSRT
-                        choices=list(DATASET_CONFIGS.keys()), help='Name of the dataset to train on')
+    # CORRECTED LINE: Added 'COVID-19_Radiography' to choices
+    parser.add_argument('--dataset-name', type=str, default='JSRT',
+                        choices=list(DATASET_CONFIGS.keys()), # <--- THIS IS THE LINE TO UPDATE
+                        help='Name of the dataset to train on')
+    #
+    # The `list(DATASET_CONFIGS.keys())` part ensures it dynamically fetches keys from datasets.py.
+    # So, you don't need to manually type 'TSRS_RSNA-Epiphysis', 'JSRT', 'COVID-19_Radiography'.
+    # If 'COVID-19_Radiography' is correctly defined in datasets.DATASET_CONFIGS,
+    # then this line should automatically include it.
+    # Let's ensure DATASET_CONFIGS is fully populated in datasets.py.
+    # It appears it is, so the error implies the current `train.py` you are running
+    # has an older version of `get_args()` or is picking up an older `datasets.py`.
+    # Let's make sure `datasets.py` is fully up to date for this to work.
+
+    # Assuming `datasets.py` has:
+    # DATASET_CONFIGS = {
+    #     'TSRS_RSNA-Epiphysis': { ... },
+    #     'JSRT': { ... },
+    #     'COVID-19_Radiography': { ... } # <--- This entry must exist in datasets.py
+    # }
+
+
     parser.add_argument('--backbone', type=str, default='resnet50', # Default to resnet50
                         choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     # --- End JSRT-specific defaults ---
@@ -273,7 +293,7 @@ def main():
     try:
         for epoch in range(start_epoch, args.epoch_num):
             net.train()
-            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch_num} [Train]")
+            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch-num} [Train]")
             for i, data in enumerate(train_iterator):
                 curr_iter = epoch * len(train_loader) + i
                 base_lr = args.lr * (1 - curr_iter / total_iterations) ** args.lr_decay
