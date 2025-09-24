@@ -5,7 +5,7 @@ import sys
 import os
 import torch
 import torch.nn as nn
-import torch.nn.functional as F # Added for loss functions and model interpolation
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from tqdm.notebook import tqdm
@@ -13,6 +13,8 @@ import numpy as np
 import datetime
 import argparse
 import logging
+import shutil # Needed for config.py's download_and_extract_kaggle_dataset
+import kagglehub # Needed for config.py's download_and_extract_kaggle_dataset
 
 # Ensure project path is in sys.path
 project_path = '/kaggle/working/ARAA-Net'
@@ -67,186 +69,191 @@ def get_test_args():
         args = parser.parse_args([])
     return args
 
-args = get_test_args()
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- STEP 3: PREPARE FOR LOGGING ---
-EXP_NAME = f"{args.backbone}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
-log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
-check_mkdir(log_dir)
-log_file_path = os.path.join(log_dir, 'testing_results.log')
+def main(): # <--- Start of main function definition
+    args = get_test_args()
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
-                    handlers=[logging.FileHandler(log_file_path), logging.StreamHandler(sys.stdout)])
+    # --- STEP 3: PREPARE FOR LOGGING ---
+    EXP_NAME = f"{args.backbone}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
+    check_mkdir(log_dir)
+    log_file_path = os.path.join(log_dir, 'testing_results.log')
 
-logging.info(f"Starting FINAL EVALUATION for experiment '{EXP_NAME}'")
-logging.info(f"Arguments: {vars(args)}")
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
+                        handlers=[logging.FileHandler(log_file_path), logging.StreamHandler(sys.stdout)])
 
-
-# --- STEP 4: LOAD THE DATA ---
-logging.info("\n--- Loading Test Data ---")
-
-dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
-base_dataset_root = None
-
-if dataset_info and dataset_info['id']:
-    base_dataset_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
-    if not base_dataset_root:
-        logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
-        sys.exit(1)
-    logging.info(f"Base dataset root (KaggleHub): {base_dataset_root}")
-elif dataset_info and dataset_info['local_dir_name']:
-    base_dataset_root = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
-    if not os.path.exists(base_dataset_root):
-        logging.error(f"Local dataset directory not found at '{base_dataset_root}'. Exiting.")
-        sys.exit(1)
-    logging.info(f"Base dataset root (local): {base_dataset_root}")
-else:
-    base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name)
-    if not os.path.exists(base_dataset_root):
-        logging.error(f"Dataset directory not found at '{base_dataset_root}'. Exiting.")
-        sys.exit(1)
-    logging.info(f"Base dataset root (default): {base_dataset_root}")
+    logging.info(f"Starting FINAL EVALUATION for experiment '{EXP_NAME}'")
+    logging.info(f"Arguments: {vars(args)}")
 
 
-dataset_config = DATASET_CONFIGS.get(args.dataset_name)
-if not dataset_config:
-    logging.error(f"Config for dataset '{args.dataset_name}' not found. Exiting.")
-    sys.exit(1)
+    # --- STEP 4: LOAD THE DATA ---
+    logging.info("\n--- Loading Test Data ---")
 
-test_image_mask_list = []
+    dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
+    base_dataset_root = None
 
-if dataset_config['has_predefined_splits']:
-    logging.info(f"Using predefined splits for dataset '{args.dataset_name}' for testing.")
-    test_path_defined = os.path.join(base_dataset_root, 'test')
-    val_path_defined = os.path.join(base_dataset_root, 'val')
-
-    if os.path.exists(test_path_defined) and os.listdir(test_path_defined):
-        test_image_mask_list = make_full_dataset_list(test_path_defined, args.dataset_name, split_name='test')
-        logging.info(f"Using 'test' split from predefined folder: {test_path_defined}")
-    elif os.path.exists(val_path_defined) and os.listdir(val_path_defined):
-        test_image_mask_list = make_full_dataset_list(val_path_defined, args.dataset_name, split_name='val')
-        logging.warning(f"No explicit 'test' split folder found for '{args.dataset_name}'. Using 'val' split from '{val_path_defined}' for testing.")
+    if dataset_info and dataset_info['id']:
+        base_dataset_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
+        if not base_dataset_root:
+            logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (KaggleHub): {base_dataset_root}")
+    elif dataset_info and dataset_info['local_dir_name']:
+        base_dataset_root = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Local dataset directory not found at '{base_dataset_root}'. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (local): {base_dataset_root}")
     else:
-        logging.error(f"Neither 'test' nor 'val' split folders found at '{base_dataset_root}'. Exiting.")
+        base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name)
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Dataset directory not found at '{base_dataset_root}'. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (default): {base_dataset_root}")
+
+
+    dataset_config = DATASET_CONFIGS.get(args.dataset_name)
+    if not dataset_config:
+        logging.error(f"Config for dataset '{args.dataset_name}' not found. Exiting.")
         sys.exit(1)
 
-else:
-    logging.info(f"Using programmatic splitting for dataset '{args.dataset_name}' for testing.")
-    full_image_mask_list = make_full_dataset_list(base_dataset_root, args.dataset_name, split_name='all')
-    
-    if not full_image_mask_list:
-        logging.error(f"No data found for programmatic splitting in '{base_dataset_root}'. Exiting.")
-        sys.exit(1)
+    test_image_mask_list = []
 
-    total_len = len(full_image_mask_list)
-    train_len = int(args.train_ratio * total_len)
-    val_len = int(args.val_ratio * total_len)
-    test_len = total_len - train_len - val_len
+    if dataset_config['has_predefined_splits']:
+        logging.info(f"Using predefined splits for dataset '{args.dataset_name}' for testing.")
+        test_path_defined = os.path.join(base_dataset_root, 'test')
+        val_path_defined = os.path.join(base_dataset_root, 'val')
 
-    g = torch.Generator().manual_seed(42)
-    _, _, test_image_mask_list = random_split(
-        full_image_mask_list, [train_len, val_len, test_len], generator=g)
-    
-    logging.info(f"Programmatic split for test: Total {total_len}, Test {len(test_image_mask_list)}")
+        if os.path.exists(test_path_defined) and os.listdir(test_path_defined):
+            test_image_mask_list = make_full_dataset_list(test_path_defined, args.dataset_name, split_name='test')
+            logging.info(f"Using 'test' split from predefined folder: {test_path_defined}")
+        elif os.path.exists(val_path_defined) and os.listdir(val_path_defined):
+            test_image_mask_list = make_full_dataset_list(val_path_defined, args.dataset_name, split_name='val')
+            logging.warning(f"No explicit 'test' split folder found for '{args.dataset_name}'. Using 'val' split from '{val_path_defined}' for testing.")
+        else:
+            logging.error(f"Neither 'test' nor 'val' split folders found at '{base_dataset_root}'. Exiting.")
+            sys.exit(1)
 
-args.scale_w = dataset_config['transform_params']['resize_w']
-args.scale_h = dataset_config['transform_params']['resize_h']
-args.crop_size_h = dataset_config['transform_params']['crop_size_h']
-args.crop_size_w = dataset_config['transform_params']['crop_size_w']
-
-test_set = ImageFolder(test_image_mask_list, args, split='test')
-test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False) # pin_memory=True if CUDA
-logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
-
-if len(test_set) == 0:
-    logging.error("❌ ERROR: The dataloader found 0 images. Cannot proceed with evaluation.")
-    sys.exit(1)
-
-
-# --- STEP 5: LOAD THE TRAINED MODEL ---
-logging.info(f"\n--- Loading Trained {args.backbone} Model ---")
-checkpoint_path = os.path.join(CKPT_ROOT, EXP_NAME, 'best_checkpoint.pth')
-
-if not os.path.exists(checkpoint_path):
-    logging.error(f"❌ ERROR: Checkpoint not found at '{checkpoint_path}'")
-    sys.exit(1)
-else:
-    net = daseg(backbone_name=args.backbone).to(DEVICE)
-    state_dict = torch.load(checkpoint_path, map_location=DEVICE)
-    
-    if list(state_dict.keys())[0].startswith('module.'):
-        from collections import OrderedDict
-        new_state_dict = OrderedDict([(k[7:], v) for k, v in state_dict.items()])
-        net.load_state_dict(new_state_dict)
     else:
-        net.load_state_dict(state_dict)
-    
-    net.eval()
-    logging.info("✅ Model loaded successfully.")
+        logging.info(f"Using programmatic splitting for dataset '{args.dataset_name}' for testing.")
+        full_image_mask_list = make_full_dataset_list(base_dataset_root, args.dataset_name, split_name='all')
+        
+        if not full_image_mask_list:
+            logging.error(f"No data found for programmatic splitting in '{base_dataset_root}'. Exiting.")
+            sys.exit(1)
 
-    # --- STEP 6: INITIALIZE LOSS FUNCTIONS FOR METRIC CALCULATION ---
-    structure_loss_fn = loss.structure_loss().to(DEVICE)
-    bce_loss_fn = nn.BCEWithLogitsLoss().to(DEVICE)
-    iou_loss_fn = loss.IOU().to(DEVICE)
-    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(DEVICE)
-    
-    def bce_iou_loss_fn_wrapper(pred, target):
-        return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
+        total_len = len(full_image_mask_list)
+        train_len = int(args.train_ratio * total_len)
+        val_len = int(args.val_ratio * total_len)
+        test_len = total_len - train_len - val_len
 
-    # --- STEP 7: RUN EVALUATION ---
-    logging.info("\n--- Running Evaluation ---")
-    confmat = ConfusionMatrix(num_classes=2)
-    loss_recorder = AvgMeter()
+        g = torch.Generator().manual_seed(42)
+        _, _, test_image_mask_list = random_split(
+            full_image_mask_list, [train_len, val_len, test_len], generator=g)
+        
+        logging.info(f"Programmatic split for test: Total {total_len}, Test {len(test_image_mask_list)}")
 
-    with torch.no_grad():
-        for data in tqdm(test_loader, desc="Evaluating"):
-            inputs, labels = data['image'].to(DEVICE), data['label'].to(DEVICE)
-            
-            predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
-            
-            binary_labels = labels.unsqueeze(1).float()
-            ce_labels = labels.long()
+    args.scale_w = dataset_config['transform_params']['resize_w']
+    args.scale_h = dataset_config['transform_params']['resize_h']
+    args.crop_size_h = dataset_config['transform_params']['crop_size_h']
+    args.crop_size_w = dataset_config['transform_params']['crop_size_w']
 
-            # --- FIX: Removed .squeeze(1) here ---
-            loss_1 = bce_iou_loss_fn_wrapper(predict_1, binary_labels)
-            loss_2 = structure_loss_fn(predict_2, binary_labels)
-            loss_3 = structure_loss_fn(predict_3, binary_labels)
-            loss_4 = structure_loss_fn(predict_4, binary_labels)
-            loss_0 = ce_loss_fn(predict_0, ce_labels)
+    test_set = ImageFolder(test_image_mask_list, args, split='test')
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False)
+    logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
 
-            total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
-            loss_recorder.update(total_loss.item(), inputs.size(0))
+    if len(test_set) == 0:
+        logging.error("❌ ERROR: The dataloader found 0 images. Cannot proceed with evaluation.")
+        sys.exit(1)
 
-            confmat.update(labels.flatten(), predict_0.argmax(1).flatten())
-            
-    # --- STEP 8: COMPUTE, PRINT, AND SAVE RESULTS ---
-    logging.info("\n--- Final Test Results ---")
-    global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
-    mIoU = class_iou.mean().item()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    results_text = (
-        f"------ Final Test Results for {EXP_NAME} ({timestamp}) ------\n"
-        f"Model: ARAA-Net with {args.backbone} backbone\n"
-        f"Dataset: {args.dataset_name} (evaluated on test split)\n"
-        f"Image scale for test: ({args.scale_h}, {args.scale_w})\n"
-        f"--------------------------------------------------\n"
-        f"Global Accuracy = {global_acc.item():.4f}\n"
-        f"Mean IoU (mIoU) = {mIoU:.4f}\n"
-        f"Mean Dice       = {mDice:.4f}\n"
-        f"FWIoU           = {fwiou.item():.4f}\n"
-        f"Class IoU       = {class_iou.cpu().numpy()}\n"
-        f"Class Accuracy  = {class_acc.cpu().numpy()}\n"
-        f"Combined Test Loss (Avg) = {loss_recorder.avg:.4f}\n"
-        f"--------------------------------------------------\n"
-    )
-    
-    logging.info(results_text)
-    with open(log_file_path, 'a') as f:
-        f.write(results_text)
-    logging.info(f"✅ Results successfully saved to: {log_file_path}")
+    # --- STEP 5: LOAD THE TRAINED MODEL ---
+    logging.info(f"\n--- Loading Trained {args.backbone} Model ---")
+    checkpoint_path = os.path.join(CKPT_ROOT, EXP_NAME, 'best_checkpoint.pth')
+
+    if not os.path.exists(checkpoint_path):
+        logging.error(f"❌ ERROR: Checkpoint not found at '{checkpoint_path}'")
+        sys.exit(1)
+    else:
+        net = daseg(backbone_name=args.backbone).to(DEVICE)
+        state_dict = torch.load(checkpoint_path, map_location=DEVICE)
+        
+        if list(state_dict.keys())[0].startswith('module.'):
+            from collections import OrderedDict
+            new_state_dict = OrderedDict([(k[7:], v) for k, v in state_dict.items()])
+            net.load_state_dict(new_state_dict)
+        else:
+            net.load_state_dict(state_dict)
+        
+        net.eval()
+        logging.info("✅ Model loaded successfully.")
+
+        # --- STEP 6: INITIALIZE LOSS FUNCTIONS FOR METRIC CALCULATION ---
+        structure_loss_fn = loss.structure_loss().to(DEVICE)
+        bce_loss_fn = nn.BCEWithLogitsLoss().to(DEVICE)
+        iou_loss_fn = loss.IOU().to(DEVICE)
+        ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(DEVICE)
+        
+        def bce_iou_loss_fn_wrapper(pred, target):
+            return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
+
+        # --- STEP 7: RUN EVALUATION ---
+        logging.info("\n--- Running Evaluation ---")
+        confmat = ConfusionMatrix(num_classes=2)
+        loss_recorder = AvgMeter()
+
+        with torch.no_grad():
+            for data in tqdm(test_loader, desc="Evaluating"):
+                inputs, labels = data['image'].to(DEVICE), data['label'].to(DEVICE)
+                
+                predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
+                
+                binary_labels = labels.unsqueeze(1).float()
+                ce_labels = labels.long()
+
+                loss_1 = bce_iou_loss_fn_wrapper(predict_1, binary_labels)
+                loss_2 = structure_loss_fn(predict_2, binary_labels)
+                loss_3 = structure_loss_fn(predict_3, binary_labels)
+                loss_4 = structure_loss_fn(predict_4, binary_labels)
+                loss_0 = ce_loss_fn(predict_0, ce_labels)
+
+                total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
+                loss_recorder.update(total_loss.item(), inputs.size(0))
+
+                confmat.update(labels.flatten(), predict_0.argmax(1).flatten())
+                
+        # --- STEP 8: COMPUTE, PRINT, AND SAVE RESULTS ---
+        logging.info("\n--- Final Test Results ---")
+        global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
+        mIoU = class_iou.mean().item()
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        results_text = (
+            f"------ Final Test Results for {EXP_NAME} ({timestamp}) ------\n"
+            f"Model: ARAA-Net with {args.backbone} backbone\n"
+            f"Dataset: {args.dataset_name} (evaluated on test split)\n"
+            f"Image scale for test: ({args.scale_h}, {args.scale_w})\n"
+            f"--------------------------------------------------\n"
+            f"Global Accuracy = {global_acc.item():.4f}\n"
+            f"Mean IoU (mIoU) = {mIoU:.4f}\n"
+            f"Mean Dice       = {mDice:.4f}\n"
+            f"FWIoU           = {fwiou.item():.4f}\n"
+            f"Class IoU       = {class_iou.cpu().numpy()}\n"
+            f"Class Accuracy  = {class_acc.cpu().numpy()}\n"
+            f"Combined Test Loss (Avg) = {loss_recorder.avg:.4f}\n"
+            f"--------------------------------------------------\n"
+        )
+        
+        logging.info(results_text)
+        with open(log_file_path, 'a') as f:
+            f.write(results_text)
+        logging.info(f"✅ Results successfully saved to: {log_file_path}")
+        
+    logging.info("✅ Final testing completed.") # This line was outside the `main()` in previous partial code.
+
 
 if __name__ == '__main__':
+    # This line now correctly calls the fully defined main() function.
     main()
