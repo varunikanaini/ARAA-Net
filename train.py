@@ -79,13 +79,10 @@ def validate(net, test_loader, device, bce_iou_loss_fn, structure_loss_fn, ce_lo
             binary_labels = labels.unsqueeze(1).float() # (B, 1, H, W)
             ce_labels = labels.long() # (B, H, W)
             
-            # --- FIX: Removed .squeeze(1) here ---
             loss_1 = bce_iou_loss_fn(predict_1, binary_labels) 
-            # predict_2,3,4 are (B,1,H,W), binary_labels is (B,1,H,W) - correct for structure_loss
             loss_2 = structure_loss_fn(predict_2, binary_labels)
             loss_3 = structure_loss_fn(predict_3, binary_labels)
             loss_4 = structure_loss_fn(predict_4, binary_labels)
-            # predict_0 is (B, num_classes, H, W), ce_labels is (B, H, W) - correct for CrossEntropyLoss
             loss_0 = ce_loss_fn(predict_0, ce_labels)
             
             loss_total = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
@@ -290,13 +287,10 @@ def main():
                 
                 predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
                 
-                # --- FIX: Removed .squeeze(1) here ---
                 loss_1 = bce_iou_loss_fn_wrapper(predict_1, binary_labels)
-                # predict_2,3,4 are (B,1,H,W), binary_labels is (B,1,H,W) - correct for structure_loss
                 loss_2 = structure_loss_fn(predict_2, binary_labels)
                 loss_3 = structure_loss_fn(predict_3, binary_labels)
                 loss_4 = structure_loss_fn(predict_4, binary_labels)
-                # predict_0 is (B, num_classes, H, W), ce_labels is (B, H, W) - correct for CrossEntropyLoss
                 loss_0 = ce_loss_fn(predict_0, ce_labels)
                 
                 total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
@@ -318,19 +312,32 @@ def main():
                     current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
                     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
 
+            # End of epoch validation (redundant if last iter already validated)
             current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
 
+            # --- NEW: Save checkpoint at the end of each epoch with epoch number ---
+            epoch_checkpoint_path = os.path.join(exp_path, f'epoch_{epoch:03d}_checkpoint.pth')
+            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, epoch_checkpoint_path)
+            logging.info(f"Saved epoch checkpoint to {epoch_checkpoint_path}")
+            # Optional: Persist this to Kaggle output if you want all epoch checkpoints
+            # shutil.copy(epoch_checkpoint_path, f'/kaggle/working/epoch_{epoch:03d}_checkpoint.pth')
+
+
+            # Save best model
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
-                checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
-                torch.save(net.state_dict(), checkpoint_path) 
-                logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
-                shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth')
+                best_model_path = os.path.join(exp_path, 'best_checkpoint.pth')
+                torch.save(net.state_dict(), best_model_path)
+                logging.info(f"✅ New best model saved at {best_model_path} with mIoU: {best_mIoU:.4f}")
+                # Persist to Kaggle output
+                shutil.copy(best_model_path, '/kaggle/working/best_checkpoint.pth')
             
-            checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
-            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
-            logging.info(f"Saved latest checkpoint to {checkpoint_path}")
-            shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
+            # Save latest checkpoint (always overwrites previous latest)
+            latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
+            torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, latest_checkpoint_path)
+            logging.info(f"Saved latest checkpoint to {latest_checkpoint_path}")
+            # Persist to Kaggle output
+            shutil.copy(latest_checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
             
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")
