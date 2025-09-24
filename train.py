@@ -91,6 +91,7 @@ def validate(net, test_loader, device, writer=None, curr_iter=None, args=None):
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     logging.info(f"\nValidation Results: mIoU={mIoU:.4f}, Loss={loss_recorder.avg:.4f}")
+    print(f"\nValidation Results: mIoU={mIoU:.4f}, Loss={loss_recorder.avg:.4f}")  # Explicit print for screen
     if writer and curr_iter is not None:
         writer.add_scalar('validation/mIoU', mIoU, curr_iter)
         writer.add_scalar('validation/loss', loss_recorder.avg, curr_iter)
@@ -114,7 +115,9 @@ def main():
     check_mkdir(vis_path)
     writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
-                        handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()])
+                        handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()],
+                        force=True)  # Force reconfiguration and flush
+    logging.getLogger().handlers[1].setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))  # Ensure stream format
     logging.info(f"Starting Training for '{exp_name}' on {device}")
 
     # Download and prepare dataset
@@ -218,7 +221,7 @@ def main():
         for epoch in range(start_epoch, args.epoch_num):
             net.train()
             loss_recorder = AvgMeter()
-            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch_num} [Train]")
+            train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch_num} [Train]", file=sys.stdout, dynamic_ncols=True)
             for i, data in enumerate(train_iterator):
                 curr_iter = epoch * len(train_loader) + i
                 base_lr = args.lr * (1 - curr_iter / total_iterations) ** args.lr_decay
@@ -257,21 +260,26 @@ def main():
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
+                print(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")  # Explicit print
                 shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth')
             else:
                 patience_counter += 1
                 logging.info(f"No improvement in mIoU. Patience counter: {patience_counter}/{patience}")
+                print(f"No improvement in mIoU. Patience counter: {patience_counter}/{patience}")  # Explicit print
                 if patience_counter >= patience:
                     logging.info(f"Early stopping triggered after {patience} epochs without improvement.")
+                    print(f"Early stopping triggered after {patience} epochs without improvement.")  # Explicit print
                     break
 
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
             logging.info(f"Saved latest checkpoint to {checkpoint_path}")
+            print(f"Saved latest checkpoint to {checkpoint_path}")  # Explicit print
             shutil.copy(checkpoint_path, f'/kaggle/working/latest_checkpoint_{exp_name}.pth')
 
     finally:
         logging.info(f"Training Concluded - Best mIoU: {best_mIoU:.4f}")
+        print(f"Training Concluded - Best mIoU: {best_mIoU:.4f}")  # Explicit print
         writer.close()
 
 if __name__ == '__main__':
