@@ -2,6 +2,8 @@
 import sys
 import os
 import torch
+import torch.nn as nn
+import torch.nn.functional as F 
 from torch.utils.data import DataLoader, random_split # <<< MODIFIED: Import random_split
 from tqdm import tqdm
 import numpy as np
