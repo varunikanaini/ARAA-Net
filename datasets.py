@@ -14,7 +14,7 @@ DATASET_CONFIGS = {
     'TSRS_RSNA-Epiphysis': {
         'image_ext': ('.jpg', '.jpeg'),
         'image_subpath': '',
-        'mask_subpath': 'GT_resized',  # Point to resized masks
+        'mask_subpath': 'GT',
         'mask_ext': '.png',
         'has_predefined_splits': True,
         'is_nested_under_split_root': False,
@@ -66,7 +66,7 @@ DATASET_CONFIGS = {
     }
 }
 
-def preprocess_dataset(image_dir, mask_dir, output_mask_dir, image_exts=('.jpg', '.jpeg'), mask_ext='.png'):
+def preprocess_dataset(image_dir, mask_dir, output_mask_dir, image_exts=('.png', '.jpg', '.jpeg'), mask_ext='.png'):
     """Preprocess dataset to ensure masks match image sizes."""
     os.makedirs(output_mask_dir, exist_ok=True)
     for ext in image_exts:
@@ -104,35 +104,24 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
         return []
 
     search_root = root_path_for_dataset
-    if config['has_predefined_splits'] and split_name != 'all':
-        search_root = os.path.join(root_path_for_dataset, split_name)
-        if not os.path.exists(search_root):
-            logging.error(f"Predefined split directory '{split_name}' not found at '{search_root}'.")
-            return []
 
-    if config['has_class_folders_under_split']:
-        class_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
-        class_subdirs.sort()
-        for class_dir in class_subdirs:
-            for ext in image_exts:
-                image_files = glob.glob(os.path.join(class_dir, '*' + ext), recursive=False)
-                for img_path in image_files:
-                    img_name_base = os.path.splitext(os.path.basename(img_path))[0]
-                    mask_path_attempt = os.path.join(class_dir, img_name_base + mask_suffix + mask_ext) if mask_suffix else os.path.join(class_dir, img_name_base + mask_ext)
-                    if mask_path_attempt and os.path.exists(img_path) and os.path.exists(mask_path_attempt):
-                        dataset_items.append((img_path, mask_path_attempt))
-                    else:
-                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{class_dir}'.")
-
-    elif config['has_category_folders_under_split']:
+    if config['has_category_folders_under_split']:
+        logging.info(f"Handling category-folder-nested structure for '{dataset_name}'.")
         category_subdirs = [os.path.join(search_root, d) for d in os.listdir(search_root) if os.path.isdir(os.path.join(search_root, d))]
         category_subdirs.sort()
+        if not category_subdirs:
+            logging.warning(f"No category subdirectories found in '{search_root}'.")
+
         for category_dir in category_subdirs:
             image_category_path = os.path.join(category_dir, config['image_subpath_in_category'])
             mask_category_path = os.path.join(category_dir, config['mask_subpath_in_category'])
-            if not os.path.exists(image_category_path) or not os.path.exists(mask_category_path):
-                logging.warning(f"Subpath not found in '{category_dir}'. Skipping.")
+            if not os.path.exists(image_category_path):
+                logging.warning(f"Image subpath not found in '{category_dir}': {image_category_path}. Skipping category.")
                 continue
+            if not os.path.exists(mask_category_path):
+                logging.warning(f"Mask subpath not found in '{category_dir}': {mask_category_path}. Skipping category.")
+                continue
+
             for ext in image_exts:
                 image_files = glob.glob(os.path.join(image_category_path, '*' + ext), recursive=False)
                 for img_path in image_files:
@@ -141,37 +130,7 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                     if os.path.exists(img_path) and os.path.exists(mask_path_attempt):
                         dataset_items.append((img_path, mask_path_attempt))
                     else:
-                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}'.")
-
-    else:
-        image_subpath_relative = config.get('image_subpath', '')
-        mask_subpath_relative = config.get('mask_subpath', '')
-        image_dir = os.path.join(search_root, image_subpath_relative)
-        mask_dir = os.path.join(search_root, mask_subpath_relative)
-
-        if not os.path.exists(image_dir) or not os.path.exists(mask_dir):
-            logging.error(f"Directory not found: images '{image_dir}', masks '{mask_dir}'")
-            return []
-
-        img_list_basenames = []
-        for ext in image_exts:
-            img_list_basenames.extend([os.path.splitext(os.path.basename(f))[0] for f in os.listdir(image_dir) if f.lower().endswith(ext)])
-
-        for img_name_base in img_list_basenames:
-            found_img_path = None
-            for ext in image_exts:
-                potential_img_path = os.path.join(image_dir, img_name_base + ext)
-                if os.path.exists(potential_img_path):
-                    found_img_path = potential_img_path
-                    break
-            if found_img_path:
-                mask_path_attempt = os.path.join(mask_dir, img_name_base + mask_suffix + mask_ext) if mask_suffix else os.path.join(mask_dir, img_name_base + mask_ext)
-                if mask_path_attempt and os.path.exists(mask_path_attempt):
-                    dataset_items.append((found_img_path, mask_path_attempt))
-                else:
-                    logging.warning(f"Skipping: Missing mask for '{img_name_base}'.")
-            else:
-                logging.warning(f"Skipping: Missing image file for '{img_name_base}'.")
+                        logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'.")
 
     if not dataset_items:
         logging.error(f"No valid image/mask pairs found in '{search_root}' for dataset '{dataset_name}'.")

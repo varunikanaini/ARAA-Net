@@ -24,7 +24,7 @@ import numpy as np
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support and multiple dataset support')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis',
+    parser.add_argument('--dataset-name', type=str, default='COVID-19_Radiography',
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
@@ -35,11 +35,11 @@ def get_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming')
-    parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers')  # Set to 0
-    parser.add_argument('--scale-h', type=int, default=576, help='Height images were resized to')
-    parser.add_argument('--scale-w', type=int, default=896, help='Width images were resized to')
-    parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to')
-    parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to')
+    parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers')
+    parser.add_argument('--scale-h', type=int, default=256, help='Height images were resized to')
+    parser.add_argument('--scale-w', type=int, default=256, help='Width images were resized to')
+    parser.add_argument('--crop-size-h', type=int, default=256, help='Height images were cropped to')
+    parser.add_argument('--crop-size-w', type=int, default=256, help='Width images were cropped to')
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='(UNUSED)')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='(UNUSED)')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='(UNUSED)')
@@ -106,7 +106,7 @@ def main():
         torch.backends.cudnn.benchmark = True
     np.random.seed(2021)
 
-    exp_name = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_name = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('COVID-19_', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     vis_path = os.path.join(exp_path, 'log')
@@ -116,53 +116,53 @@ def main():
                         handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()])
     logging.info(f"Starting Training for '{exp_name}' on {device}")
 
-    # Preprocess dataset to ensure mask sizes match image sizes
+    # Download and prepare dataset
     dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
     base_dataset_root = None
     if dataset_info and dataset_info['id']:
         base_dataset_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
+        if not base_dataset_root:
+            logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
+            sys.exit(1)
     elif dataset_info and dataset_info['local_dir_name']:
         base_dataset_root = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Local dataset directory not found at '{base_dataset_root}'. Exiting.")
+            sys.exit(1)
     else:
         base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name)
-    if not os.path.exists(base_dataset_root):
-        logging.error(f"Dataset directory not found at '{base_dataset_root}'. Exiting.")
-        sys.exit(1)
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Dataset directory not found at '{base_dataset_root}'. Exiting.")
+            sys.exit(1)
 
-    # Run preprocessing for TSRS_RSNA-Epiphysis
-    if args.dataset_name == 'TSRS_RSNA-Epiphysis':
-        preprocess_dataset(
-            image_dir=os.path.join(base_dataset_root, 'train'),
-            mask_dir=os.path.join(base_dataset_root, 'train/GT'),
-            output_mask_dir=os.path.join(base_dataset_root, 'train/GT_resized')
-        )
+    # Preprocess dataset to ensure mask sizes match image sizes for each category
+    if args.dataset_name == 'COVID-19_Radiography':
+        for category in ['COVID', 'Lung_Opacity', 'Normal', 'Viral Pneumonia']:
+            image_dir = os.path.join(base_dataset_root, category, 'images')
+            mask_dir = os.path.join(base_dataset_root, category, 'masks')
+            output_mask_dir = os.path.join(base_dataset_root, category, 'masks_resized')
+            if os.path.exists(image_dir) and os.path.exists(mask_dir):
+                preprocess_dataset(image_dir, mask_dir, output_mask_dir)
+                # Update DATASET_CONFIGS temporarily for this run to use resized masks
+                DATASET_CONFIGS['COVID-19_Radiography']['mask_subpath_in_category'] = 'masks_resized'
 
     dataset_config = DATASET_CONFIGS.get(args.dataset_name)
     if not dataset_config:
         logging.error(f"Config for dataset '{args.dataset_name}' not found. Exiting.")
         sys.exit(1)
 
-    train_image_mask_list = []
-    val_image_mask_list = []
-    if dataset_config['has_predefined_splits']:
-        train_full_path = os.path.join(base_dataset_root, 'train')
-        val_full_path = os.path.join(base_dataset_root, 'val')
-        train_image_mask_list = make_dataset(train_full_path, args.dataset_name, split_name='train')
-        val_image_mask_list = make_dataset(val_full_path, args.dataset_name, split_name='val')
-        if not train_image_mask_list or not val_image_mask_list:
-            logging.error(f"No data found in '{train_full_path}' or '{val_full_path}'. Exiting.")
-            sys.exit(1)
-    else:
-        full_image_mask_list = make_dataset(base_dataset_root, args.dataset_name, split_name='all')
-        if not full_image_mask_list:
-            logging.error(f"No data found in '{base_dataset_root}'. Exiting.")
-            sys.exit(1)
-        total_len = len(full_image_mask_list)
-        train_len = int(args.train_ratio * total_len)
-        val_len = int(args.val_ratio * total_len)
-        test_len = total_len - train_len - val_len
-        train_image_mask_list, val_image_mask_list, _ = random_split(
-            full_image_mask_list, [train_len, val_len, test_len], generator=torch.Generator().manual_seed(42))
+    full_image_mask_list = make_dataset(base_dataset_root, args.dataset_name, split_name='all')
+    if not full_image_mask_list:
+        logging.error(f"No data found in '{base_dataset_root}'. Exiting.")
+        sys.exit(1)
+
+    total_len = len(full_image_mask_list)
+    train_len = int(args.train_ratio * total_len)
+    val_len = int(args.val_ratio * total_len)
+    test_len = total_len - train_len - val_len
+    train_image_mask_list, val_image_mask_list, _ = random_split(
+        full_image_mask_list, [train_len, val_len, test_len], generator=torch.Generator().manual_seed(42))
+    logging.info(f"Programmatic split: Total {total_len}, Train {len(train_image_mask_list)}, Val {len(val_image_mask_list)}")
 
     train_set = ImageFolder(train_image_mask_list, args, split='train')
     train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
