@@ -20,7 +20,7 @@ if project_path not in sys.path:
 # Import necessary components from your project structure
 from daseg import daseg
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
-from datasets import ImageFolder, DATASET_CONFIGS
+from datasets import ImageFolder, DATASET_CONFIGS # Make sure DATASET_CONFIGS in datasets.py has COVID-19_Radiography
 from datasets import make_dataset as make_full_dataset_list
 import custom_transforms as tr
 import loss # Assuming loss.py contains structure_loss, IOU
@@ -33,29 +33,17 @@ import torch.nn.functional as F # Ensure F is imported here for loss.py's intern
 def get_args():
     parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support and dynamic dataset/transforms')
     
-    # --- JSRT-specific defaults for clarity ---
-    # CORRECTED LINE: Added 'COVID-19_Radiography' to choices
+    # --- CORRECTED LINE: Explicitly list all choices ---
+    # This ensures 'COVID-19_Radiography' is always a valid option
+    # You MUST ensure DATASET_CONFIGS in datasets.py also contains these entries
+    valid_dataset_choices = ['TSRS_RSNA-Epiphysis', 'JSRT', 'COVID-19_Radiography'] 
     parser.add_argument('--dataset-name', type=str, default='JSRT',
-                        choices=list(DATASET_CONFIGS.keys()), # <--- THIS IS THE LINE TO UPDATE
+                        choices=valid_dataset_choices, 
                         help='Name of the dataset to train on')
-    #
-    # The `list(DATASET_CONFIGS.keys())` part ensures it dynamically fetches keys from datasets.py.
-    # So, you don't need to manually type 'TSRS_RSNA-Epiphysis', 'JSRT', 'COVID-19_Radiography'.
-    # If 'COVID-19_Radiography' is correctly defined in datasets.DATASET_CONFIGS,
-    # then this line should automatically include it.
-    # Let's make sure `datasets.py` is fully up to date for this to work.
+    # --- End CORRECTED LINE ---
 
-    # Assuming `datasets.py` has:
-    # DATASET_CONFIGS = {
-    #     'TSRS_RSNA-Epiphysis': { ... },
-    #     'JSRT': { ... },
-    #     'COVID-19_Radiography': { ... } # <--- This entry must exist in datasets.py
-    # }
-
-
-    parser.add_argument('--backbone', type=str, default='resnet50', # Default to resnet50
+    parser.add_argument('--backbone', type=str, default='resnet50', 
                         choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
-    # --- End JSRT-specific defaults ---
 
     parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--train-batch-size', type=int, default=8, help='Batch size for training')
@@ -290,7 +278,7 @@ def main():
     try:
         for epoch in range(start_epoch, args.epoch_num):
             net.train()
-            # CORRECTED LINE: epoch-num instead of epoch
+            # CORRECTED LINE: epoch_num instead of epoch
             train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch_num} [Train]") 
             for i, data in enumerate(train_iterator):
                 curr_iter = epoch * len(train_loader) + i
