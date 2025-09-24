@@ -5,23 +5,28 @@ import logging
 import argparse
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split # Added random_split
 from torchvision import transforms
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 import sys
 sys.path.append('/kaggle/working/ARAA-Net/')
-from daseg import daseg
-from config import cod_training_root, test_path
-from datasets import ImageFolder
-import joint_transforms
-import loss
+
+from daseg import daseg # Your model
+from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING # Updated imports
+from datasets import ImageFolder, DATASET_CONFIGS # Updated imports, make_dataset is now make_full_dataset_list
+from datasets import make_dataset as make_full_dataset_list # Renamed to avoid conflict
+import joint_transforms # Still needed if you use it for some specific logic, though ImageFolder now handles many.
+import loss # Assuming loss.py contains structure_loss, IOU, etc.
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 import shutil
+import numpy as np # For random_split seed
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support')
+    parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support and multiple dataset support')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
+                        choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training') # NEW
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
     parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
@@ -32,9 +37,43 @@ def get_args():
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming (relative to ckpt_path)')
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
-    return parser.parse_args()
+    
+    # Arguments for ImageFolder and programmatic splitting
+    parser.add_argument('--scale-h', type=int, default=576, help='Height images were resized to for ImageFolder transforms') # NEW
+    parser.add_argument('--scale-w', type=int, default=896, help='Width images were resized to for ImageFolder transforms') # NEW
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Min lesion area for CenterAmplification in ImageFolder.') # NEW
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Expansion factor for CenterAmplification in ImageFolder.') # NEW
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='Min bbox height for CenterAmplification in ImageFolder.') # NEW
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='Min bbox width for CenterAmplification in ImageFolder.') # NEW
+    parser.add_argument('--train-ratio', type=float, default=0.7, help='Train split ratio for programmatic splitting.') # NEW
+    parser.add_argument('--val-ratio', type=float, default=0.15, help='Validation split ratio for programmatic splitting.') # NEW
+    
+    # Deep supervision weights (if your model uses it, though daseg in original train.py has 5 outputs)
+    parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[1.0, 1.0, 2.0, 4.0, 10.0], 
+                        help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
 
-def validate(net, test_loader, device, writer=None, curr_iter=None):
+    try:
+        args = parser.parse_args()
+    except SystemExit:
+        args = parser.parse_args([]) # For environments like notebooks
+        
+    if len(args.deep_supervision_weights) != 5:
+        parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
+
+    return args
+
+# Global loss functions (defined once)
+structure_loss_fn = None
+bce_loss_fn = None
+iou_loss_fn = None
+ce_loss_fn = None
+
+def bce_iou_loss(pred, target):
+    global bce_loss_fn, iou_loss_fn
+    return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
+
+
+def validate(net, test_loader, device, writer=None, curr_iter=None, args=None): # Added args
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
@@ -44,13 +83,16 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
             predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
             binary_labels = labels.unsqueeze(1).float()
             ce_labels = labels.long()
-            loss_1 = bce_iou_loss(predict_1, binary_labels)
-            loss_2 = structure_loss_fn(predict_2, binary_labels)
-            loss_3 = structure_loss_fn(predict_3, binary_labels)
-            loss_4 = structure_loss_fn(predict_4, binary_labels)
-            loss_0 = ce_loss_fn(predict_0, ce_labels)
-            loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
-            loss_recorder.update(loss.item(), inputs.size(0))
+            
+            # Use deep supervision weights from args for validation loss calculation
+            loss_1 = bce_iou_loss(predict_1, binary_labels) * args.deep_supervision_weights[0]
+            loss_2 = structure_loss_fn(predict_2, binary_labels) * args.deep_supervision_weights[1]
+            loss_3 = structure_loss_fn(predict_3, binary_labels) * args.deep_supervision_weights[2]
+            loss_4 = structure_loss_fn(predict_4, binary_labels) * args.deep_supervision_weights[3]
+            loss_0 = ce_loss_fn(predict_0, ce_labels) * args.deep_supervision_weights[4] # For the final output
+            
+            total_loss = loss_1 + loss_2 + loss_3 + loss_4 + loss_0 # Sum of weighted losses
+            loss_recorder.update(total_loss.item(), inputs.size(0))
             confmat.update(labels.flatten(), predict_0.argmax(1).flatten())
             
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
@@ -58,8 +100,8 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     
     logging.info("\n--- Validation Results ---")
     logging.info(f"global_acc = {global_acc.item():.4f}")
-    logging.info(f"class_acc  = {class_acc}")
-    logging.info(f"class_iou  = {class_iou}")
+    logging.info(f"class_acc  = {class_acc.cpu().numpy()}") # Ensure numpy conversion
+    logging.info(f"class_iou  = {class_iou.cpu().numpy()}") # Ensure numpy conversion
     logging.info(f"mIoU       = {mIoU:.4f}")
     logging.info(f"FWIoU      = {fwiou.item():.4f}")
     logging.info(f"mDice      = {mDice:.4f}")
@@ -73,17 +115,19 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
     return mIoU
 
 def main():
+    global structure_loss_fn, bce_loss_fn, iou_loss_fn, ce_loss_fn # Declare global to assign
+    
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(2021)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(2021)
         torch.backends.cudnn.benchmark = True
+    np.random.seed(2021) # For random_split reproducibility
 
     # Set Kaggle-compatible checkpoint path
-    ckpt_path = '/kaggle/working/ckpt'
-    exp_name = args.backbone
-    exp_path = os.path.join(ckpt_path, exp_name)
+    exp_name = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" # Adjusted EXP_NAME
+    exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     
     # Initialize TensorBoard
@@ -93,29 +137,84 @@ def main():
     
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                         handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()])
-    logging.info(f"Starting Training with Arguments: {args}")
+    logging.info(f"Starting Training for experiment '{exp_name}'")
+    logging.info(f"Arguments: {args}")
     logging.info(f"Using device: {device}")
 
-    # Adjust input size for inception_v3
-    scale_h = 299 if args.backbone == 'inception_v3' else 896
-    scale_w = 299 if args.backbone == 'inception_v3' else 576
-    
-    # Data Transformations & Dataloaders
-    joint_transform = joint_transforms.Compose([
-        joint_transforms.RandomHorizontallyFlip(),
-        joint_transforms.Resize((scale_h, scale_w)),
-        joint_transforms.RandomCrop((299 if args.backbone == 'inception_v3' else 576, 299 if args.backbone == 'inception_v3' else 576), pad_if_needed=True, lbl_fill=255)
-    ])
-    val_joint_transform = joint_transforms.Compose([joint_transforms.Resize((scale_h, scale_w))])
-    img_transform = transforms.Compose([
-        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    target_transform = transforms.ToTensor()
-    train_set = ImageFolder(cod_training_root, joint_transform=joint_transform, transform=img_transform, target_transform=target_transform)
+    # --- Determine the base root for the dataset (download if KaggleHub) ---
+    dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
+    base_dataset_root = None
+
+    if dataset_info and dataset_info['id']: # If it's a KaggleHub dataset
+        base_dataset_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
+        if not base_dataset_root:
+            logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (KaggleHub): {base_dataset_root}")
+    elif dataset_info and dataset_info['local_dir_name']: # For local datasets like KOA (lvv-koa)
+        base_dataset_root = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Local dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (local): {base_dataset_root}")
+    else: # For other datasets (default)
+        base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name)
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (default): {base_dataset_root}")
+    # --- END dataset root determination ---
+
+    # --- Data Loading and Splitting Logic ---
+    dataset_config = DATASET_CONFIGS.get(args.dataset_name)
+    if not dataset_config:
+        logging.error(f"Config for dataset '{args.dataset_name}' not found. Exiting.")
+        sys.exit(1)
+
+    train_image_mask_list = []
+    val_image_mask_list = []
+
+    if dataset_config['has_predefined_splits']:
+        # Datasets with pre-defined 'train', 'val' folders (e.g., RSNA, KOA)
+        logging.info(f"Using predefined splits for dataset '{args.dataset_name}'.")
+        train_full_path = os.path.join(base_dataset_root, 'train')
+        val_full_path = os.path.join(base_dataset_root, 'val')
+
+        train_image_mask_list = make_full_dataset_list(train_full_path, args.dataset_name, split_name='train')
+        val_image_mask_list = make_full_dataset_list(val_full_path, args.dataset_name, split_name='val')
+
+        if not train_image_mask_list:
+            logging.error(f"No training data found in '{train_full_path}'. Exiting.")
+            sys.exit(1)
+        if not val_image_mask_list:
+            logging.error(f"No validation data found in '{val_full_path}'. Exiting.")
+            sys.exit(1)
+
+    else:
+        # Datasets requiring programmatic splitting (e.g., COVID-19_Radiography, JSRT)
+        logging.info(f"Performing programmatic splitting for dataset '{args.dataset_name}'.")
+        full_image_mask_list = make_full_dataset_list(base_dataset_root, args.dataset_name, split_name='all')
+        
+        if not full_image_mask_list:
+            logging.error(f"No data found for programmatic splitting in '{base_dataset_root}'. Exiting.")
+            sys.exit(1)
+
+        total_len = len(full_image_mask_list)
+        train_len = int(args.train_ratio * total_len)
+        val_len = int(args.val_ratio * total_len)
+        test_len = total_len - train_len - val_len # Remaining for test, not used in train but good for consistency
+
+        # Perform random split
+        train_image_mask_list, val_image_mask_list, _ = random_split(
+            full_image_mask_list, [train_len, val_len, test_len], generator=torch.Generator().manual_seed(42))
+        
+        logging.info(f"Programmatic split: Total {total_len}, Train {len(train_image_mask_list)}, Val {len(val_image_mask_list)}")
+
+    # DataLoaders using the new ImageFolder
+    train_set = ImageFolder(train_image_mask_list, args, split='train')
     train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
-    test_set = ImageFolder(test_path, joint_transform=val_joint_transform, transform=img_transform, target_transform=target_transform)
+    
+    test_set = ImageFolder(val_image_mask_list, args, split='val') # Using val set for testing during training
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
     
     logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images.")
@@ -137,20 +236,18 @@ def main():
             {'params': [p for n, p in net.named_parameters() if 'bias' not in n], 'lr': args.lr, 'weight_decay': args.weight_decay}
         ], momentum=args.momentum)
 
-    # Loss Functions
-    global structure_loss_fn, bce_loss_fn, iou_loss_fn, ce_loss_fn
+    # Loss Functions (assigning to global variables)
     structure_loss_fn = loss.structure_loss().to(device)
     bce_loss_fn = nn.BCEWithLogitsLoss().to(device)
     iou_loss_fn = loss.IOU().to(device)
-    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device)
-    def bce_iou_loss(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
+    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device) # Keep ignore_index 255 if your dataset uses it
 
     # Checkpoint Resuming Logic
     start_epoch = 0
     best_mIoU = 0.0
     latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if args.snapshot:
-        snapshot_path = os.path.join(ckpt_path, exp_name, args.snapshot + '.pth')
+        snapshot_path = os.path.join(CKPT_ROOT, exp_name, args.snapshot + '.pth')
         if os.path.exists(snapshot_path):
             logging.info(f"Resuming from snapshot: {snapshot_path}")
             try:
@@ -202,12 +299,15 @@ def main():
                 ce_labels = labels.long()
                 optimizer.zero_grad(set_to_none=True)
                 predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
-                loss_1 = bce_iou_loss(predict_1, binary_labels)
-                loss_2 = structure_loss_fn(predict_2, binary_labels)
-                loss_3 = structure_loss_fn(predict_3, binary_labels)
-                loss_4 = structure_loss_fn(predict_4, binary_labels)
-                loss_0 = ce_loss_fn(predict_0, ce_labels)
-                total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
+                
+                # Apply deep supervision weights for training losses
+                loss_1 = bce_iou_loss(predict_1, binary_labels) * args.deep_supervision_weights[0]
+                loss_2 = structure_loss_fn(predict_2, binary_labels) * args.deep_supervision_weights[1]
+                loss_3 = structure_loss_fn(predict_3, binary_labels) * args.deep_supervision_weights[2]
+                loss_4 = structure_loss_fn(predict_4, binary_labels) * args.deep_supervision_weights[3]
+                loss_0 = ce_loss_fn(predict_0, ce_labels) * args.deep_supervision_weights[4] # For the final output
+                
+                total_loss = loss_1 + loss_2 + loss_3 + loss_4 + loss_0
                 total_loss.backward()
                 optimizer.step()
                 loss_recorder.update(total_loss.item(), inputs.size(0))
@@ -221,12 +321,13 @@ def main():
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # Validate every 10 iterations
-                if i % 10 == 0:
-                    current_mIoU = validate(net, test_loader, device, writer, curr_iter)
+                # Validate every 10 iterations (or some frequency)
+                if (i + 1) % (len(train_loader) // 10) == 0 or (i + 1) == len(train_loader): # Validate ~10 times per epoch
+                    current_mIoU = validate(net, test_loader, device, writer, curr_iter, args) # Pass args
                     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
 
-            current_mIoU = validate(net, test_loader, device, writer, curr_iter)
+            # Final validation at the end of the epoch
+            current_mIoU = validate(net, test_loader, device, writer, (epoch + 1) * len(train_loader), args) # Pass args
             
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
@@ -234,13 +335,14 @@ def main():
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
                 # Persist to Kaggle output
-                shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth')
+                shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth') # Unique name for each experiment
             
+            # Save latest checkpoint
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
-            logging.info(f"Saved checkpoint to {checkpoint_path}")
+            logging.info(f"Saved latest checkpoint to {checkpoint_path}")
             # Persist to Kaggle output
-            shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
+            shutil.copy(checkpoint_path, f'/kaggle/working/latest_checkpoint_{exp_name}.pth') # Unique name for each experiment
             
     finally:
         logging.info(f"--- Training Process Concluded --- Best mIoU achieved: {best_mIoU:.4f} ---")
