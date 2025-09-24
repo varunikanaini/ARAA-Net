@@ -14,8 +14,8 @@ sys.path.append('/kaggle/working/ARAA-Net/')
 
 from daseg import daseg
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
-from datasets import ImageFolder, DATASET_CONFIGS, make_dataset, preprocess_dataset
-import joint_transforms
+from datasets import ImageFolder, DATASET_CONFIGS, make_dataset, preprocess_dataset # Ensure preprocess_dataset is imported
+import joint_transforms # Keep if custom_transforms relies on it, though ImageFolder handles most
 import loss
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
@@ -27,6 +27,7 @@ def get_args():
     parser.add_argument('--dataset-name', type=str, default='COVID-19_Radiography',
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
+    
     parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
@@ -35,7 +36,7 @@ def get_args():
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum for SGD optimizer')
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming')
-    parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers')
+    parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers') # Set to 0 for initial debugging to avoid multiprocessing issues
     parser.add_argument('--scale-h', type=int, default=256, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=256, help='Width images were resized to')
     parser.add_argument('--crop-size-h', type=int, default=256, help='Height images were cropped to')
@@ -140,15 +141,23 @@ def main():
             sys.exit(1)
 
     # Preprocess dataset to ensure mask sizes match image sizes for each category
+    # This block should be after dataset download and before make_dataset
     if args.dataset_name == 'COVID-19_Radiography':
-        for category in ['COVID', 'Normal', 'Pneumonia', 'Lung_Opacity']:
+        logging.info("Preprocessing COVID-19_Radiography dataset to ensure mask sizes match images...")
+        for category in ['COVID', 'Lung_Opacity', 'Normal', 'Viral Pneumonia']: # Corrected category names based on image
             image_dir = os.path.join(base_dataset_root, category, 'images')
             mask_dir = os.path.join(base_dataset_root, category, 'masks')
             output_mask_dir = os.path.join(base_dataset_root, category, 'masks_resized')
             if os.path.exists(image_dir) and os.path.exists(mask_dir):
                 preprocess_dataset(image_dir, mask_dir, output_mask_dir)
-                # Update DATASET_CONFIGS temporarily for this run to use resized masks
-                DATASET_CONFIGS['COVID-19_Radiography']['mask_subpath_in_category'] = 'masks_resized'
+            else:
+                logging.warning(f"Image or mask directory not found for category '{category}' at {base_dataset_root}.")
+        # Temporarily update DATASET_CONFIGS for this run to use resized masks
+        # Note: This is a direct modification of the global dict. If running multiple experiments,
+        # it might be better to pass an updated config dict to make_dataset explicitly.
+        DATASET_CONFIGS['COVID-19_Radiography']['mask_subpath_in_category'] = 'masks_resized'
+        logging.info("Preprocessing complete. Updated mask path for COVID-19_Radiography to 'masks_resized'.")
+
 
     dataset_config = DATASET_CONFIGS.get(args.dataset_name)
     if not dataset_config:
@@ -252,7 +261,7 @@ def main():
 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
 
-            # Validate only at the end of the epoch
+            # Validate only at the end of the epoch (as per original logic, avoiding frequent validation)
             current_mIoU = validate(net, test_loader, device, writer, (epoch + 1) * len(train_loader), args)
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU

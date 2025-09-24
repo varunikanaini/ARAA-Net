@@ -17,13 +17,21 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 from daseg import daseg
-from datasets import ImageFolder, DATASET_CONFIGS, make_dataset as make_full_dataset_list, preprocess_dataset
+from datasets import ImageFolder, DATASET_CONFIGS, make_dataset as make_full_dataset_list, preprocess_dataset # Ensure preprocess_dataset is imported
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
 
 import loss
 from torch import nn
+
+# Global loss functions (defined once)
+structure_loss_fn = loss.structure_loss()
+bce_loss_fn = nn.BCEWithLogitsLoss()
+iou_loss_fn = loss.IOU()
+ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255)
+def bce_iou_loss(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
+
 
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test ARAA-Net Model with multi-backbone and multi-dataset support')
@@ -107,14 +115,21 @@ def main():
         logging.info(f"Base dataset root (default): {base_dataset_root}")
 
     # --- Preprocess dataset to ensure mask sizes match image sizes ---
+    # This block should be after dataset download and before make_dataset
     if args.dataset_name == 'COVID-19_Radiography':
-        for category in ['COVID', 'Normal', 'Pneumonia', 'Lung_Opacity']:
+        logging.info("Preprocessing COVID-19_Radiography dataset to ensure mask sizes match images...")
+        for category in ['COVID', 'Lung_Opacity', 'Normal', 'Viral Pneumonia']: # Corrected category names
             image_dir = os.path.join(base_dataset_root, category, 'images')
             mask_dir = os.path.join(base_dataset_root, category, 'masks')
             output_mask_dir = os.path.join(base_dataset_root, category, 'masks_resized')
             if os.path.exists(image_dir) and os.path.exists(mask_dir):
                 preprocess_dataset(image_dir, mask_dir, output_mask_dir)
-                DATASET_CONFIGS['COVID-19_Radiography']['mask_subpath_in_category'] = 'masks_resized'
+            else:
+                logging.warning(f"Image or mask directory not found for category '{category}' at {base_dataset_root}.")
+        # Temporarily update DATASET_CONFIGS for this run to use resized masks
+        DATASET_CONFIGS['COVID-19_Radiography']['mask_subpath_in_category'] = 'masks_resized'
+        logging.info("Preprocessing complete. Updated mask path for COVID-19_Radiography to 'masks_resized'.")
+
 
     # --- Data Loading and Splitting Logic for Testing ---
     logging.info("\n--- Loading Test Data ---")
