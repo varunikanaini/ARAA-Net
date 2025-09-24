@@ -116,8 +116,8 @@ class ImageFolder(data.Dataset):
                 tr.FixedResize(scale_h, scale_w),
                 tr.RandomCrop((crop_h, crop_w)),
                 tr.RandomGaussianBlur(),
-                # Apply ColorJitter as a custom transform to handle dictionary
-                lambda x: {'image': self.color_jitter(x['image']), 'label': x['label'], 'name': x['name']},
+                # Use a safer lambda to handle missing 'name' with a default
+                lambda x: {'image': self.color_jitter(x['image']), 'label': x['label'], 'name': x.get('name', '')},
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()])
         else:
