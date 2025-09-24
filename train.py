@@ -1,30 +1,41 @@
-#!/usr/bin/env python3
+# /kaggle/working/ARAA-Net/train.py
+
 import os
 import time
 import logging
 import argparse
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 import sys
-sys.path.append('/kaggle/working/ARAA-Net/')
+
+# Ensure project path is in sys.path
+project_path = '/kaggle/working/ARAA-Net'
+if project_path not in sys.path:
+    sys.path.insert(0, project_path)
+
+# Import necessary components from your project structure
 from daseg import daseg
-from config import cod_training_root, test_path
-from datasets import ImageFolder
-import joint_transforms
+from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING # Import DATA_ROOT and KAGGLE_DATASET_MAPPING
+from datasets import ImageFolder, DATASET_CONFIGS # Import DATASET_CONFIGS and ImageFolder
+from datasets import make_dataset as make_full_dataset_list # Rename to avoid conflict
+import custom_transforms as tr # Use custom_transforms directly
+# import joint_transforms # Removed: ImageFolder now handles all transforms directly
 import loss
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 import shutil
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support')
+    parser = argparse.ArgumentParser(description='Train ARAA-Net with multi-backbone support and dynamic dataset/transforms')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
+                        choices=list(DATASET_CONFIGS.keys()), help='Name of the dataset to train on')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Choose backbone')
-    parser.add_argument('--epoch-num', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--train-batch-size', type=int, default=10, help='Batch size for training')
+    parser.add_argument('--epoch-num', type=int, default=100, help='Number of training epochs') # Reduced default for faster example
+    parser.add_argument('--train-batch-size', type=int, default=8, help='Batch size for training') # Adjusted default for GPU memory
     parser.add_argument('--lr', type=float, default=1e-3, help='Base learning rate')
     parser.add_argument('--lr-decay', type=float, default=0.9, help='Exponent for polynomial LR decay')
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Weight decay')
@@ -32,9 +43,28 @@ def get_args():
     parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'], help='Optimizer to use')
     parser.add_argument('--snapshot', type=str, default='', help='Path to snapshot for resuming (relative to ckpt_path)')
     parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
-    return parser.parse_args()
+    
+    # New args for programmatic splitting ratios
+    parser.add_argument('--train-ratio', type=float, default=0.7, help='Train split ratio for datasets without predefined splits.')
+    parser.add_argument('--val-ratio', type=float, default=0.15, help='Validation split ratio for datasets without predefined splits.')
+    
+    # Dummy args for ImageFolder compatibility, these will be overwritten by dataset_config['transform_params']
+    # These are only used if the script is called without specific dataset_name and thus needs default args,
+    # but ImageFolder will use values from DATASET_CONFIGS for the chosen dataset.
+    parser.add_argument('--scale-h', type=int, default=576, help='Dummy for ImageFolder init, actual from config')
+    parser.add_argument('--scale-w', type=int, default=896, help='Dummy for ImageFolder init, actual from config')
+    parser.add_argument('--crop-size-h', type=int, default=576, help='Dummy for ImageFolder init, actual from config')
+    parser.add_argument('--crop-size-w', type=int, default=576, help='Dummy for ImageFolder init, actual from config')
 
-def validate(net, test_loader, device, writer=None, curr_iter=None):
+
+    try:
+        args = parser.parse_args()
+    except SystemExit:
+        args = parser.parse_args([]) # For notebook compatibility
+    
+    return args
+
+def validate(net, test_loader, device, bce_iou_loss_fn, structure_loss_fn, ce_loss_fn, writer=None, curr_iter=None):
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
@@ -44,13 +74,18 @@ def validate(net, test_loader, device, writer=None, curr_iter=None):
             predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
             binary_labels = labels.unsqueeze(1).float()
             ce_labels = labels.long()
-            loss_1 = bce_iou_loss(predict_1, binary_labels)
+            
+            # Ensure consistency with how BCEWithLogitsLoss expects input (1 channel for predict_1)
+            # predict_1 is (B,1,H,W) or (B,H,W), BCEWithLogitsLoss expects (B,H,W) and target (B,H,W)
+            loss_1 = bce_iou_loss_fn(predict_1.squeeze(1), binary_labels.squeeze(1)) # Squeeze predict_1 and binary_labels
             loss_2 = structure_loss_fn(predict_2, binary_labels)
             loss_3 = structure_loss_fn(predict_3, binary_labels)
             loss_4 = structure_loss_fn(predict_4, binary_labels)
-            loss_0 = ce_loss_fn(predict_0, ce_labels)
-            loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
-            loss_recorder.update(loss.item(), inputs.size(0))
+            loss_0 = ce_loss_fn(predict_0, ce_labels) # CrossEntropyLoss takes logits, (N,C,H,W) and (N,H,W)
+            
+            loss_total = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
+            loss_recorder.update(loss_total.item(), inputs.size(0))
+            
             confmat.update(labels.flatten(), predict_0.argmax(1).flatten())
             
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
@@ -81,9 +116,9 @@ def main():
         torch.backends.cudnn.benchmark = True
 
     # Set Kaggle-compatible checkpoint path
-    ckpt_path = '/kaggle/working/ckpt'
-    exp_name = args.backbone
-    exp_path = os.path.join(ckpt_path, exp_name)
+    # Exp name now includes dataset_name
+    exp_name = f"{args.backbone}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     
     # Initialize TensorBoard
@@ -91,31 +126,84 @@ def main():
     check_mkdir(vis_path)
     writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
     
+    # Setup logging to file and console
+    log_file_path = os.path.join(exp_path, 'training.log')
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler) # Clear previous handlers
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
-                        handlers=[logging.FileHandler(os.path.join(exp_path, 'training.log')), logging.StreamHandler()])
+                        handlers=[logging.FileHandler(log_file_path), logging.StreamHandler(sys.stdout)])
+    
     logging.info(f"Starting Training with Arguments: {args}")
     logging.info(f"Using device: {device}")
 
-    # Adjust input size for inception_v3
-    scale_h = 299 if args.backbone == 'inception_v3' else 896
-    scale_w = 299 if args.backbone == 'inception_v3' else 576
+    # --- Dataset Loading and Splitting Logic ---
+    dataset_config = DATASET_CONFIGS.get(args.dataset_name)
+    if not dataset_config:
+        logging.error(f"Config for dataset '{args.dataset_name}' not found. Exiting.")
+        sys.exit(1)
+
+    # Determine base_dataset_root (download if KaggleHub, or local path)
+    dataset_info = KAGGLE_DATASET_MAPPING.get(args.dataset_name)
+    base_dataset_root = None
+
+    if dataset_info and dataset_info['id']: # If it's a KaggleHub dataset
+        base_dataset_root = download_and_extract_kaggle_dataset(dataset_info['id'], DATA_ROOT)
+        if not base_dataset_root:
+            logging.error(f"Failed to prepare dataset '{args.dataset_name}'. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (KaggleHub): {base_dataset_root}")
+    elif dataset_info and dataset_info['local_dir_name']: # For local datasets like KOA
+        base_dataset_root = os.path.join(DATA_ROOT, dataset_info['local_dir_name'])
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Local dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (local): {base_dataset_root}")
+    else: # For datasets without explicit mapping, assume default structure in DATA_ROOT
+        base_dataset_root = os.path.join(DATA_ROOT, args.dataset_name)
+        if not os.path.exists(base_dataset_root):
+            logging.error(f"Dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
+            sys.exit(1)
+        logging.info(f"Base dataset root (default): {base_dataset_root}")
+    # --- END dataset root determination ---
+
+    # Get all image/mask pairs based on dataset config
+    train_image_mask_list = []
+    val_image_mask_list = []
     
-    # Data Transformations & Dataloaders
-    joint_transform = joint_transforms.Compose([
-        joint_transforms.RandomHorizontallyFlip(),
-        joint_transforms.Resize((scale_h, scale_w)),
-        joint_transforms.RandomCrop((299 if args.backbone == 'inception_v3' else 576, 299 if args.backbone == 'inception_v3' else 576), pad_if_needed=True, lbl_fill=255)
-    ])
-    val_joint_transform = joint_transforms.Compose([joint_transforms.Resize((scale_h, scale_w))])
-    img_transform = transforms.Compose([
-        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    target_transform = transforms.ToTensor()
-    train_set = ImageFolder(cod_training_root, joint_transform=joint_transform, transform=img_transform, target_transform=target_transform)
+    if dataset_config['has_predefined_splits']:
+        # If predefined splits, load from train/val folders
+        train_root = os.path.join(base_dataset_root, 'train')
+        val_root = os.path.join(base_dataset_root, 'val')
+        train_image_mask_list = make_full_dataset_list(train_root, args.dataset_name, split_name='train')
+        val_image_mask_list = make_full_dataset_list(val_root, args.dataset_name, split_name='val')
+        logging.info(f"Using predefined splits: Train {len(train_image_mask_list)}, Val {len(val_image_mask_list)}")
+    else:
+        # For programmatic splits, get all data and then split
+        full_image_mask_list = make_full_dataset_list(base_dataset_root, args.dataset_name, split_name='all')
+        if not full_image_mask_list:
+            logging.error(f"No data found for dataset '{args.dataset_name}' for programmatic splitting. Exiting.")
+            sys.exit(1)
+
+        total_len = len(full_image_mask_list)
+        train_len = int(args.train_ratio * total_len)
+        val_len = int(args.val_ratio * total_len)
+        test_len = total_len - train_len - val_len # Remaining for test, though not used in this script directly
+
+        g = torch.Generator().manual_seed(42) # For reproducibility
+        train_image_mask_list, val_image_mask_list, _ = random_split(
+            full_image_mask_list, [train_len, val_len, test_len], generator=g)
+        logging.info(f"Programmatic split: Total {total_len}, Train {len(train_image_mask_list)}, Val {len(val_image_mask_list)}")
+
+    # Update args with specific transform_params from dataset_config for ImageFolder
+    # These override the dummy defaults in get_args()
+    args.scale_w = dataset_config['transform_params']['resize_w']
+    args.scale_h = dataset_config['transform_params']['resize_h']
+    args.crop_size_h = dataset_config['transform_params']['crop_size_h']
+    args.crop_size_w = dataset_config['transform_params']['crop_size_w']
+
+    train_set = ImageFolder(train_image_mask_list, args, split='train')
     train_loader = DataLoader(train_set, batch_size=args.train_batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
-    test_set = ImageFolder(test_path, joint_transform=val_joint_transform, transform=img_transform, target_transform=target_transform)
+    
+    test_set = ImageFolder(val_image_mask_list, args, split='val') # Use val_image_mask_list for validation
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
     
     logging.info(f"Found {len(train_set)} training images and {len(test_set)} validation images.")
@@ -138,28 +226,36 @@ def main():
         ], momentum=args.momentum)
 
     # Loss Functions
-    global structure_loss_fn, bce_loss_fn, iou_loss_fn, ce_loss_fn
+    # Use the loss functions directly
     structure_loss_fn = loss.structure_loss().to(device)
-    bce_loss_fn = nn.BCEWithLogitsLoss().to(device)
+    bce_loss_fn = nn.BCEWithLogitsLoss().to(device) # BCEWithLogitsLoss expects 1 channel target
     iou_loss_fn = loss.IOU().to(device)
-    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device)
-    def bce_iou_loss(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
+    ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255).to(device) # CrossEntropyLoss expects target as (N, H, W)
+
+    def bce_iou_loss_fn_wrapper(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
 
     # Checkpoint Resuming Logic
     start_epoch = 0
     best_mIoU = 0.0
     latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     if args.snapshot:
-        snapshot_path = os.path.join(ckpt_path, exp_name, args.snapshot + '.pth')
+        snapshot_path = os.path.join(CKPT_ROOT, exp_name, args.snapshot + '.pth')
         if os.path.exists(snapshot_path):
             logging.info(f"Resuming from snapshot: {snapshot_path}")
             try:
-                ckpt = torch.load(snapshot_path, map_location=device, weights_only=False)
-                state_dict = ckpt if args.snapshot else ckpt['model_state_dict']
-                if 'module.' in list(state_dict.keys())[0]:
+                # Use weights_only=False to load optimizer/epoch data if it's a full checkpoint
+                ckpt = torch.load(snapshot_path, map_location=device, weights_only=False) 
+                state_dict = ckpt['model_state_dict'] if isinstance(ckpt, dict) and 'model_state_dict' in ckpt else ckpt
+
+                # Handle DataParallel prefix if necessary
+                if 'module.' in list(state_dict.keys())[0] and not isinstance(net, nn.DataParallel):
                     state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+                elif not 'module.' in list(state_dict.keys())[0] and isinstance(net, nn.DataParallel):
+                    state_dict = {'module.' + k: v for k, v in state_dict.items()}
+                
                 net.load_state_dict(state_dict)
-                if not args.snapshot:
+                
+                if isinstance(ckpt, dict) and 'optimizer_state_dict' in ckpt: # Only load optimizer/epoch if it's a full dict
                     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
                     start_epoch = ckpt['epoch'] + 1
                     best_mIoU = ckpt.get('best_mIoU', 0.0)
@@ -172,8 +268,12 @@ def main():
         try:
             ckpt = torch.load(latest_ckpt_path, map_location=device, weights_only=False)
             state_dict = ckpt['model_state_dict']
-            if 'module.' in list(state_dict.keys())[0]:
+
+            if 'module.' in list(state_dict.keys())[0] and not isinstance(net, nn.DataParallel):
                 state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            elif not 'module.' in list(state_dict.keys())[0] and isinstance(net, nn.DataParallel):
+                state_dict = {'module.' + k: v for k, v in state_dict.items()}
+
             net.load_state_dict(state_dict)
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt['epoch'] + 1
@@ -194,19 +294,24 @@ def main():
             for i, data in enumerate(train_iterator):
                 curr_iter = epoch * len(train_loader) + i
                 base_lr = args.lr * (1 - curr_iter / total_iterations) ** args.lr_decay
-                optimizer.param_groups[0]['lr'] = 2 * base_lr
-                optimizer.param_groups[1]['lr'] = base_lr
+                optimizer.param_groups[0]['lr'] = 2 * base_lr # Bias learning rate
+                optimizer.param_groups[1]['lr'] = base_lr # Weights learning rate
             
                 inputs, labels = data['image'].to(device), data['label'].to(device)
-                binary_labels = labels.unsqueeze(1).float()
-                ce_labels = labels.long()
+                binary_labels = labels.unsqueeze(1).float() # For BCE and IOU loss
+                ce_labels = labels.long() # For CrossEntropyLoss
                 optimizer.zero_grad(set_to_none=True)
+                
                 predict_1, predict_2, predict_3, predict_4, predict_0 = net(inputs)
-                loss_1 = bce_iou_loss(predict_1, binary_labels)
+                
+                # Ensure correct input shapes for loss functions
+                # predict_1, predict_2, predict_3, predict_4 are expected to be 1-channel for BCEWithLogitsLoss
+                loss_1 = bce_iou_loss_fn_wrapper(predict_1.squeeze(1), binary_labels.squeeze(1)) # Target also squeezed
                 loss_2 = structure_loss_fn(predict_2, binary_labels)
                 loss_3 = structure_loss_fn(predict_3, binary_labels)
                 loss_4 = structure_loss_fn(predict_4, binary_labels)
-                loss_0 = ce_loss_fn(predict_0, ce_labels)
+                loss_0 = ce_loss_fn(predict_0, ce_labels) # predict_0 (N,C,H,W), ce_labels (N,H,W)
+                
                 total_loss = loss_1 + loss_2 + 2*loss_3 + 4*loss_4 + 10*loss_0
                 total_loss.backward()
                 optimizer.step()
@@ -218,27 +323,33 @@ def main():
                 writer.add_scalar('train/loss_3', loss_3.item(), curr_iter)
                 writer.add_scalar('train/loss_4', loss_4.item(), curr_iter)
                 writer.add_scalar('train/loss_0', loss_0.item(), curr_iter)
+                writer.add_scalar('train/lr', base_lr, curr_iter)
                 
                 train_iterator.set_postfix(loss=f'{loss_recorder.avg:.4f}', lr=f"{base_lr:.6f}")
                 
-                # Validate every 10 iterations
-                if i % 10 == 0:
-                    current_mIoU = validate(net, test_loader, device, writer, curr_iter)
+                # Validate every few iterations or at epoch end
+                # Ensure it happens at least once per epoch, and definitely at the end of the last epoch
+                if (i % (len(train_loader) // 5 + 1) == 0 and i != 0) or (i == len(train_loader) - 1): # Validate ~5 times per epoch and at end
+                    current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
                     logging.info(f"Iteration {curr_iter}: mIoU = {current_mIoU:.4f}")
 
-            current_mIoU = validate(net, test_loader, device, writer, curr_iter)
-            
+            # End of epoch validation (redundant check, but ensures it if above logic is tweaked)
+            current_mIoU = validate(net, test_loader, device, bce_iou_loss_fn_wrapper, structure_loss_fn, ce_loss_fn, writer, curr_iter)
+
+            # Save best model
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
-                torch.save(net.state_dict(), checkpoint_path)
+                # Save only model state_dict for best checkpoint
+                torch.save(net.state_dict(), checkpoint_path) 
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
                 # Persist to Kaggle output
                 shutil.copy(checkpoint_path, '/kaggle/working/best_checkpoint.pth')
             
+            # Save latest checkpoint with full state for resuming
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)
-            logging.info(f"Saved checkpoint to {checkpoint_path}")
+            logging.info(f"Saved latest checkpoint to {checkpoint_path}")
             # Persist to Kaggle output
             shutil.copy(checkpoint_path, '/kaggle/working/latest_checkpoint.pth')
             

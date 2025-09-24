@@ -1,14 +1,12 @@
+# /kaggle/working/ARAA-Net/custom_transforms.py
+
 import torch
 import random
 import numpy as np
 
-import random
-
-from PIL import Image
-import torchvision.transforms as transforms
-import torchvision.transforms.functional as F
-
 from PIL import Image, ImageOps, ImageFilter
+import torchvision.transforms as transforms
+import torchvision.transforms.functional as F # <--- Ensure F is imported here
 
 class Normalize(object):
     """Normalize a tensor image with mean and standard deviation.
@@ -23,8 +21,13 @@ class Normalize(object):
     def __call__(self, sample):
         img = sample['image']
         mask = sample['label']
-        img = np.array(img).astype(np.float32)
-        mask = np.array(mask).astype(np.float32)
+        
+        # Ensure input is numpy array for these operations if not already
+        if not isinstance(img, np.ndarray):
+             img = np.array(img).astype(np.float32)
+        if not isinstance(mask, np.ndarray):
+             mask = np.array(mask).astype(np.float32)
+
         img /= 255.0
         img -= self.mean
         img /= self.std
@@ -42,9 +45,15 @@ class ToTensor(object):
         # torch image: C X H X W
         img = sample['image']
         mask = sample['label']
-        img = np.array(img).astype(np.float32).transpose((2, 0, 1))
-        mask = np.array(mask).astype(np.float32)
+        
+        # Ensure input is numpy array for these operations if not already
+        if not isinstance(img, np.ndarray):
+             img = np.array(img).astype(np.float32)
+        if not isinstance(mask, np.ndarray):
+             mask = np.array(mask).astype(np.float32)
 
+        img = img.transpose((2, 0, 1)) # C x H x W
+        
         img = torch.from_numpy(img).float()
         mask = torch.from_numpy(mask).float()
 
@@ -155,8 +164,8 @@ class FixScaleCrop(object):
                 'label': mask}
 
 class FixedResize(object):
-    def __init__(self, w,h):
-        self.size = (w, h)  # size: (h, w)
+    def __init__(self, w, h): # <--- PIL expects (width, height) for resize
+        self.size = (w, h)
 
     def __call__(self, sample):
         img = sample['image']
@@ -170,45 +179,9 @@ class FixedResize(object):
         return {'image': img,
                 'label': mask}
     
-    
-    
-class FixedResizewx(object):
-    def __init__(self, crop_size):
-        self.crop_size = crop_size
-
-    def __call__(self, sample):
-        img = sample['image']
-        mask = sample['label']
-        w, h = img.size
-        if w > h:
-            oh = self.crop_size
-            ow = int(1.0 * w * oh / h)
-        else:
-            ow = self.crop_size
-            oh = int(1.0 * h * ow / w)
-        img = img.resize((ow, oh), Image.BILINEAR)
-        mask = mask.resize((ow, oh), Image.NEAREST)
-
-        return {'image': img,
-                'label': mask}
-    
-    
-    
-    
-    
-    
-    
-
-    
-    
-    
-    
-    
-    
-    
 class RandomCrop(object):
-    def __init__(self, size):
-        self.size = size
+    def __init__(self, size): # <--- torchvision.transforms.RandomCrop.get_params expects (H, W)
+        self.size = size # (H, W) for crop dimensions
 
 
     def __call__(self, sample):
@@ -217,10 +190,11 @@ class RandomCrop(object):
 
         assert img.size == lbl.size, 'size of img and lbl should be the same. %s, %s' % (img.size, lbl.size)
 
-        i, j, h, w = transforms.RandomCrop.get_params(img, self.size)
+        # torchvision.transforms.RandomCrop.get_params needs a tuple (H, W)
+        i, j, h, w = transforms.RandomCrop.get_params(img, (self.size[0], self.size[1]))
         
         img = F.crop(img, i, j, h, w)
         mask = F.crop(lbl, i, j, h, w)
 
         return {'image': img,
-                'label': mask}  
+                'label': mask}
