@@ -39,25 +39,20 @@ def get_test_args():
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for testing')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Backbone architecture used for training')
     
-    # Image transformation related arguments (required by ImageFolder)
     parser.add_argument('--scale-h', type=int, default=256, help='Height images were resized to for ImageFolder transforms')
     parser.add_argument('--scale-w', type=int, default=256, help='Width images were resized to for ImageFolder transforms')
     parser.add_argument('--crop-size-h', type=int, default=256, help='Height images were cropped to for ImageFolder transforms.')
     parser.add_argument('--crop-size-w', type=int, default=256, help='Width images were cropped to for ImageFolder transforms.')
 
-    # These arguments are now truly unused as CenterAmplification is removed from the pipeline.
-    # They are kept only to avoid argparse errors if you try to pass them.
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='(UNUSED) Dummy arg for ImageFolder.')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='(UNUSED) Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='(UNUSED) Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='(UNUSED) Dummy arg for ImageFolder.')
 
-    # Programmatic splitting ratios (needed for consistency if programmatic split was used in training)
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Dummy arg for programmatic split consistency.')
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Dummy arg for programmatic split consistency.')
     parser.add_argument('--num-workers', type=int, default=0, help='Number of worker processes for data loading.')  # Set to 0 for stability
 
-    # Deep supervision weights (these are actively used by the daseg model's loss function for reporting)
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[1.0, 1.0, 2.0, 4.0, 10.0],
                         help='Weights for deep supervision losses for predict_1 to predict_0 (total 5 values).')
 
@@ -81,12 +76,32 @@ def main():
     args = get_test_args()
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    logging.info("✅ Environment setup complete.")
+    # --- CHANGED LOGGING CONFIGURATION HERE ---
+    logging.basicConfig(level=logging.DEBUG, # Set root logger to DEBUG to capture everything
+                        format='%(asctime)s [%(levelname)s] %(message)s',
+                        handlers=[
+                            logging.FileHandler(os.path.join(os.path.join(CKPT_ROOT, f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('COVID-19_', '').lower()}"), 'testing.log')), # Separate log file for test
+                            logging.StreamHandler(sys.stdout) # Output to console
+                        ],
+                        force=True)
+    
+    # Configure individual handlers after basicConfig
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+    
+    # File handler should capture all debug messages
+    logging.getLogger().handlers[0].setLevel(logging.DEBUG)
+    logging.getLogger().handlers[0].setFormatter(formatter)
+    
+    # Stream handler (console) should only show INFO and above
+    logging.getLogger().handlers[1].setLevel(logging.INFO)
+    logging.getLogger().handlers[1].setFormatter(formatter)
+    # --- END CHANGED LOGGING CONFIGURATION ---
+
 
     EXP_NAME = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('COVID-19_', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir)
-    setup_logging(log_dir)
+    # setup_logging(log_dir) # No need to call again, handled by basicConfig above
 
     logging.info(f"Starting FINAL TESTING for experiment '{EXP_NAME}'")
     logging.info(f"Arguments: {args}")
@@ -115,7 +130,6 @@ def main():
         logging.info(f"Base dataset root (default): {base_dataset_root}")
 
     # --- Preprocess dataset to ensure mask sizes match image sizes ---
-    # This block should be after dataset download and before make_dataset
     if args.dataset_name == 'COVID-19_Radiography':
         logging.info("Preprocessing COVID-19_Radiography dataset to ensure mask sizes match images...")
         for category in ['COVID', 'Lung_Opacity', 'Normal', 'Viral Pneumonia']: # Corrected category names
@@ -203,6 +217,10 @@ def main():
     logging.info("✅ Model loaded successfully.")
 
     # --- Move loss functions to device ---
+    # These were already globals, just need to ensure they are on the correct device for calculation
+    # (assuming they are initialized correctly outside main or as part of a loss.py module)
+    # The current setup defines them as globals outside main.
+    global structure_loss_fn, bce_loss_fn, iou_loss_fn, ce_loss_fn
     structure_loss_fn = structure_loss_fn.to(DEVICE)
     bce_loss_fn = bce_loss_fn.to(DEVICE)
     iou_loss_fn = iou_loss_fn.to(DEVICE)
