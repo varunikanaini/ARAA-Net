@@ -15,6 +15,7 @@ import argparse
 import logging
 import shutil # Needed for config.py's download_and_extract_kaggle_dataset
 import kagglehub # Needed for config.py's download_and_extract_kaggle_dataset
+from collections import OrderedDict # Needed for handling DataParallel prefix
 
 # Ensure project path is in sys.path
 project_path = '/kaggle/working/ARAA-Net'
@@ -70,7 +71,7 @@ def get_test_args():
     return args
 
 
-def main(): # <--- Start of main function definition
+def main():
     args = get_test_args()
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -161,7 +162,7 @@ def main(): # <--- Start of main function definition
     args.crop_size_w = dataset_config['transform_params']['crop_size_w']
 
     test_set = ImageFolder(test_image_mask_list, args, split='test')
-    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False) # pin_memory=True if CUDA
     logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
 
     if len(test_set) == 0:
@@ -178,14 +179,34 @@ def main(): # <--- Start of main function definition
         sys.exit(1)
     else:
         net = daseg(backbone_name=args.backbone).to(DEVICE)
-        state_dict = torch.load(checkpoint_path, map_location=DEVICE)
         
-        if list(state_dict.keys())[0].startswith('module.'):
-            from collections import OrderedDict
-            new_state_dict = OrderedDict([(k[7:], v) for k, v in state_dict.items()])
-            net.load_state_dict(new_state_dict)
+        # --- FIX: Load the checkpoint dictionary, then extract 'model_state_dict' ---
+        loaded_checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+        
+        # Determine if it's a full checkpoint dict or just a state_dict
+        if isinstance(loaded_checkpoint, dict) and 'model_state_dict' in loaded_checkpoint:
+            state_dict = loaded_checkpoint['model_state_dict']
         else:
-            net.load_state_dict(state_dict)
+            state_dict = loaded_checkpoint # Assume it's just the state_dict if not a dict
+
+        # Handle DataParallel prefix if checkpoint was saved from a DataParallel model
+        # and current model is not, or vice-versa.
+        if list(state_dict.keys())[0].startswith('module.') and not isinstance(net, nn.DataParallel):
+            # remove 'module.' prefix
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                name = k[7:] # remove `module.`
+                new_state_dict[name] = v
+            state_dict = new_state_dict
+        elif not list(state_dict.keys())[0].startswith('module.') and isinstance(net, nn.DataParallel):
+            # add 'module.' prefix
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                name = 'module.' + k
+                new_state_dict[name] = v
+            state_dict = new_state_dict
+        
+        net.load_state_dict(state_dict)
         
         net.eval()
         logging.info("✅ Model loaded successfully.")
@@ -251,9 +272,8 @@ def main(): # <--- Start of main function definition
             f.write(results_text)
         logging.info(f"✅ Results successfully saved to: {log_file_path}")
         
-    logging.info("✅ Final testing completed.") # This line was outside the `main()` in previous partial code.
+    logging.info("✅ Final testing completed.")
 
 
 if __name__ == '__main__':
-    # This line now correctly calls the fully defined main() function.
     main()
