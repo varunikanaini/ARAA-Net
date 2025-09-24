@@ -48,6 +48,7 @@ def get_args():
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Validation split ratio')
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[1.0, 1.0, 2.0, 4.0, 10.0],
                         help='Weights for deep supervision losses')
+    parser.add_argument('--patience', type=int, default=10, help='Number of epochs to wait for improvement before early stopping')
 
     try:
         args = parser.parse_args()
@@ -194,6 +195,8 @@ def main():
     start_epoch = 0
     best_mIoU = 0.0
     latest_ckpt_path = os.path.join(exp_path, 'latest_checkpoint.pth')
+    patience_counter = 0
+    patience = args.patience
 
     if os.path.exists(latest_ckpt_path):
         try:
@@ -250,10 +253,17 @@ def main():
             current_mIoU = validate(net, test_loader, device, writer, (epoch + 1) * len(train_loader), args)
             if current_mIoU > best_mIoU:
                 best_mIoU = current_mIoU
+                patience_counter = 0
                 checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
                 torch.save(net.state_dict(), checkpoint_path)
                 logging.info(f"✅ New best model saved at {checkpoint_path} with mIoU: {best_mIoU:.4f}")
                 shutil.copy(checkpoint_path, f'/kaggle/working/best_checkpoint_{exp_name}.pth')
+            else:
+                patience_counter += 1
+                logging.info(f"No improvement in mIoU. Patience counter: {patience_counter}/{patience}")
+                if patience_counter >= patience:
+                    logging.info(f"Early stopping triggered after {patience} epochs without improvement.")
+                    break
 
             checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
             torch.save({'epoch': epoch, 'model_state_dict': net.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU}, checkpoint_path)

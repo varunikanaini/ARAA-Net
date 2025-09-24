@@ -17,32 +17,25 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 from daseg import daseg
-from datasets import ImageFolder, DATASET_CONFIGS
-from datasets import make_dataset as make_full_dataset_list
+from datasets import ImageFolder, DATASET_CONFIGS, make_dataset as make_full_dataset_list, preprocess_dataset
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter
 from config import DATA_ROOT, CKPT_ROOT, download_and_extract_kaggle_dataset, KAGGLE_DATASET_MAPPING
 
 import loss
 from torch import nn
-structure_loss_fn = loss.structure_loss()
-bce_loss_fn = nn.BCEWithLogitsLoss()
-iou_loss_fn = loss.IOU()
-ce_loss_fn = nn.CrossEntropyLoss(ignore_index=255)
-def bce_iou_loss(pred, target): return bce_loss_fn(pred, target) + iou_loss_fn(pred, target)
-
 
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test ARAA-Net Model with multi-backbone and multi-dataset support')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis',
+    parser.add_argument('--dataset-name', type=str, default='COVID-19_Radiography',
                         choices=list(DATASET_CONFIGS.keys()), help='Dataset used for testing')
     parser.add_argument('--backbone', type=str, default='resnet50', choices=['resnet50', 'resnet101', 'vgg16', 'inception_v3'], help='Backbone architecture used for training')
     
     # Image transformation related arguments (required by ImageFolder)
-    parser.add_argument('--scale-h', type=int, default=576, help='Height images were resized to for ImageFolder transforms')
-    parser.add_argument('--scale-w', type=int, default=896, help='Width images were resized to for ImageFolder transforms')
-    parser.add_argument('--crop-size-h', type=int, default=576, help='Height images were cropped to for ImageFolder transforms.')
-    parser.add_argument('--crop-size-w', type=int, default=576, help='Width images were cropped to for ImageFolder transforms.')
+    parser.add_argument('--scale-h', type=int, default=256, help='Height images were resized to for ImageFolder transforms')
+    parser.add_argument('--scale-w', type=int, default=256, help='Width images were resized to for ImageFolder transforms')
+    parser.add_argument('--crop-size-h', type=int, default=256, help='Height images were cropped to for ImageFolder transforms.')
+    parser.add_argument('--crop-size-w', type=int, default=256, help='Width images were cropped to for ImageFolder transforms.')
 
     # These arguments are now truly unused as CenterAmplification is removed from the pipeline.
     # They are kept only to avoid argparse errors if you try to pass them.
@@ -54,7 +47,7 @@ def get_test_args():
     # Programmatic splitting ratios (needed for consistency if programmatic split was used in training)
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Dummy arg for programmatic split consistency.')
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Dummy arg for programmatic split consistency.')
-    parser.add_argument('--num-workers', type=int, default=2, help='Number of worker processes for data loading.')
+    parser.add_argument('--num-workers', type=int, default=0, help='Number of worker processes for data loading.')  # Set to 0 for stability
 
     # Deep supervision weights (these are actively used by the daseg model's loss function for reporting)
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[1.0, 1.0, 2.0, 4.0, 10.0],
@@ -76,14 +69,13 @@ def setup_logging(log_dir, filename='final_testing_results.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-
 def main():
     args = get_test_args()
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     logging.info("✅ Environment setup complete.")
 
-    EXP_NAME = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    EXP_NAME = f"{args.backbone}_ARAA-Net_{args.dataset_name.replace('COVID-19_', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir)
     setup_logging(log_dir)
@@ -113,6 +105,16 @@ def main():
             logging.error(f"Dataset directory not found at '{base_dataset_root}'. Please place it there. Exiting.")
             sys.exit(1)
         logging.info(f"Base dataset root (default): {base_dataset_root}")
+
+    # --- Preprocess dataset to ensure mask sizes match image sizes ---
+    if args.dataset_name == 'COVID-19_Radiography':
+        for category in ['COVID', 'Normal', 'Pneumonia', 'Lung_Opacity']:
+            image_dir = os.path.join(base_dataset_root, category, 'images')
+            mask_dir = os.path.join(base_dataset_root, category, 'masks')
+            output_mask_dir = os.path.join(base_dataset_root, category, 'masks_resized')
+            if os.path.exists(image_dir) and os.path.exists(mask_dir):
+                preprocess_dataset(image_dir, mask_dir, output_mask_dir)
+                DATASET_CONFIGS['COVID-19_Radiography']['mask_subpath_in_category'] = 'masks_resized'
 
     # --- Data Loading and Splitting Logic for Testing ---
     logging.info("\n--- Loading Test Data ---")
@@ -164,6 +166,7 @@ def main():
         logging.error("❌ ERROR: The dataloader found 0 images. Cannot proceed with evaluation.")
         sys.exit(1)
 
+    # --- Load Trained Model ---
     logging.info(f"\n--- Loading Trained {args.backbone} Model ---")
     checkpoint_path = os.path.join(log_dir, 'best_checkpoint.pth')
 
@@ -184,6 +187,13 @@ def main():
     net.eval()
     logging.info("✅ Model loaded successfully.")
 
+    # --- Move loss functions to device ---
+    structure_loss_fn = structure_loss_fn.to(DEVICE)
+    bce_loss_fn = bce_loss_fn.to(DEVICE)
+    iou_loss_fn = iou_loss_fn.to(DEVICE)
+    ce_loss_fn = ce_loss_fn.to(DEVICE)
+
+    # --- Run Evaluation ---
     logging.info("\n--- Running Evaluation ---")
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
@@ -209,6 +219,7 @@ def main():
             
             confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
             
+    # --- Final Test Results ---
     logging.info("\n--- Final Test Results ---")
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
