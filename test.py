@@ -11,6 +11,7 @@ import datetime
 import os
 import argparse 
 from collections import OrderedDict
+import logging # Import logging
 
 from config import backbone_path, DATASET_PATHS 
 
@@ -55,18 +56,11 @@ args_parser = parser.parse_args()
 if args_parser.dataset == 'TSRS_RSNA-Epiphysis':
     test_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_test']
     test_dataset_name = 'TSRS_RSNA-Epiphysis_test'
-elif args_parser.dataset == 'JSRT':
-    test_root_path = DATASET_PATHS['JSRT']
-    test_dataset_name = 'JSRT'
-elif args_parser.dataset == 'COVID19_Radiography':
-    test_root_path = DATASET_PATHS['COVID19_Radiography']
-    test_dataset_name = 'COVID19_Radiography'
-elif args_parser.dataset == 'CVC-ClinicDB':
-    test_root_path = DATASET_PATHS['CVC-ClinicDB']
-    test_dataset_name = 'CVC-ClinicDB'
+elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB']: # Use combined root for programmatic split
+    test_root_path = DATASET_PATHS[args_parser.dataset]
+    test_dataset_name = args_parser.dataset
 else:
     raise ValueError(f"Unsupported dataset: {args_parser.dataset}")
-
 
 ckpt_path = './ckpt'
 exp_name = 'DANet_' + args_parser.dataset 
@@ -74,11 +68,20 @@ results_path = os.path.join('./results', exp_name)
 check_mkdir(results_path)
 log_path = os.path.join(results_path, 'test_log.txt')
 
+# Configure logging for test.py
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[
+                        logging.FileHandler(log_path),
+                        logging.StreamHandler()
+                    ])
+logger = logging.getLogger()
 
 # Use parsed arguments directly
 args = vars(args_parser)
 
-print(torch.__version__)
+logger.info(f"Test arguments: {args}")
+logger.info(f"Testing dataset: {test_dataset_name}")
 
 bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
@@ -92,8 +95,9 @@ def bce_iou_loss(pred, target):
 
 
 # Prepare Data Set.
+# For datasets with programmatic split, we pass the same root but specific `split` argument.
 test_set = ImageFolder(test_root_path, test_dataset_name, split='test')
-print(f"Test set ({test_dataset_name}): {test_set.__len__()} images")
+logger.info(f"Test set ({test_dataset_name}): {test_set.__len__()} images")
 test_loader = DataLoader(test_set, batch_size=args['batch_size'], num_workers=0, shuffle=False) # Use batch_size from args
 
 
@@ -149,15 +153,13 @@ def evaluate(net):
         f'FWIoU: {FWIoU:.4f}\n'
         f'Mean Dice: {mDice:.4f}\n'
     )
-    print(final_log_str)
-    with open(log_path, 'w') as f:
-        f.write(final_log_str + '\n')
+    logger.info(final_log_str) # Log to screen and file
 
     return np.mean(class_iou)
 
 
 def main():
-    print("Args:", args_parser.__dict__)
+    logger.info("Starting testing process.")
     
     net = daseg(backbone_path).to(device)
 
@@ -165,7 +167,7 @@ def main():
     if not os.path.exists(model_snapshot_path):
         raise FileNotFoundError(f"Model snapshot not found at: {model_snapshot_path}")
         
-    print(f"Loading model from: {model_snapshot_path}")
+    logger.info(f"Loading model from: {model_snapshot_path}")
     state_dict = torch.load(model_snapshot_path, map_location=device)
     
     new_state_dict = OrderedDict()
@@ -179,7 +181,8 @@ def main():
     start = time.time()
     evaluate(net) 
     end = time.time()
-    print("Total Testing Time: {}".format(str(datetime.timedelta(seconds=int(end - start)))))
+    logger.info("Total Testing Time: {}".format(str(datetime.timedelta(seconds=int(end - start)))))
+    logger.info("Testing process completed.")
 
 if __name__ == '__main__':
     main()

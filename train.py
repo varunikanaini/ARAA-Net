@@ -76,26 +76,18 @@ args_parser = parser.parse_args()
 
 
 # Dynamic root paths based on selected dataset
+# For TSRS_RSNA-Epiphysis, use its specific train/test root paths
 if args_parser.dataset == 'TSRS_RSNA-Epiphysis':
     train_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_train']
-    test_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_test']
+    val_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_test'] # Val uses test set for TSRS
     train_dataset_name = 'TSRS_RSNA-Epiphysis_train'
-    test_dataset_name = 'TSRS_RSNA-Epiphysis_test'
-elif args_parser.dataset == 'JSRT':
-    train_root_path = DATASET_PATHS['JSRT']
-    test_root_path = DATASET_PATHS['JSRT'] 
-    train_dataset_name = 'JSRT'
-    test_dataset_name = 'JSRT'
-elif args_parser.dataset == 'COVID19_Radiography':
-    train_root_path = DATASET_PATHS['COVID19_Radiography']
-    test_root_path = DATASET_PATHS['COVID19_Radiography']
-    train_dataset_name = 'COVID19_Radiography'
-    test_dataset_name = 'COVID19_Radiography'
-elif args_parser.dataset == 'CVC-ClinicDB':
-    train_root_path = DATASET_PATHS['CVC-ClinicDB']
-    test_root_path = DATASET_PATHS['CVC-ClinicDB']
-    train_dataset_name = 'CVC-ClinicDB'
-    test_dataset_name = 'CVC-ClinicDB'
+    val_dataset_name = 'TSRS_RSNA-Epiphysis_test'
+# For other datasets, use their single root path for programmatic splitting
+elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB']:
+    train_root_path = DATASET_PATHS[args_parser.dataset]
+    val_root_path = DATASET_PATHS[args_parser.dataset]
+    train_dataset_name = args_parser.dataset
+    val_dataset_name = args_parser.dataset
 else:
     raise ValueError(f"Unsupported dataset: {args_parser.dataset}")
 
@@ -124,16 +116,17 @@ args = vars(args_parser) # Convert Namespace to dictionary for consistency
 
 # Log initial arguments
 logger.info(f"Training arguments: {args}")
-logger.info(f"Training dataset: {train_dataset_name}, Validation dataset: {test_dataset_name}")
+logger.info(f"Training dataset: {train_dataset_name}, Validation dataset: {val_dataset_name}")
 
 # Prepare Data Set.
+# For datasets with programmatic split, we pass the same root but different `split` argument.
 train_set = ImageFolder(train_root_path, train_dataset_name, split='train')
 logger.info(f"Train set ({train_dataset_name}): {train_set.__len__()} images")
 train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=0, shuffle=True)
 
-test_set = ImageFolder(test_root_path, test_dataset_name, split='test') 
-logger.info(f"Validation set ({test_dataset_name}): {test_set.__len__()} images")
-test_loader = DataLoader(test_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False) # Use eval_batch_size for validation
+val_set = ImageFolder(val_root_path, val_dataset_name, split='val') 
+logger.info(f"Validation set ({val_dataset_name}): {val_set.__len__()} images")
+val_loader = DataLoader(val_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False) # Use eval_batch_size for validation
 
 total_iterations = args['epoch_num'] * len(train_loader)
 logger.info(f"Total training iterations: {total_iterations}")
@@ -221,9 +214,10 @@ def train(net, optimizer):
 
             curr_iter += 1
         
+        # Validation after each epoch
         current_val_mIoU = validate(net, epoch) 
         writer.add_scalar('val/miou', current_val_mIoU, epoch)
-        logger.info(f"Epoch {epoch} validation mIoU: {current_val_mIoU:.5f}")
+        logger.info(f"Epoch {epoch} validation mIoU: {current_val_mIoU:.5f}") # Print val mIoU to screen/log
 
         if current_val_mIoU > best_mIoU:
             best_mIoU = current_val_mIoU
@@ -247,7 +241,7 @@ def train(net, optimizer):
 
         epoch_end_time = time.perf_counter() # End time for the epoch
         epoch_duration = epoch_end_time - epoch_start_time
-        logger.info(f"Epoch {epoch} completed in {epoch_duration:.2f} seconds.")
+        logger.info(f"Epoch {epoch} completed in {epoch_duration:.2f} seconds.") # Print epoch time
 
         if patience_counter >= args['patience']:
             logger.info(f"Early stopping triggered after {patience_counter} epochs without improvement. Best mIoU: {best_mIoU:.5f}")
@@ -261,8 +255,9 @@ def validate(net, epoch):
     confmat = ConfusionMatrix(num_classes=2)
     loss_record, loss_0_record = AvgMeter(), AvgMeter()
 
-    test_iterator = tqdm(test_loader, total=len(test_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Val)")
-    for data in test_iterator:
+    # Pass val_loader to tqdm, not test_loader
+    val_iterator = tqdm(val_loader, total=len(val_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Val)")
+    for data in val_iterator:
         inputs, labels, _ = data['image'], data['label'], data['name'] 
         
         batch_size = inputs.size(0)
@@ -301,7 +296,7 @@ def validate(net, epoch):
         f'FWIoU: {FWIoU:.4f}\n'
         f'Mean Dice: {mDice:.4f}\n'
     )
-    logger.info(val_log_str) 
+    logger.info(val_log_str) # This prints to screen and file
 
     net.train() 
     return np.mean(class_iou)

@@ -12,7 +12,7 @@ import os.path
 import torch.utils.data as data
 from PIL import Image
 import numpy as np
-
+import random # Import random for splitting
 
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -22,6 +22,7 @@ import custom_transforms as tr
 def make_dataset(root, dataset_name):
     img_list = []
     
+    # Handling predefined split for TSRS_RSNA-Epiphysis
     if dataset_name == 'TSRS_RSNA-Epiphysis_train' or dataset_name == 'TSRS_RSNA-Epiphysis_test':
         image_path = root
         mask_path = root + '_labels'
@@ -29,19 +30,19 @@ def make_dataset(root, dataset_name):
             print(f"Warning: {dataset_name} paths not found: {image_path}, {mask_path}. Returning empty dataset.")
             return []
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.jpg')]
-        img_list = [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
+        # This dataset is already split by folder, so we directly return its images
+        return [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
+    
+    # For datasets that need programmatic splitting, gather all images first
     elif dataset_name == 'JSRT':
-        # Correct JSRT structure: root/content/jsrt/cxr for images, root/content/jsrt/masks for masks
         image_path = os.path.join(root, 'content', 'jsrt', 'cxr')
         mask_path = os.path.join(root, 'content', 'jsrt', 'masks')
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"Warning: JSRT paths not found: {image_path}, {mask_path}. Did the download complete and extract correctly? Returning empty dataset.")
             return []
-        # JSRT images are .png, masks are .png
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.png')]
         img_list = [(os.path.join(image_path, img_name + '.png'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
     elif dataset_name == 'COVID19_Radiography':
-        # Correct COVID19_Radiography structure: root/COVID-19_Radiography_Dataset/[CLASS_NAME]/images and masks
         base_dataset_folder = os.path.join(root, 'COVID-19_Radiography_Dataset')
         subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia']
         print(f"Attempting to load COVID19_Radiography from: {base_dataset_folder}")
@@ -56,7 +57,6 @@ def make_dataset(root, dataset_name):
                 print(f"Warning: Mask path {sub_mask_path} not found for {sub_name}. Skipping this class. Please ensure masks are present if you intend to train/validate segmentation.")
                 continue
             
-            # Assuming images can be .png or .jpg, and masks are .png
             img_names = [os.path.splitext(f)[0] for f in os.listdir(sub_image_path) if f.lower().endswith(('.png', '.jpg'))]
             for img_name in img_names:
                 original_img_path_png = os.path.join(sub_image_path, img_name + '.png')
@@ -67,9 +67,9 @@ def make_dataset(root, dataset_name):
                 elif os.path.exists(original_img_path_jpg):
                     image_full_path = original_img_path_jpg
                 else:
-                    continue # Skip if neither png nor jpg found
+                    continue 
                     
-                mask_full_path = os.path.join(sub_mask_path, img_name + '.png') # Assuming masks are .png
+                mask_full_path = os.path.join(sub_mask_path, img_name + '.png') 
                 
                 if os.path.exists(mask_full_path):
                     img_list.append((image_full_path, mask_full_path))
@@ -85,7 +85,7 @@ def make_dataset(root, dataset_name):
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.tif')]
         img_list = [(os.path.join(image_path, img_name + '.tif'), os.path.join(mask_path, img_name + '.tif')) for img_name in img_names]
     else:
-        raise ValueError(f"Unknown dataset_name: {dataset_name}")
+        raise ValueError(f"Unknown dataset_name: {dataset_name}. This dataset does not have a defined data loading mechanism.")
     
     if not img_list:
         print(f"No images found for dataset: {dataset_name} at root: {root}")
@@ -97,14 +97,36 @@ class ImageFolder(data.Dataset):
     def __init__(self, root, dataset_name, joint_transform=None, transform=None, target_transform=None, split='train'):
         self.root = root
         self.dataset_name = dataset_name
-        self.imgs = make_dataset(root, dataset_name)
-        # joint_transform, transform, target_transform are not used externally anymore
-        # as transforms are handled internally by transform_tr/val
-        self.joint_transform = joint_transform 
-        self.transform = transform
-        self.target_transform = target_transform 
         self.split = split
         self.label_mapping = {val: 1 if val > 0 else 0 for val in range(-1, 31)} 
+
+        # Gather ALL image-mask pairs for programmatic splitting
+        # For TSRS_RSNA-Epiphysis, make_dataset already returns a split specific list
+        if 'TSRS_RSNA-Epiphysis' in dataset_name: # Handle predefined split datasets
+            self.imgs = make_dataset(root, dataset_name)
+        else: # For datasets that need programmatic splitting
+            all_imgs = make_dataset(root, dataset_name)
+            
+            # Programmatic 80/10/10 split for JSRT, COVID19_Radiography, CVC-ClinicDB
+            random.seed(42) # For reproducibility
+            random.shuffle(all_imgs)
+            
+            total_size = len(all_imgs)
+            train_size = int(0.8 * total_size)
+            val_size = int(0.1 * total_size)
+            # Test size is the rest
+            
+            if split == 'train':
+                self.imgs = all_imgs[:train_size]
+            elif split == 'val':
+                self.imgs = all_imgs[train_size : train_size + val_size]
+            elif split == 'test':
+                self.imgs = all_imgs[train_size + val_size :]
+            else:
+                raise ValueError(f"Invalid split '{split}'. Must be 'train', 'val', or 'test'.")
+
+        if not self.imgs:
+            print(f"Warning: {self.split} split for {self.dataset_name} is empty.")
 
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]
@@ -115,7 +137,7 @@ class ImageFolder(data.Dataset):
         sample = {'image': img, 'label': label}
         if self.split == "train":
             return self.transform_tr(sample) 
-        else: # split == "test" or "val"
+        else: # split == "val" or "test"
             sample = self.transform_val(sample)
             sample['name'] = self.imgs[index] 
             return sample
@@ -123,17 +145,14 @@ class ImageFolder(data.Dataset):
     def convert_label(self, label):
         label_array = np.array(label)
         if label_array.ndim == 3 and label_array.shape[2] >= 1:
-            # Assume first channel is the relevant one for segmentation if RGB/RGBA
             label_array = label_array[:, :, 0] 
         elif label_array.ndim == 2:
-            pass # Already single channel
+            pass 
         else:
             print(f"Warning: Unexpected label array dimensions: {label_array.shape}. Assuming single channel.")
-            # Attempt to flatten or convert to single channel if needed, or raise error.
-            # For now, let's assume it's correctly handled or an error will occur downstream.
             
         label_index = np.zeros_like(label_array, dtype='uint8')
-        label_index[label_array > 0] = 1 # Any non-zero pixel is foreground
+        label_index[label_array > 0] = 1 
         
         label_index = Image.fromarray(label_index, mode='P')
         return label_index
