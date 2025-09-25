@@ -1,3 +1,5 @@
+# /kaggle/working/ARAA-Net/datasets.py
+
 import os
 import torch.utils.data as data
 from PIL import Image
@@ -12,14 +14,15 @@ from config import DATA_ROOT, KAGGLE_DATASET_MAPPING
 
 # --- Dataset Configuration Dictionary ---
 DATASET_CONFIGS = {
-    # Existing RSNA datasets (assuming structure: DATA_ROOT/<dataset_name>/<split>/images/ or /GT/)
+    # ... (previous dataset configs remain unchanged) ...
+
     'TSRS_RSNA-Epiphysis': {
         'image_ext': ('.jpg', '.jpeg'),
-        'image_subpath': '', # Images are directly in split root (e.g., train/image.jpg)
-        'mask_subpath': 'GT', # Masks are in 'GT' subdirectory relative to split root
+        'image_subpath': '',
+        'mask_subpath': 'GT',
         'mask_ext': '.png',
-        'has_predefined_splits': True, # Explicitly state it has train/val/test folders
-        'is_nested_under_split_root': False, # Images/masks directly under split_root or simple subpaths
+        'has_predefined_splits': True,
+        'is_nested_under_split_root': False,
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
         'mask_suffix': ''
@@ -36,42 +39,50 @@ DATASET_CONFIGS = {
         'mask_suffix': ''
     },
 
-    # Your KOA dataset (lvv-koa) structure: DATA_ROOT/lvv-koa/train/0/image.png, .../0/image_mask.png
     'KOA': {
         'image_ext': ('.png', '.jpg', '.jpeg'),
         'mask_ext': '.png',
-        'is_nested': True, # Needs recursive search due to class folders
-        'has_predefined_splits': True, # train/val/test folders exist under lvv-koa
-        'has_class_folders_under_split': True, # Split folder contains class subfolders (0,1,2,3,4)
+        'is_nested': True,
+        'has_predefined_splits': True,
+        'has_class_folders_under_split': True,
         'has_category_folders_under_split': False,
-        'mask_suffix': '_mask' # CRUCIAL ASSUMPTION: Mask file is 'image_name_mask.png'
+        'mask_suffix': '_mask'
     },
 
-    # COVID-19 Radiography Database: DATA_ROOT/COVID-19_Radiography_Dataset/COVID/images/image.png, .../COVID/masks/mask.png
     'COVID-19_Radiography': {
         'image_ext': ('.png', '.jpg', '.jpeg'),
         'mask_ext': '.png',
-        'has_predefined_splits': False, # No train/val/test folders, programmatic split needed
-        'is_nested': True, # Root folder contains further nested structures (category folders)
+        'has_predefined_splits': False,
+        'is_nested': True,
         'has_class_folders_under_split': False,
-        'has_category_folders_under_split': True, # Root folder contains category subfolders (COVID, Normal etc.)
-        'image_subpath_in_category': 'images', # Path relative to category folder
-        'mask_subpath_in_category': 'masks',   # Will be updated to 'masks_resized' by train/test script after preprocessing
-        'mask_suffix': '' # Masks have same name as image
+        'has_category_folders_under_split': True,
+        'image_subpath_in_category': 'images',
+        'mask_subpath_in_category': 'masks',   # This will be updated to 'masks_resized' by train/test script after preprocessing
+        'mask_suffix': ''
     },
 
-    # JSRT Dataset: DATA_ROOT/jsrt/cxr/image.png, .../masks/mask.png
-    # This dataset typically doesn't have predefined train/val/test splits.
     'JSRT': {
         'image_ext': ('.png', '.jpg', '.jpeg'),
-        'image_subpath': 'cxr', # Images are in 'cxr' subdirectory relative to root
-        'mask_subpath': 'masks', # Masks are in 'masks' subdirectory relative to root
+        'image_subpath': 'cxr',
+        'mask_subpath': 'masks',
         'mask_ext': '.png',
-        'has_predefined_splits': False, # No train/val/test folders, programmatic split needed
-        'is_nested': False, # Not nested structure under root, simple subpaths
+        'has_predefined_splits': False,
+        'is_nested': False,
         'has_class_folders_under_split': False,
         'has_category_folders_under_split': False,
-        'mask_suffix': '' # Masks have same name as image
+        'mask_suffix': ''
+    },
+    # --- ADD THIS NEW ENTRY ---
+    'CVC-ClinicDB': {
+        'image_ext': ('.tiff',), # Original images are .tiff
+        'image_subpath': 'original', # Images are in 'original' folder
+        'mask_subpath': 'ground truth', # Masks are in 'ground truth' folder
+        'mask_ext': '.tiff', # Polyp masks are .tiff
+        'has_predefined_splits': False, # No explicit train/val/test folders, programmatic split needed
+        'is_nested': False, # Structure is DATA_ROOT/CVC-ClinicDB/original/ and DATA_ROOT/CVC-ClinicDB/ground truth/
+        'has_class_folders_under_split': False,
+        'has_category_folders_under_split': False,
+        'mask_suffix': '' # Masks have the same filename as images
     }
 }
 
@@ -87,12 +98,10 @@ def preprocess_dataset(image_dir, mask_dir, output_mask_dir, image_exts=('.png',
                 img = Image.open(img_path).convert('RGB')
                 mask = Image.open(mask_path)
                 if img.size != mask.size:
-                    # Changed logging to debug to avoid excessive console output
                     logging.debug(f"Resizing mask {mask_path} from {mask.size} to {img.size}")
                     mask = mask.resize(img.size, Image.NEAREST)
                     mask.save(os.path.join(output_mask_dir, f'{img_name}{mask_ext}'))
                 else:
-                    # If sizes match, just copy the mask to the resized directory
                     mask.save(os.path.join(output_mask_dir, f'{img_name}{mask_ext}'))
             else:
                 logging.warning(f"Mask not found for {img_path}")
@@ -175,7 +184,7 @@ def make_dataset(root_path_for_dataset, dataset_name, split_name='all'):
                     else:
                         logging.warning(f"Skipping: Missing image or mask for '{img_name_base}' in '{image_category_path}'.")
 
-    else: # Flat Structure
+    else: # Flat Structure (This is where CVC-ClinicDB will be handled)
         image_subpath_relative = config.get('image_subpath', '')
         mask_subpath_relative = config.get('mask_subpath', '')
         image_dir = os.path.join(search_root, image_subpath_relative)
