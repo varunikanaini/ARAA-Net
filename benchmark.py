@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description='Model Benchmarking (FPS and Trainable Parameters)')
     parser.add_argument('--input_size_w', type=int, default=896, help='Input image width for benchmarking')
     parser.add_argument('--input_size_h', type=int, default=576, help='Input image height for benchmarking')
-    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for FPS calculation')
+    parser.add_argument('--batch_size', type=int, default=5, help='Batch size for FPS calculation') # Default changed to 5
     parser.add_argument('--num_warmup', type=int, default=10, help='Number of warm-up runs for FPS')
     parser.add_argument('--num_runs', type=int, default=100, help='Number of actual runs for FPS calculation')
     parser.add_argument('--snapshot', type=str, default='',

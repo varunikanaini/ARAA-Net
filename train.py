@@ -11,7 +11,7 @@ import time
 import os
 import argparse 
 import logging 
-from collections import OrderedDict # Import OrderedDict
+from collections import OrderedDict 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
@@ -45,8 +45,10 @@ parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis',
                     help='Dataset to use for training (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB)')
 parser.add_argument('--epoch_num', type=int, default=100,
                     help='Number of training epochs')
-parser.add_argument('--train_batch_size', type=int, default=10,
+parser.add_argument('--train_batch_size', type=int, default=5, # Changed default to 5
                     help='Batch size for training')
+parser.add_argument('--eval_batch_size', type=int, default=1, # New argument for validation batch size
+                    help='Batch size for validation')
 parser.add_argument('--last_epoch', type=int, default=0,
                     help='Epoch to resume training from (0 to start from scratch)')
 parser.add_argument('--lr', type=float, default=1e-3,
@@ -60,9 +62,9 @@ parser.add_argument('--momentum', type=float, default=0.9,
 parser.add_argument('--snapshot', type=str, default='',
                     help='Path to a model snapshot to resume training (e.g., best or epoch number)')
 parser.add_argument('--scale_w', type=int, default=576,
-                    help='Width to scale input images to')
+                    help='Width to scale input images to (Note: Actual transform sizes are fixed to 576x896 and 576x576 for crop as per paper).')
 parser.add_argument('--scale_h', type=int, default=896,
-                    help='Height to scale input images to')
+                    help='Height to scale input images to (Note: Actual transform sizes are fixed to 576x896 and 576x576 for crop as per paper).')
 parser.add_argument('--poly_train', type=lambda x: (str(x).lower() == 'true'), default=True,
                     help='Use polynomial learning rate decay')
 parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'],
@@ -118,7 +120,7 @@ logger = logging.getLogger()
 writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
 
 # Use parsed arguments directly
-args = vars(args_parser) # Convert Namespace to dictionary for consistency with old code, though direct access is also fine
+args = vars(args_parser) # Convert Namespace to dictionary for consistency
 
 # Log initial arguments
 logger.info(f"Training arguments: {args}")
@@ -131,7 +133,7 @@ train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_wo
 
 test_set = ImageFolder(test_root_path, test_dataset_name, split='test') 
 logger.info(f"Validation set ({test_dataset_name}): {test_set.__len__()} images")
-test_loader = DataLoader(test_set, batch_size=1, num_workers=0, shuffle=False)
+test_loader = DataLoader(test_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False) # Use eval_batch_size for validation
 
 total_iterations = args['epoch_num'] * len(train_loader)
 logger.info(f"Total training iterations: {total_iterations}")
@@ -157,6 +159,8 @@ def train(net, optimizer):
     patience_counter = 0 
 
     for epoch in range(args['last_epoch'] + 1, args['last_epoch'] + 1 + args['epoch_num']):
+        epoch_start_time = time.perf_counter() # Start time for the epoch
+
         loss_record, loss_1_record, loss_2_record, loss_3_record, loss_4_record, loss_0_record = AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter()
         confmat = ConfusionMatrix(num_classes=2)
 
@@ -241,6 +245,10 @@ def train(net, optimizer):
             torch.save(net.state_dict(), latest_checkpoint_path)
         logger.info(f"Epoch {epoch}: Saved latest model to {latest_checkpoint_path}")
 
+        epoch_end_time = time.perf_counter() # End time for the epoch
+        epoch_duration = epoch_end_time - epoch_start_time
+        logger.info(f"Epoch {epoch} completed in {epoch_duration:.2f} seconds.")
+
         if patience_counter >= args['patience']:
             logger.info(f"Early stopping triggered after {patience_counter} epochs without improvement. Best mIoU: {best_mIoU:.5f}")
             break
@@ -322,7 +330,7 @@ def main():
              'lr': 1 * args['lr'], 'weight_decay': args['weight_decay']}
         ], momentum=args['momentum'])
 
-    if args['snapshot']: # Check if snapshot argument is provided
+    if args['snapshot']: 
         logger.info(f'Training Resumes From snapshot: {args["snapshot"]}')
         model_path = os.path.join(ckpt_path, exp_name, args['snapshot'] + '.pth')
         if os.path.exists(model_path):
@@ -333,11 +341,10 @@ def main():
                 new_state_dict[name] = v
             net.load_state_dict(new_state_dict)
             
-            # If snapshot is just an epoch number, set last_epoch
             try:
                 args['last_epoch'] = int(args['snapshot'])
             except ValueError:
-                args['last_epoch'] = 0 # If it's 'best' or another string, start from 0 or handle explicitly
+                args['last_epoch'] = 0 
             
             logger.info(f"Resuming training from epoch {args['last_epoch']}")
         else:

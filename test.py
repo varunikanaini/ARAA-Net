@@ -40,10 +40,12 @@ parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis',
                     help='Dataset to use for testing (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB)')
 parser.add_argument('--snapshot', type=str, required=True,
                     help='Path to the trained model snapshot (e.g., ckpt/DANet_TSRS_RSNA-Epiphysis/best.pth)')
+parser.add_argument('--batch_size', type=int, default=1, # Default to 1 for testing
+                    help='Batch size for testing')
 parser.add_argument('--scale_w', type=int, default=576,
-                    help='Width to scale input images to')
+                    help='Width to scale input images to (Note: Actual transform sizes are fixed to 576x896 as per paper).')
 parser.add_argument('--scale_h', type=int, default=896,
-                    help='Height to scale input images to')
+                    help='Height to scale input images to (Note: Actual transform sizes are fixed to 576x896 as per paper).')
 parser.add_argument('--save_results', type=lambda x: (str(x).lower() == 'true'), default=True,
                     help='Whether to save predicted masks')
 args_parser = parser.parse_args()
@@ -90,10 +92,9 @@ def bce_iou_loss(pred, target):
 
 
 # Prepare Data Set.
-# The `scale_w` and `scale_h` are now passed from args_parser to FixedResize via ImageFolder.
 test_set = ImageFolder(test_root_path, test_dataset_name, split='test')
 print(f"Test set ({test_dataset_name}): {test_set.__len__()} images")
-test_loader = DataLoader(test_set, batch_size=1, num_workers=0, shuffle=False)
+test_loader = DataLoader(test_set, batch_size=args['batch_size'], num_workers=0, shuffle=False) # Use batch_size from args
 
 
 def evaluate(net):
