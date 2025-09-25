@@ -98,4 +98,3 @@ class FixedResizewx(object):
         mask = mask.resize((ow, oh), Image.NEAREST)
 
         return img, mask
-    

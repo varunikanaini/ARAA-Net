@@ -36,6 +36,7 @@ class ConfusionMatrix(object):
 
     def reset(self):
         self.mat.zero_()
+        self.dice = [] # Reset dice scores too
 
     def compute(self):
         with torch.no_grad():
@@ -73,16 +74,20 @@ class ConfusionMatrix(object):
         torch.distributed.all_reduce(self.mat)
 
     def __str__(self):
-        acc_global, acc, iu = self.compute()
+        acc_global, acc, iu,FWIoU,mDice = self.compute() # Adjusted to include new return values
         return (
             'global correct: {:.1f}\n'
             'average row correct: {}\n'
             'IoU: {}\n'
-            'mean IoU: {:.1f}').format(
+            'mean IoU: {:.1f}\n'
+            'FWIoU: {:.1f}\n'
+            'mean Dice: {:.1f}').format(
                 acc_global.item() * 100,
                 ['{:.1f}'.format(i) for i in (acc * 100).tolist()],
                 ['{:.1f}'.format(i) for i in (iu * 100).tolist()],
-                iu.mean().item() * 100)
+                iu.mean().item() * 100,
+                FWIoU.item() * 100, # Added FWIoU to string representation
+                mDice.item() * 100) # Added mDice to string representation
 
 
 class IOUBenchmark(object):
@@ -101,8 +106,10 @@ class IOUBenchmark(object):
         if self.confmat is None:
             assert pred.dim() == 4, 'prediction must be of 4 dimensions if num_classes was not specified'
             self.confmat = ConfusionMatrix(pred.shape[1])
+        # Ensure target and pred are on the same device before flattening
+        target = target.to(pred.device)
         self.confmat.update(target.flatten(), pred.argmax(1).flatten() if pred.dim() == 4 else pred.flatten())
-        acc_global, acc, iou = self.confmat.compute()
+        acc_global, acc, iou,FWIoU,mDice = self.confmat.compute() # Adjusted to include new return values
         miou = iou.mean().item()
 
         return {'iou': miou}

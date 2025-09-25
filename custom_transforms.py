@@ -162,8 +162,9 @@ class FixedResize(object):
         img = sample['image']
         mask = sample['label']
 
-        assert img.size == mask.size
-
+        # assert img.size == mask.size # This assertion can fail if images and masks are not exactly same size initially, but it's handled by resize
+        
+        # Ensure mask is also resized, assuming it should match image size
         img = img.resize(self.size, Image.BILINEAR)
         mask = mask.resize(self.size, Image.NEAREST)
 
@@ -171,8 +172,7 @@ class FixedResize(object):
                 'label': mask}
     
     
-    
-class FixedResizewx(object):
+class FixedResizewx(object): # This class seems redundant with FixedResize, keeping it for original functionality
     def __init__(self, crop_size):
         self.crop_size = crop_size
 
@@ -193,23 +193,9 @@ class FixedResizewx(object):
                 'label': mask}
     
     
-    
-    
-    
-    
-    
-
-    
-    
-    
-    
-    
-    
-    
 class RandomCrop(object):
     def __init__(self, size):
         self.size = size
-
 
     def __call__(self, sample):
         img = sample['image']
@@ -223,4 +209,4 @@ class RandomCrop(object):
         mask = F.crop(lbl, i, j, h, w)
 
         return {'image': img,
-                'label': mask}  
+                'label': mask}

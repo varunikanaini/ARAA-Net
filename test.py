@@ -9,250 +9,188 @@ Created on 2022-12-13 09:54:12
 import time
 import datetime
 import os
+import argparse # Import argparse
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
-from config import cod_training_root,chameleon_path
+
+from config import backbone_path, DATASET_PATHS # Import DATASET_PATHS from config
 
 import torch
 from torch import nn
-from torch import optim
-from torch.autograd import Variable
 from torch.backends import cudnn
 from torch.utils.data import DataLoader
-from torchvision import transforms
-from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import numpy as np
 from torchvision import utils as vutils
+from collections import OrderedDict
 
-import joint_transforms
-from config import cod_training_root,chameleon_path
-from config import backbone_path
 from datasets import ImageFolder
 from misc import AvgMeter, check_mkdir
 from daseg import daseg
-from dar import DARConv2d
 import loss
-import numpy as np
-import matplotlib.pyplot as plt
 
 from seg_utils import ConfusionMatrix
 
 cudnn.benchmark = True
 
-
-
-
-
-import torch
-from PIL import Image
-from torch.autograd import Variable
-from torchvision import transforms
-from collections import OrderedDict
-from numpy import mean
-
-from config import *
-from misc import *
-from daseg import daseg
-
 torch.manual_seed(2021)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+# Add argparse for dataset selection and model snapshot
+parser = argparse.ArgumentParser(description='DANet Testing')
+parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis',
+                    help='Dataset to use for testing (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB)')
+parser.add_argument('--snapshot', type=str, required=True,
+                    help='Path to the trained model snapshot (e.g., ckpt/DANet_TSRS_RSNA-Epiphysis/best.pth)')
+args_parser = parser.parse_args()
+
+
+# Dynamic root paths based on selected dataset
+if args_parser.dataset == 'TSRS_RSNA-Epiphysis':
+    test_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_test']
+    test_dataset_name = 'TSRS_RSNA-Epiphysis_test'
+elif args_parser.dataset == 'JSRT':
+    test_root_path = DATASET_PATHS['JSRT']
+    test_dataset_name = 'JSRT'
+elif args_parser.dataset == 'COVID19_Radiography':
+    test_root_path = DATASET_PATHS['COVID19_Radiography']
+    test_dataset_name = 'COVID19_Radiography'
+elif args_parser.dataset == 'CVC-ClinicDB':
+    test_root_path = DATASET_PATHS['CVC-ClinicDB']
+    test_dataset_name = 'CVC-ClinicDB'
+else:
+    raise ValueError(f"Unsupported dataset: {args_parser.dataset}")
+
 
 ckpt_path = './ckpt'
-exp_name = 'TASNet'
-
-args = {
-    'epoch_num': 2000,
-    'train_batch_size': 2,
-    'last_epoch': 0,
-    'lr': 5e-4,
-    'lr_decay': 0.9,
-    'weight_decay': 5e-4,
-    'momentum': 0.9,
-    'snapshot': '',
-    'scale_w': 576,
-    'scale_h': 896,
-    'save_point': [0,50,80,100,120,135,180,260,300,500,700,900,1000,1200,1300,1400,1500,1600,1700,1800,1900,1999],
-    'poly_train': True,
-    'optimizer': 'Adam',
-}
-
-# Path.
-check_mkdir(ckpt_path)
-check_mkdir(os.path.join(ckpt_path, exp_name))
-vis_path = os.path.join(ckpt_path, exp_name, 'log')
-check_mkdir(vis_path)
-log_path = os.path.join(ckpt_path, exp_name,'log.txt')
-writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
-
-
-results_path = './results'
+exp_name = 'DANet_' + args_parser.dataset # Match experiment name with training
+results_path = os.path.join('./results', exp_name)
 check_mkdir(results_path)
-exp_name = 'TASNet'
+log_path = os.path.join(results_path, 'test_log.txt')
+
+
 args = {
     'scale_w': 576,
     'scale_h': 896,
-    'save_results': True
+    'save_results': True # Whether to save predicted masks
 }
 
 print(torch.__version__)
 
-# img_transform = transforms.Compose([
-#     transforms.Resize((args['scale_w'], args['scale_h']))
-# ])
-
-joint_transform_val = joint_transforms.Compose([
-    joint_transforms.Resize((args['scale_w'], args['scale_h']))
-])
-
-
-img_transform = transforms.Compose([
-    transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),  
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-])
-target_transform = transforms.ToTensor()
-
-to_pil = transforms.ToPILImage()
-
-
-to_test = OrderedDict([
-                       ('DAGM', chameleon_path)
-                       ])
-results = OrderedDict()
-
-structure_loss = loss.structure_loss().to(device)
+# Loss functions for consistency, though not used for optimizing in test.py
+# Kept as per original functionality, as they define bce_iou_loss
 bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
-last_criterion = nn.CrossEntropyLoss(ignore_index=255)
+# last_criterion is not explicitly used for calculation here but part of original code context
+last_criterion = nn.CrossEntropyLoss(ignore_index=255) 
 
 def bce_iou_loss(pred, target):
     bce_out = bce_loss(pred, target)
     iou_out = iou_loss(pred, target)
-
     loss = bce_out + iou_out
-
     return loss
 
 
-
-test_set = ImageFolder(chameleon_path, joint_transform_val, img_transform, target_transform,split='test')
-print("Test set: {}".format(test_set.__len__()))
+# Prepare Data Set.
+test_set = ImageFolder(test_root_path, test_dataset_name, split='test')
+print(f"Test set ({test_dataset_name}): {test_set.__len__()} images")
 test_loader = DataLoader(test_set, batch_size=1, num_workers=0, shuffle=False)
 
 
-
-
-def sample_images(epoch, batch_i, MECG, FECG_reconstr, FECG, sample_path):
-
-    r, c = 1, 3
-    gen_imgs = [MECG, FECG_reconstr,FECG]
-    titles = ['Image', 'Image_rec','Label']
-    
-    fig, axs = plt.subplots(r, c,figsize=(15, 5))
-    cnt = 0
-    for i in range(r):
-        for j in range(c):
-            for bias in range(1):
-                tt = gen_imgs[cnt]
-                A = tt.cpu().detach().numpy()
-                A = A[bias].squeeze(0)
-                axs[j].imshow(A)
-            axs[j].set_title(titles[j])
-            cnt += 1
-    fig.savefig("%s/%d_%d.png" % (sample_path, epoch,batch_i),dpi=500,bbox_inches = 'tight')
-    plt.close()
-
-
-def validate(net):
+def evaluate(net):
     net.eval()
     curr_iter = 1
     start_time = time.time()
 
     confmat = ConfusionMatrix(num_classes=2)
-    loss_record, loss_1_record, loss_2_record, loss_3_record, loss_4_record, loss_0_record = AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter()
-
-    test_iterator = tqdm(test_loader, total=len(test_loader))
+    
+    test_iterator = tqdm(test_loader, total=len(test_loader), desc="Testing")
     for data in test_iterator:
-
-        inputs, labels,name = data['image'], data['label'],  data['name']
+        inputs, labels, name_tuple = data['image'], data['label'], data['name']
         
-        batch_size = inputs.size(0)
+        # name_tuple is (img_path, gt_path), extract only the image filename
+        pname = os.path.basename(name_tuple[0][0]) 
+        
         inputs = inputs.to(device)
         labels = labels.to(device)
         
         with torch.no_grad():
+            # Only the final prediction `predict0` is directly used for metrics and saving.
+            # Other predictions are computed but not used further in test.
             predict_1, predict_2, predict_3, predict_4, predict0 = net(inputs)
             
+            pred_mask = predict0.argmax(1) # Get the predicted class mask (0 or 1)
             
-            pred = predict0.argmax(1)
-            # target = labels.cpu().numpy()
-            # pred = np.argmax(pred, axis=1)
-            # Add batch sample into evaluator
+            # Update confusion matrix for metrics calculation
+            confmat.update(labels.flatten(), pred_mask.flatten())
             
-            
-            confmat.update(labels.flatten(), predict0.argmax(1).flatten() if predict0.dim() == 4 else predict0.flatten())
+            if args['save_results']:
+                # Convert predicted mask to 0-255 grayscale image for saving
+                binary_mask_for_save = (pred_mask.cpu().numpy().squeeze() * 255).astype(np.uint8)
+                mask_image = Image.fromarray(binary_mask_for_save, mode='L') # 'L' for grayscale image
+                
+                # Save the mask in a 'masks' subdirectory within the results folder
+                save_dir = os.path.join(results_path, 'masks')
+                check_mkdir(save_dir)
+                # Ensure consistent file extension (.png)
+                base_filename_no_ext = os.path.splitext(pname)[0]
+                mask_image.save(os.path.join(save_dir, base_filename_no_ext + '.png'))
         
-            class_color = [(0, 0, 0),(255, 255, 255)]          
-            lla = pred.long().cpu().clone()
-            lla = np.uint8(lla.squeeze(0).squeeze(0))
-            label_index = np.full(inputs.squeeze(0).shape, 255, dtype='uint8')
-            for ik, color in enumerate(class_color):
-                for ig in range(label_index.shape[0]):
-                    label_index[ig][lla == ik] = color[ig]
-                    
-            image = torch.from_numpy(label_index).float()
-            pname = name[0][0].split('/')[-1]
-            path = 'data/segment/results/' + pname
-            vutils.save_image(image, path)    
-        
-        
-            # sample_images(1, curr_iter, inputs, pred, labels, './results/TASNet/DAGM')
-        
+        # Update progress bar description
+        _, _, class_iou, _, mDice = confmat.compute() # Get current metrics
+        log_str = f"Testing: Iter {curr_iter}/{len(test_loader)}, mIoU: {np.mean(class_iou.cpu().numpy()):.5f}, mDice: {mDice:.5f}"
+        test_iterator.set_description(log_str)
+        curr_iter += 1
 
-            global_acc, class_acc, class_iou,FWIoU,mDice = confmat.compute()
-            class_iou = class_iou.cpu().numpy()
-            
-            log = '[%3d], [%6f], [%.5f]' % \
-                  (curr_iter, np.mean(class_iou), loss_0_record.avg)
-            test_iterator.set_description(log)
-            open(log_path, 'a').write(log + '\n')
-    
-            curr_iter += 1
-
-
-    global_acc, class_acc, class_iou,FWIoU,mDice = confmat.compute()
+    # Compute and print final metrics after iterating through the entire test set
+    global_acc, class_acc, class_iou, FWIoU, mDice = confmat.compute()
     global_acc = global_acc.item()
     class_acc = class_acc.cpu().numpy()
     class_iou = class_iou.cpu().numpy()
     FWIoU = FWIoU.cpu().numpy()
     
-    
-    print(f'global_acc={global_acc}')
-    print(f'class_acc={class_acc}')
-    print(f'class_iou={class_iou}')
-    print(f'mIoU={np.mean(class_iou)}')
-    print(f'FWIoU={FWIoU}')
-    print(f'mDice={mDice}')
-    
+    final_log_str = (
+        f'--- Final Testing Results ({test_dataset_name}) ---\n'
+        f'Model: {args_parser.snapshot}\n'
+        f'Global Acc: {global_acc:.4f}\n'
+        f'Class Acc: {class_acc}\n'
+        f'Class IoU: {class_iou}\n'
+        f'Mean IoU: {np.mean(class_iou):.4f}\n'
+        f'FWIoU: {FWIoU:.4f}\n'
+        f'Mean Dice: {mDice:.4f}\n'
+    )
+    print(final_log_str)
+    # Write final results to a log file, overwriting previous content
+    with open(log_path, 'w') as f:
+        f.write(final_log_str + '\n')
+
     return np.mean(class_iou)
 
 
-
-
-
 def main():
+    print("Args:", args_parser.__dict__)
+    
     net = daseg(backbone_path).to(device)
 
-    #net.load_state_dict(torch.load('TASNet.pth'))
-    net.load_state_dict(torch.load('ckpt/TASNet/223.pth'))
+    # Load the specified snapshot
+    model_snapshot_path = args_parser.snapshot
+    if not os.path.exists(model_snapshot_path):
+        raise FileNotFoundError(f"Model snapshot not found at: {model_snapshot_path}")
+        
+    print(f"Loading model from: {model_snapshot_path}")
+    state_dict = torch.load(model_snapshot_path, map_location=device)
+    
+    # Remove 'module.' prefix if the model was saved from DataParallel
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:] if k.startswith('module.') else k
+        new_state_dict[name] = v
+    net.load_state_dict(new_state_dict)
+    
+    net.eval() # Set to evaluation mode
 
-    net.eval()
-    with torch.no_grad():
-        start = time.time()
-        validate(net)
-
+    start = time.time()
+    evaluate(net) # Call the evaluation function
     end = time.time()
     print("Total Testing Time: {}".format(str(datetime.timedelta(seconds=int(end - start)))))
 

@@ -258,7 +258,7 @@ class Focus(nn.Module):
 class daseg(nn.Module):
     def __init__(self, backbone_path=None):
         super(daseg, self).__init__()
-        resnet50 = resnet.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        resnet50 = resnet.resnet50(weights=models.ResNet50_Weights.DEFAULT) # Use recommended weights
         self.layer0 = nn.Sequential(resnet50.conv1, resnet50.bn1, resnet50.relu)
         self.layer1 = nn.Sequential(resnet50.maxpool, resnet50.layer1)
         self.layer2 = resnet50.layer2
