@@ -23,23 +23,26 @@ backbone_path = './backbone/resnet/resnet50-19c8e357.pth'
 
 
 # JSRT dataset
-jsrt_dataset_base = os.path.join(data_root, 'jsrt-247-image-lung-segmentation-mask-dataset')
+jsrt_dataset_name_kaggle = "abduzzami/jsrt-247-image-lung-segmentation-mask-dataset"
+jsrt_dataset_base = os.path.join(data_root, os.path.basename(jsrt_dataset_name_kaggle))
+
 # Download JSRT dataset if not already present or if the target directory is empty
 if not os.path.exists(jsrt_dataset_base) or not os.listdir(jsrt_dataset_base):
     print(f"Downloading JSRT dataset to {data_root}...")
-    kagglehub.dataset_download("abduzzami/jsrt-247-image-lung-segmentation-mask-dataset", path=data_root)
+    kagglehub.dataset_download(jsrt_dataset_name_kaggle, path=data_root)
     print("JSRT dataset downloaded.")
 
 # COVID-19 Radiography Database dataset
-covid_dataset_base = os.path.join(data_root, 'covid19-radiography-database')
+covid_dataset_name_kaggle = "tawsifurrahman/covid19-radiography-database"
+covid_dataset_base = os.path.join(data_root, os.path.basename(covid_dataset_name_kaggle))
+
 # Download COVID-19 Radiography Database dataset if not already present or if the target directory is empty
 if not os.path.exists(covid_dataset_base) or not os.listdir(covid_dataset_base):
     print(f"Downloading COVID-19 Radiography Database dataset to {data_root}...")
-    kagglehub.dataset_download("tawsifurrahman/covid19-radiography-database", path=data_root)
+    kagglehub.dataset_download(covid_dataset_name_kaggle, path=data_root)
     print("COVID-19 Radiography Database dataset downloaded.")
 
 # CVC-ClinicDB dataset (user manually copies)
-# User is expected to manually copy 'original' and 'ground truth' folders into cvc_clinicdb_base.
 cvc_clinicdb_base = os.path.join(data_root, 'CVC-ClinicDB')
 print(f"For CVC-ClinicDB: Please ensure your 'CVC-ClinicDB' folder with 'original' and 'ground truth' subfolders is placed at: {cvc_clinicdb_base}")
 

@@ -17,31 +17,22 @@ import numpy as np
 from torch.utils.data import Dataset
 from torchvision import transforms
 import custom_transforms as tr
-# from torchvision.datasets.folder import is_image_file # Not used
 
 
 def make_dataset(root, dataset_name):
     img_list = []
     
-    if dataset_name == 'TSRS_RSNA-Epiphysis_train': # Original training dataset
+    if dataset_name == 'TSRS_RSNA-Epiphysis_train' or dataset_name == 'TSRS_RSNA-Epiphysis_test':
         image_path = root
         mask_path = root + '_labels'
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
-            print(f"Warning: TSRS_RSNA-Epiphysis_train paths not found: {image_path}, {mask_path}. Returning empty dataset.")
-            return [] # Return empty if paths don't exist
-        img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.jpg')]
-        img_list = [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
-    elif dataset_name == 'TSRS_RSNA-Epiphysis_test': # Original testing dataset
-        image_path = root
-        mask_path = root + '_labels'
-        if not os.path.exists(image_path) or not os.path.exists(mask_path):
-            print(f"Warning: TSRS_RSNA-Epiphysis_test paths not found: {image_path}, {mask_path}. Returning empty dataset.")
-            return [] # Return empty if paths don't exist
+            print(f"Warning: {dataset_name} paths not found: {image_path}, {mask_path}. Returning empty dataset.")
+            return []
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.jpg')]
         img_list = [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
     elif dataset_name == 'JSRT':
-        # Assuming downloaded content extracts to jsrt-247-image-lung-segmentation-mask-dataset/images and masks
-        image_path = os.path.join(root, 'images')
+        # JSRT structure: root/cxr for images, root/masks for masks
+        image_path = os.path.join(root, 'cxr')
         mask_path = os.path.join(root, 'masks')
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"Warning: JSRT paths not found: {image_path}, {mask_path}. Did the download complete and extract correctly? Returning empty dataset.")
@@ -50,34 +41,47 @@ def make_dataset(root, dataset_name):
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.png')]
         img_list = [(os.path.join(image_path, img_name + '.png'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
     elif dataset_name == 'COVID19_Radiography':
-        # This dataset is primarily for classification. User is assumed to have provided/generated masks.
-        # We'll look for subfolders like COVID, NORMAL, etc., each containing 'images' and 'masks'.
-        subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia'] # Common subfolders
+        # COVID19_Radiography structure: root/[CLASS_NAME]/images and root/[CLASS_NAME]/masks
+        subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia']
         print(f"Attempting to load COVID19_Radiography from: {root}")
         for sub_name in subfolders:
-            sub_image_path = os.path.join(root, sub_name, 'images') # Assuming images are here
-            sub_mask_path = os.path.join(root, sub_name, 'masks')   # User is expected to put masks here (e.g., generated masks)
+            sub_image_path = os.path.join(root, sub_name, 'images')
+            sub_mask_path = os.path.join(root, sub_name, 'masks')
             
             if not os.path.exists(sub_image_path):
                 print(f"Warning: Image path {sub_image_path} not found for {sub_name}. Skipping this class.")
                 continue
             if not os.path.exists(sub_mask_path):
-                print(f"Warning: Mask path {sub_mask_path} not found for {sub_name}. Skipping this class.")
+                print(f"Warning: Mask path {sub_mask_path} not found for {sub_name}. Skipping this class. Please ensure masks are present if you intend to train/validate segmentation.")
                 continue
             
             # Assuming images can be .png or .jpg, and masks are .png
             img_names = [os.path.splitext(f)[0] for f in os.listdir(sub_image_path) if f.lower().endswith(('.png', '.jpg'))]
             for img_name in img_names:
-                original_ext = '.png' if os.path.exists(os.path.join(sub_image_path, img_name + '.png')) else '.jpg'
-                img_list.append((os.path.join(sub_image_path, img_name + original_ext), 
-                                 os.path.join(sub_mask_path, img_name + '.png'))) # Assuming masks are .png
+                original_img_path_png = os.path.join(sub_image_path, img_name + '.png')
+                original_img_path_jpg = os.path.join(sub_image_path, img_name + '.jpg')
+                
+                if os.path.exists(original_img_path_png):
+                    image_full_path = original_img_path_png
+                elif os.path.exists(original_img_path_jpg):
+                    image_full_path = original_img_path_jpg
+                else:
+                    continue # Skip if neither png nor jpg found
+                    
+                mask_full_path = os.path.join(sub_mask_path, img_name + '.png') # Assuming masks are .png
+                
+                if os.path.exists(mask_full_path):
+                    img_list.append((image_full_path, mask_full_path))
+                else:
+                    print(f"Warning: Mask {mask_full_path} not found for image {image_full_path}. Skipping image.")
+
     elif dataset_name == 'CVC-ClinicDB':
         image_path = os.path.join(root, 'original')
         mask_path = os.path.join(root, 'ground truth')
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"Warning: CVC-ClinicDB paths not found: {image_path}, {mask_path}. Please ensure manual copy is correct. Returning empty dataset.")
             return []
-        img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.tif')] # CVC images are often .tif
+        img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.tif')]
         img_list = [(os.path.join(image_path, img_name + '.tif'), os.path.join(mask_path, img_name + '.tif')) for img_name in img_names]
     else:
         raise ValueError(f"Unknown dataset_name: {dataset_name}")
@@ -89,23 +93,21 @@ def make_dataset(root, dataset_name):
 
 
 class ImageFolder(data.Dataset):
-    # image and gt should be in the same folder and have same filename except extended name (jpg and png respectively)
     def __init__(self, root, dataset_name, joint_transform=None, transform=None, target_transform=None, split='train'):
         self.root = root
-        self.dataset_name = dataset_name # Store dataset name
+        self.dataset_name = dataset_name
         self.imgs = make_dataset(root, dataset_name)
-        self.joint_transform = joint_transform # This will be None as per plan
-        self.transform = transform # This will be None as per plan
-        self.target_transform = target_transform # This will be None as per plan
+        # joint_transform, transform, target_transform are not used externally anymore
+        # as transforms are handled internally by transform_tr/val
+        self.joint_transform = joint_transform 
+        self.transform = transform
+        self.target_transform = target_transform 
         self.split = split
-        # Only map foreground to 1 and background to 0 for binary segmentation
         self.label_mapping = {val: 1 if val > 0 else 0 for val in range(-1, 31)} 
 
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]
         img = Image.open(img_path).convert('RGB')
-        # For CVC-ClinicDB and JSRT masks can be multi-channel or single channel,
-        # but convert_label expects a PIL Image, which is fine.
         target = Image.open(gt_path)
         label = self.convert_label(target)
         
@@ -114,36 +116,35 @@ class ImageFolder(data.Dataset):
             return self.transform_tr(sample) 
         else: # split == "test" or "val"
             sample = self.transform_val(sample)
-            # For test, we return the original full path to save results with correct names
             sample['name'] = self.imgs[index] 
             return sample
         
     def convert_label(self, label):
-        # This function assumes binary segmentation where any non-zero pixel in the mask is foreground (1)
-        # and zero is background (0).
         label_array = np.array(label)
-        if label_array.ndim == 3: # If mask is RGB or RGBA, take one channel or convert to grayscale first
-            label_array = label_array[:,:,0] # Take the first channel
+        if label_array.ndim == 3 and label_array.shape[2] >= 1:
+            # Assume first channel is the relevant one for segmentation if RGB/RGBA
+            label_array = label_array[:, :, 0] 
+        elif label_array.ndim == 2:
+            pass # Already single channel
+        else:
+            print(f"Warning: Unexpected label array dimensions: {label_array.shape}. Assuming single channel.")
+            # Attempt to flatten or convert to single channel if needed, or raise error.
+            # For now, let's assume it's correctly handled or an error will occur downstream.
+            
+        label_index = np.zeros_like(label_array, dtype='uint8')
+        label_index[label_array > 0] = 1 # Any non-zero pixel is foreground
         
-        label_index = np.full(label_array.shape, 0, dtype='uint8')
-        # Apply the binary mapping based on self.label_mapping
-        # Any value in the mask that is > 0 in the original label_mapping (which covers 1-30) will be 1.
-        # Otherwise, it's 0.
-        # If the original mask values are just 0/255, this will make 255 -> 1.
-        label_index[label_array > 0] = 1 # Assuming non-zero pixels are foreground
-        
-        label_index = Image.fromarray(label_index, mode='P') # 'P' for palettized (single channel)
+        label_index = Image.fromarray(label_index, mode='P')
         return label_index
 
     def __len__(self):
         return len(self.imgs)
     
-    # These transforms directly implement the paper's requirements
     def transform_tr(self, sample):
         composed_transforms = transforms.Compose([
             tr.RandomHorizontalFlip(),
-            tr.FixedResize(576,896), # Scale to 576x896
-            tr.RandomCrop((576,576)), # Randomly crop to 576x576 during training
+            tr.FixedResize(576,896), 
+            tr.RandomCrop((576,576)), 
             tr.RandomGaussianBlur(),
             tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             tr.ToTensor()])
@@ -151,7 +152,7 @@ class ImageFolder(data.Dataset):
  
     def transform_val(self, sample):
         composed_transforms = transforms.Compose([
-            tr.FixedResize(576,896), # Scale to 576x896 for validation as well
+            tr.FixedResize(576,896), 
             tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             tr.ToTensor()])
         return composed_transforms(sample)
