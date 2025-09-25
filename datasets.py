@@ -31,9 +31,9 @@ def make_dataset(root, dataset_name):
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.jpg')]
         img_list = [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
     elif dataset_name == 'JSRT':
-        # JSRT structure: root/cxr for images, root/masks for masks
-        image_path = os.path.join(root, 'cxr')
-        mask_path = os.path.join(root, 'masks')
+        # Correct JSRT structure: root/content/jsrt/cxr for images, root/content/jsrt/masks for masks
+        image_path = os.path.join(root, 'content', 'jsrt', 'cxr')
+        mask_path = os.path.join(root, 'content', 'jsrt', 'masks')
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"Warning: JSRT paths not found: {image_path}, {mask_path}. Did the download complete and extract correctly? Returning empty dataset.")
             return []
@@ -41,12 +41,13 @@ def make_dataset(root, dataset_name):
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.png')]
         img_list = [(os.path.join(image_path, img_name + '.png'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
     elif dataset_name == 'COVID19_Radiography':
-        # COVID19_Radiography structure: root/[CLASS_NAME]/images and root/[CLASS_NAME]/masks
+        # Correct COVID19_Radiography structure: root/COVID-19_Radiography_Dataset/[CLASS_NAME]/images and masks
+        base_dataset_folder = os.path.join(root, 'COVID-19_Radiography_Dataset')
         subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia']
-        print(f"Attempting to load COVID19_Radiography from: {root}")
+        print(f"Attempting to load COVID19_Radiography from: {base_dataset_folder}")
         for sub_name in subfolders:
-            sub_image_path = os.path.join(root, sub_name, 'images')
-            sub_mask_path = os.path.join(root, sub_name, 'masks')
+            sub_image_path = os.path.join(base_dataset_folder, sub_name, 'images')
+            sub_mask_path = os.path.join(base_dataset_folder, sub_name, 'masks')
             
             if not os.path.exists(sub_image_path):
                 print(f"Warning: Image path {sub_image_path} not found for {sub_name}. Skipping this class.")
