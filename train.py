@@ -10,7 +10,8 @@ import datetime
 import time
 import os
 import argparse 
-import logging # Import logging
+import logging 
+from collections import OrderedDict # Import OrderedDict
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
@@ -38,12 +39,37 @@ cudnn.benchmark = True
 torch.manual_seed(2021)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Add argparse for dataset selection
+# Add argparse for all configurable parameters
 parser = argparse.ArgumentParser(description='DANet Training')
 parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis',
                     help='Dataset to use for training (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB)')
+parser.add_argument('--epoch_num', type=int, default=100,
+                    help='Number of training epochs')
+parser.add_argument('--train_batch_size', type=int, default=10,
+                    help='Batch size for training')
+parser.add_argument('--last_epoch', type=int, default=0,
+                    help='Epoch to resume training from (0 to start from scratch)')
+parser.add_argument('--lr', type=float, default=1e-3,
+                    help='Learning rate')
+parser.add_argument('--lr_decay', type=float, default=0.9,
+                    help='Learning rate decay factor for poly schedule')
+parser.add_argument('--weight_decay', type=float, default=5e-4,
+                    help='Weight decay (L2 penalty)')
+parser.add_argument('--momentum', type=float, default=0.9,
+                    help='Momentum for SGD optimizer')
+parser.add_argument('--snapshot', type=str, default='',
+                    help='Path to a model snapshot to resume training (e.g., best or epoch number)')
+parser.add_argument('--scale_w', type=int, default=576,
+                    help='Width to scale input images to')
+parser.add_argument('--scale_h', type=int, default=896,
+                    help='Height to scale input images to')
+parser.add_argument('--poly_train', type=lambda x: (str(x).lower() == 'true'), default=True,
+                    help='Use polynomial learning rate decay')
+parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'],
+                    help='Optimizer to use (Adam or SGD)')
 parser.add_argument('--patience', type=int, default=20,
                     help='Number of epochs to wait for improvement before early stopping')
+
 args_parser = parser.parse_args()
 
 
@@ -91,25 +117,10 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger()
 writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
 
-
-args = {
-    'epoch_num': 100, 
-    'train_batch_size': 10, 
-    'last_epoch': 0,
-    'lr': 1e-3, 
-    'lr_decay': 0.9,
-    'weight_decay': 5e-4, 
-    'momentum': 0.9,
-    'snapshot': '',
-    'scale_w': 576,
-    'scale_h': 896,
-    'poly_train': True,
-    'optimizer': 'Adam', 
-    'patience': args_parser.patience # Use patience from argparse
-}
+# Use parsed arguments directly
+args = vars(args_parser) # Convert Namespace to dictionary for consistency with old code, though direct access is also fine
 
 # Log initial arguments
-logger.info(f"Command-line arguments: {args_parser.__dict__}")
 logger.info(f"Training arguments: {args}")
 logger.info(f"Training dataset: {train_dataset_name}, Validation dataset: {test_dataset_name}")
 
@@ -142,8 +153,8 @@ def train(net, optimizer):
     net.train()
     curr_iter = 1
     
-    best_mIoU = -1.0 # Initialize with a low value for comparison
-    patience_counter = 0 # Initialize patience counter
+    best_mIoU = -1.0 
+    patience_counter = 0 
 
     for epoch in range(args['last_epoch'] + 1, args['last_epoch'] + 1 + args['epoch_num']):
         loss_record, loss_1_record, loss_2_record, loss_3_record, loss_4_record, loss_0_record = AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter()
@@ -186,7 +197,7 @@ def train(net, optimizer):
             
             confmat.update(labels.flatten(), predict0.argmax(1).flatten() if predict0.dim() == 4 else predict0.flatten())
             
-            global_acc, class_acc, class_iou, FWIoU, mDice = confmat.compute() # Compute metrics
+            global_acc, class_acc, class_iou, FWIoU, mDice = confmat.compute() 
             current_train_miou = np.mean(class_iou.cpu().numpy())
 
             if curr_iter % 10 == 0:
@@ -202,21 +213,18 @@ def train(net, optimizer):
 
             log_str = f"Epoch: {epoch:03d}/{args['epoch_num']}, Iter: {curr_iter:06d}/{total_iterations}, LR: {base_lr:.6f}, Total_Loss: {loss_record.avg:.5f}, CE_Loss: {loss_0_record.avg:.5f}, Train_mIoU: {current_train_miou:.5f}, Train_mDice: {mDice:.5f}"
             train_iterator.set_description(log_str)
-            logger.info(log_str) # Log to file and console
+            logger.info(log_str) 
 
             curr_iter += 1
         
-        # Validation after each epoch
-        current_val_mIoU = validate(net, epoch) # Pass epoch for logging
+        current_val_mIoU = validate(net, epoch) 
         writer.add_scalar('val/miou', current_val_mIoU, epoch)
         logger.info(f"Epoch {epoch} validation mIoU: {current_val_mIoU:.5f}")
 
-        # Checkpoint: Save best model
         if current_val_mIoU > best_mIoU:
             best_mIoU = current_val_mIoU
-            patience_counter = 0 # Reset patience if improvement
+            patience_counter = 0 
             checkpoint_path = os.path.join(ckpt_path, exp_name, 'best.pth')
-            # Save state_dict of the original model, not DataParallel wrapper
             if isinstance(net, nn.DataParallel):
                 torch.save(net.module.state_dict(), checkpoint_path)
             else:
@@ -226,7 +234,6 @@ def train(net, optimizer):
             patience_counter += 1
             logger.info(f"Epoch {epoch}: Validation mIoU did not improve. Patience counter: {patience_counter}/{args['patience']}")
             
-        # Checkpoint: Save latest model at the end of every epoch
         latest_checkpoint_path = os.path.join(ckpt_path, exp_name, f'{epoch}.pth')
         if isinstance(net, nn.DataParallel):
             torch.save(net.module.state_dict(), latest_checkpoint_path)
@@ -234,7 +241,6 @@ def train(net, optimizer):
             torch.save(net.state_dict(), latest_checkpoint_path)
         logger.info(f"Epoch {epoch}: Saved latest model to {latest_checkpoint_path}")
 
-        # Early stopping check
         if patience_counter >= args['patience']:
             logger.info(f"Early stopping triggered after {patience_counter} epochs without improvement. Best mIoU: {best_mIoU:.5f}")
             break
@@ -242,14 +248,14 @@ def train(net, optimizer):
         logger.info(f"Epoch {epoch} finished. Current best mIoU: {best_mIoU:.5f}")
 
 
-def validate(net, epoch): # Removed optimizer argument as it's not used in validation
+def validate(net, epoch): 
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     loss_record, loss_0_record = AvgMeter(), AvgMeter()
 
     test_iterator = tqdm(test_loader, total=len(test_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Val)")
     for data in test_iterator:
-        inputs, labels, _ = data['image'], data['label'], data['name'] # Unpack 'name' but don't use it
+        inputs, labels, _ = data['image'], data['label'], data['name'] 
         
         batch_size = inputs.size(0)
         inputs = inputs.to(device)
@@ -272,7 +278,6 @@ def validate(net, epoch): # Removed optimizer argument as it's not used in valid
             
             confmat.update(labels.flatten(), predict0.argmax(1).flatten() if predict0.dim() == 4 else predict0.flatten())
         
-    # Compute final metrics for the epoch's validation
     global_acc, class_acc, class_iou, FWIoU, mDice = confmat.compute()
     global_acc = global_acc.item()
     class_acc = class_acc.cpu().numpy()
@@ -288,9 +293,9 @@ def validate(net, epoch): # Removed optimizer argument as it's not used in valid
         f'FWIoU: {FWIoU:.4f}\n'
         f'Mean Dice: {mDice:.4f}\n'
     )
-    logger.info(val_log_str) # Log to file and console
+    logger.info(val_log_str) 
 
-    net.train() # Set net back to train mode after validation
+    net.train() 
     return np.mean(class_iou)
 
 
@@ -300,7 +305,6 @@ def main():
     net = daseg(backbone_path).train()
     net = net.to(device)
 
-    # Optimizer configuration as per paper (Adam)
     if args['optimizer'] == 'Adam':
         logger.info("Using Adam optimizer")
         optimizer = optim.Adam([
@@ -318,18 +322,23 @@ def main():
              'lr': 1 * args['lr'], 'weight_decay': args['weight_decay']}
         ], momentum=args['momentum'])
 
-    if len(args['snapshot']) > 0:
+    if args['snapshot']: # Check if snapshot argument is provided
         logger.info(f'Training Resumes From snapshot: {args["snapshot"]}')
         model_path = os.path.join(ckpt_path, exp_name, args['snapshot'] + '.pth')
         if os.path.exists(model_path):
             state_dict = torch.load(model_path, map_location=device)
-            # Remove 'module.' prefix if the model was saved from DataParallel
             new_state_dict = OrderedDict()
             for k, v in state_dict.items():
                 name = k[7:] if k.startswith('module.') else k
                 new_state_dict[name] = v
             net.load_state_dict(new_state_dict)
-            args['last_epoch'] = int(args['snapshot']) 
+            
+            # If snapshot is just an epoch number, set last_epoch
+            try:
+                args['last_epoch'] = int(args['snapshot'])
+            except ValueError:
+                args['last_epoch'] = 0 # If it's 'best' or another string, start from 0 or handle explicitly
+            
             logger.info(f"Resuming training from epoch {args['last_epoch']}")
         else:
             logger.warning(f"Snapshot not found at {model_path}. Starting from scratch.")
