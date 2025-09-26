@@ -13,7 +13,8 @@ import argparse
 from collections import OrderedDict
 import logging 
 from PIL import Image 
-import torch.utils.data.dataloader # Import dataloader specifically for default_collate
+import torch.utils.data.dataloader 
+import sys # ADDED: Import sys for stdout flushing
 
 
 from config import backbone_path, DATASET_PATHS 
@@ -167,6 +168,8 @@ def evaluate(net):
         f'Mean Dice: {mDice:.4f}\n'
     )
     logger.info(final_log_str) 
+    print(final_log_str)      # Explicit print to guarantee console output
+    sys.stdout.flush()         # ADDED: Force flush stdout
 
     return np.mean(class_iou)
 
@@ -196,6 +199,8 @@ def main():
     end = time.time()
     logger.info("Total Testing Time: {}".format(str(datetime.timedelta(seconds=int(end - start)))))
     logger.info("Testing process completed.")
+    print("Total Testing Time: {}".format(str(datetime.timedelta(seconds=int(end - start))))) # Explicit print for total time
+    sys.stdout.flush() # ADDED: Force flush stdout
 
 if __name__ == '__main__':
     main()
