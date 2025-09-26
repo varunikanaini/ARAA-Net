@@ -34,6 +34,7 @@ def make_dataset(root, dataset_name):
             print(f"Warning: {dataset_name} paths not found: {image_path}, {mask_path}. Returning empty dataset.")
             return []
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.jpg')]
+        # This dataset is already split by folder, so we directly return its images
         return [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
     
     # For datasets that need programmatic splitting, gather all images first
@@ -94,21 +95,19 @@ def make_dataset(root, dataset_name):
                     print(f"Warning: Mask not found for CVC image {f}. Skipping.")
     
     elif dataset_name == 'DentalPanoramic':
-        # Assuming extracted content structure is root/<dataset_folder>/images, root/<dataset_folder>/segmentation_1
-        # The Kaggle download extracts to a folder like 'panoramic-dental-x-rays-with-segmented-mandibles'
-        # Inside that, it directly has 'images', 'segmentation_1', etc.
+        # User confirmed root is e.g., 'data/dental_panoramic_xrays' which contains 'images', 'segmentation_1', etc.
         image_path = os.path.join(root, 'images')
         mask_path = os.path.join(root, 'segmentation_1') # Using segmentation_1 by default
         
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
-            print(f"Warning: DentalPanoramic paths not found: {image_path}, {mask_path}. Did the download complete and extract correctly? Returning empty dataset.")
+            print(f"Warning: DentalPanoramic paths not found: {image_path}, {mask_path}. Returning empty dataset.")
             return []
         
         for f in os.listdir(image_path):
             if f.lower().endswith(IMAGE_EXTENSIONS):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
-                # Assuming masks have same name and .png extension
+                # Assuming masks have same name and .png extension for DentalPanoramic
                 mask_full_path = os.path.join(mask_path, img_name_base + '.png') 
                 if os.path.exists(mask_full_path):
                     img_list.append((img_full_path, mask_full_path))
@@ -116,12 +115,12 @@ def make_dataset(root, dataset_name):
                     print(f"Warning: Mask not found for DentalPanoramic image {f}. Skipping.")
 
     elif dataset_name == 'SixDiseasesChestXRay':
-        # Structure: root/Dataset/train/<disease_type>/images/ and masks/
-        base_dataset_folder = os.path.join(root, 'Dataset', 'train')
+        # User confirmed root is e.g., 'data/Dataset' which contains 'train' folder
+        base_dataset_folder = os.path.join(root, 'train')
         subfolders = ['covid', 'normal', 'tuberculosis', 'bacterial pneumonia', 'pneumothorax', 'viral pneumonia']
         
         if not os.path.exists(base_dataset_folder):
-            print(f"Warning: SixDiseasesChestXRay base path not found: {base_dataset_folder}. Did the download complete and extract correctly? Returning empty dataset.")
+            print(f"Warning: SixDiseasesChestXRay base path not found: {base_dataset_folder}. Returning empty dataset.")
             return []
 
         for sub_name in subfolders:
@@ -163,7 +162,7 @@ class ImageFolder(data.Dataset):
         # For TSRS_RSNA-Epiphysis, make_dataset already returns a split specific list
         if 'TSRS_RSNA-Epiphysis' in dataset_name: 
             self.imgs = make_dataset(root, dataset_name)
-        else: # For datasets that need programmatic splitting
+        else: # For datasets that need programmatic splitting (JSRT, COVID, CVC, Dental, SixDiseases)
             all_imgs = make_dataset(root, dataset_name)
             
             random.seed(42) # For reproducibility
@@ -172,7 +171,7 @@ class ImageFolder(data.Dataset):
             total_size = len(all_imgs)
             train_size = int(0.8 * total_size)
             val_size = int(0.1 * total_size)
-            # Test size is the rest, it will automatically handle potential off-by-one for small datasets
+            # Test size is the rest
             
             if split == 'train':
                 self.imgs = all_imgs[:train_size]

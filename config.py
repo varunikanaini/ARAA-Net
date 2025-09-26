@@ -26,6 +26,7 @@ backbone_path = './backbone/resnet/resnet50-19c8e357.pth'
 jsrt_dataset_name_kaggle = "abduzzami/jsrt-247-image-lung-segmentation-mask-dataset"
 jsrt_dataset_base = os.path.join(data_root, os.path.basename(jsrt_dataset_name_kaggle))
 
+# Only attempt Kagglehub download if the directory is truly empty/missing
 if not os.path.exists(jsrt_dataset_base) or not os.listdir(jsrt_dataset_base):
     print(f"Downloading JSRT dataset to {data_root}...")
     kagglehub.dataset_download(jsrt_dataset_name_kaggle, path=data_root)
@@ -35,6 +36,7 @@ if not os.path.exists(jsrt_dataset_base) or not os.listdir(jsrt_dataset_base):
 covid_dataset_name_kaggle = "tawsifurrahman/covid19-radiography-database"
 covid_dataset_base = os.path.join(data_root, os.path.basename(covid_dataset_name_kaggle))
 
+# Only attempt Kagglehub download if the directory is truly empty/missing
 if not os.path.exists(covid_dataset_base) or not os.listdir(covid_dataset_base):
     print(f"Downloading COVID-19 Radiography Database dataset to {data_root}...")
     kagglehub.dataset_download(covid_dataset_name_kaggle, path=data_root)
@@ -46,22 +48,16 @@ print(f"For CVC-ClinicDB: Please ensure your 'CVC-ClinicDB' folder with 'origina
 
 
 # New: Panoramic Dental X-rays With Segmented Mandibles
-dental_panoramic_kaggle_name = "volodymyrpivoshenko/panoramic-dental-x-rays-with-segmented-mandibles"
-dental_panoramic_base = os.path.join(data_root, os.path.basename(dental_panoramic_kaggle_name))
-
-if not os.path.exists(dental_panoramic_base) or not os.listdir(dental_panoramic_base):
-    print(f"Downloading Panoramic Dental X-rays dataset to {data_root}...")
-    kagglehub.dataset_download(dental_panoramic_kaggle_name, path=data_root)
-    print("Panoramic Dental X-rays dataset downloaded.")
+# As per user's clarification, this dataset is expected at 'data/dental_panoramic_xrays'
+dental_panoramic_base = os.path.join(data_root, 'dental_panoramic_xrays')
+print(f"For DentalPanoramic: Please ensure the dataset content is placed at: {dental_panoramic_base}")
+print(f"  If running on Kaggle, you might need to copy from /kaggle/input/panoramic-dental-x-rays-with-segmented-mandibles to {dental_panoramic_base}")
 
 # New: 6-Diseases Chest X-Ray Dataset with Masks
-six_diseases_kaggle_name = "atheeq03/6-diseases-chest-x-ray-dataset-with-masks"
-six_diseases_base = os.path.join(data_root, os.path.basename(six_diseases_kaggle_name))
-
-if not os.path.exists(six_diseases_base) or not os.listdir(six_diseases_base):
-    print(f"Downloading 6-Diseases Chest X-Ray dataset to {data_root}...")
-    kagglehub.dataset_download(six_diseases_kaggle_name, path=data_root)
-    print("6-Diseases Chest X-Ray dataset downloaded.")
+# As per user's clarification, this dataset is expected at 'data/Dataset'
+six_diseases_base = os.path.join(data_root, 'Dataset')
+print(f"For SixDiseasesChestXRay: Please ensure the dataset content is placed at: {six_diseases_base}")
+print(f"  If running on Kaggle, you might need to copy from /kaggle/input/6-diseases-chest-x-ray-dataset-with-masks to {six_diseases_base}")
 
 
 # Dictionary to map dataset names to their root paths

@@ -110,7 +110,7 @@ logger = logging.getLogger()
 writer = SummaryWriter(log_dir=vis_path, comment=exp_name)
 
 # Use parsed arguments directly
-args = vars(args_parser) # Convert Namespace to dictionary for consistency
+args = vars(args_parser) 
 
 # Log initial arguments
 logger.info(f"Training arguments: {args}")
@@ -123,7 +123,7 @@ train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_wo
 
 val_set = ImageFolder(val_root_path, val_dataset_name, split='val') 
 logger.info(f"Validation set ({val_dataset_name}): {val_set.__len__()} images")
-val_loader = DataLoader(val_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False) # Use eval_batch_size for validation
+val_loader = DataLoader(val_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False) 
 
 total_iterations = args['epoch_num'] * len(train_loader)
 logger.info(f"Total training iterations: {total_iterations}")
@@ -211,7 +211,6 @@ def train(net, optimizer):
 
             curr_iter += 1
         
-        # Validation after each epoch
         current_val_mIoU = validate(net, epoch) 
         writer.add_scalar('val/miou', current_val_mIoU, epoch)
 
@@ -228,7 +227,6 @@ def train(net, optimizer):
             patience_counter += 1
             logger.info(f"Epoch {epoch}: Validation mIoU did not improve. Patience counter: {patience_counter}/{args['patience']}")
             
-        # Save latest checkpoint at the end of every epoch
         latest_checkpoint_path = os.path.join(ckpt_path, exp_name, 'latest.pth') 
         if isinstance(net, nn.DataParallel):
             torch.save(net.module.state_dict(), latest_checkpoint_path)
@@ -335,9 +333,6 @@ def main():
             try: # Try to parse epoch number if snapshot is purely numeric
                 args['last_epoch'] = int(args['snapshot'])
             except ValueError: # If snapshot is 'best' or 'latest'
-                # If resuming from 'latest.pth', we want to start from the epoch *after* it was saved.
-                # Since we don't store epoch number in 'latest.pth', we assume 0 or handle manually.
-                # For simplicity, if not an integer, we resume from 0. User can set last_epoch manually if needed.
                 logger.warning(f"Snapshot '{args['snapshot']}' is not an epoch number. Resuming from last_epoch=0.")
                 args['last_epoch'] = 0 
             
