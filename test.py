@@ -12,7 +12,7 @@ import os
 import argparse 
 from collections import OrderedDict
 import logging 
-from PIL import Image # ADDED: Import PIL.Image to fix NameError
+from PIL import Image 
 
 from config import backbone_path, DATASET_PATHS 
 
@@ -39,7 +39,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # Add argparse for dataset selection and model snapshot
 parser = argparse.ArgumentParser(description='DANet Testing')
 parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis',
-                    help='Dataset to use for testing (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB)')
+                    help='Dataset to use for testing (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB, DentalPanoramic, SixDiseasesChestXRay)') # Updated
 parser.add_argument('--snapshot', type=str, required=True,
                     help='Path to the trained model snapshot (e.g., ckpt/DANet_TSRS_RSNA-Epiphysis/best.pth)')
 parser.add_argument('--batch_size', type=int, default=1, # Default to 1 for testing
@@ -57,7 +57,7 @@ args_parser = parser.parse_args()
 if args_parser.dataset == 'TSRS_RSNA-Epiphysis':
     test_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_test']
     test_dataset_name = 'TSRS_RSNA-Epiphysis_test'
-elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB']: # Use combined root for programmatic split
+elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay']: # Updated
     test_root_path = DATASET_PATHS[args_parser.dataset]
     test_dataset_name = args_parser.dataset
 else:
@@ -96,7 +96,6 @@ def bce_iou_loss(pred, target):
 
 
 # Prepare Data Set.
-# For datasets with programmatic split, we pass the same root but specific `split` argument.
 test_set = ImageFolder(test_root_path, test_dataset_name, split='test')
 logger.info(f"Test set ({test_dataset_name}): {test_set.__len__()} images")
 test_loader = DataLoader(test_set, batch_size=args['batch_size'], num_workers=0, shuffle=False) # Use batch_size from args
@@ -154,7 +153,7 @@ def evaluate(net):
         f'FWIoU: {FWIoU:.4f}\n'
         f'Mean Dice: {mDice:.4f}\n'
     )
-    logger.info(final_log_str) # Log to screen and file
+    logger.info(final_log_str) 
 
     return np.mean(class_iou)
 
