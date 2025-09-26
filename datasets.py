@@ -13,7 +13,7 @@ import torch.utils.data as data
 from PIL import Image, UnidentifiedImageError 
 import numpy as np
 import random 
-import cv2 # ADDED: Import OpenCV
+import cv2 
 
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -85,8 +85,8 @@ def make_dataset(root, dataset_name):
                         print(f"Warning: Mask not found for COVID image {f}. Skipping.")
 
     elif dataset_name == 'CVC-ClinicDB':
-        image_path = os.path.join(root, 'Original') # Corrected casing
-        mask_path = os.path.join(root, 'Ground Truth') # Corrected casing
+        image_path = os.path.join(root, 'Original') 
+        mask_path = os.path.join(root, 'Ground Truth') 
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"DEBUG: Checking CVC-ClinicDB. Image path: {image_path}, exists: {os.path.exists(image_path)}")
             print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
@@ -124,7 +124,8 @@ def make_dataset(root, dataset_name):
 
     elif dataset_name == 'SixDiseasesChestXRay':
         base_dataset_folder = os.path.join(root, 'train')
-        subfolders = ['covid', 'normal', 'tuberculosis', 'bacterial pneumonia', 'pneumothorax', 'viral pneumonia']
+        # MODIFIED: Corrected subfolder names to match observed Title Case
+        subfolders = ['Covid', 'Normal', 'Tuberculosis', 'Bacterial Pneumonia', 'Pneumothorax', 'Viral Pneumonia'] # Changed casing
         
         if not os.path.exists(base_dataset_folder):
             print(f"DEBUG: Checking SixDiseasesChestXRay. Base path: {base_dataset_folder}, exists: {os.path.exists(base_dataset_folder)}")
