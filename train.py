@@ -12,7 +12,8 @@ import os
 import argparse 
 import logging 
 from collections import OrderedDict 
-import torch.utils.data.dataloader # Import dataloader specifically for default_collate
+import torch.utils.data.dataloader 
+import sys # ADDED: Import sys for stdout flushing
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
@@ -116,6 +117,7 @@ args = vars(args_parser)
 # Log initial arguments
 logger.info(f"Training arguments: {args}")
 logger.info(f"Training dataset: {train_dataset_name}, Validation dataset: {val_dataset_name}")
+sys.stdout.flush() # ADDED: Flush after initial info
 
 # Custom collate function to handle None samples
 def custom_collate_fn(batch):
@@ -128,14 +130,17 @@ def custom_collate_fn(batch):
 # Prepare Data Set.
 train_set = ImageFolder(train_root_path, train_dataset_name, split='train')
 logger.info(f"Train set ({train_dataset_name}): {train_set.__len__()} images")
+sys.stdout.flush() # ADDED: Flush after dataset info
 train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
 
 val_set = ImageFolder(val_root_path, val_dataset_name, split='val') 
 logger.info(f"Validation set ({val_dataset_name}): {val_set.__len__()} images")
+sys.stdout.flush() # ADDED: Flush after dataset info
 val_loader = DataLoader(val_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False, collate_fn=custom_collate_fn) 
 
 total_iterations = args['epoch_num'] * len(train_loader)
 logger.info(f"Total training iterations: {total_iterations}")
+sys.stdout.flush() # ADDED: Flush after total iterations
 
 # loss function
 structure_loss = loss.structure_loss().to(device)
@@ -143,6 +148,7 @@ bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
 last_criterion = nn.CrossEntropyLoss(ignore_index=255) 
 logger.info(f"Using BCE+IOU for intermediate losses and CrossEntropy for final prediction.")
+sys.stdout.flush() # ADDED: Flush after loss info
 
 def bce_iou_loss(pred, target):
     bce_out = bce_loss(pred, target)
@@ -168,6 +174,7 @@ def train(net, optimizer):
         for data in train_iterator:
             if data is None: # Skip if collate_fn returned None (entire batch was invalid)
                 logger.warning(f"Epoch {epoch}, Iter {curr_iter}: Skipping empty training batch due to corrupted/missing samples.")
+                sys.stdout.flush() # ADDED: Flush warning
                 continue
 
             if args['poly_train']:
@@ -221,6 +228,7 @@ def train(net, optimizer):
             log_str = f"Epoch: {epoch:03d}/{args['epoch_num']}, Iter: {curr_iter:06d}/{total_iterations}, LR: {base_lr:.6f}, Total_Loss: {loss_record.avg:.5f}, CE_Loss: {loss_0_record.avg:.5f}, Train_mIoU: {current_train_miou:.5f}, Train_mDice: {mDice:.5f}"
             train_iterator.set_description(log_str)
             logger.info(log_str) 
+            sys.stdout.flush() # ADDED: Flush after each train iteration log
 
             curr_iter += 1
         
@@ -236,9 +244,11 @@ def train(net, optimizer):
             else:
                 torch.save(net.state_dict(), checkpoint_path)
             logger.info(f"Epoch {epoch}: Saved best model with mIoU: {best_mIoU:.5f} to {checkpoint_path}")
+            sys.stdout.flush() # ADDED: Flush after saving best
         else:
             patience_counter += 1
             logger.info(f"Epoch {epoch}: Validation mIoU did not improve. Patience counter: {patience_counter}/{args['patience']}")
+            sys.stdout.flush() # ADDED: Flush after patience update
             
         latest_checkpoint_path = os.path.join(ckpt_path, exp_name, 'latest.pth') 
         if isinstance(net, nn.DataParallel):
@@ -246,16 +256,20 @@ def train(net, optimizer):
         else:
             torch.save(net.state_dict(), latest_checkpoint_path)
         logger.info(f"Epoch {epoch}: Saved latest model to {latest_checkpoint_path}")
+        sys.stdout.flush() # ADDED: Flush after saving latest
 
         epoch_end_time = time.perf_counter() 
         epoch_duration = epoch_end_time - epoch_start_time
         logger.info(f"Epoch {epoch} completed in {epoch_duration:.2f} seconds.") 
+        sys.stdout.flush() # ADDED: Flush after epoch completion time
 
         if patience_counter >= args['patience']:
             logger.info(f"Early stopping triggered after {patience_counter} epochs without improvement. Best mIoU: {best_mIoU:.5f}")
+            sys.stdout.flush() # ADDED: Flush after early stopping
             break
             
         logger.info(f"Epoch {epoch} finished. Current best mIoU: {best_mIoU:.5f}")
+        sys.stdout.flush() # ADDED: Flush after epoch summary
 
 
 def validate(net, epoch): 
@@ -267,6 +281,7 @@ def validate(net, epoch):
     for data in val_iterator:
         if data is None: # Skip if collate_fn returned None (entire batch was invalid)
             logger.warning(f"Epoch {epoch}, Validation: Skipping empty validation batch due to corrupted/missing samples.")
+            sys.stdout.flush() # ADDED: Flush warning
             continue
 
         inputs, labels, _ = data['image'], data['label'], data['name'] 
@@ -308,6 +323,8 @@ def validate(net, epoch):
         f'Mean Dice: {mDice:.4f}\n'
     )
     logger.info(val_log_str) 
+    print(val_log_str) # ADDED: Explicit print for validation results
+    sys.stdout.flush() # ADDED: Force flush stdout after validation results
 
     net.train() 
     return np.mean(class_iou)
@@ -315,12 +332,14 @@ def validate(net, epoch):
 
 def main():
     logger.info("Starting training process.")
+    sys.stdout.flush() # ADDED: Flush at start
     
     net = daseg(backbone_path).train()
     net = net.to(device)
 
     if args['optimizer'] == 'Adam':
         logger.info("Using Adam optimizer")
+        sys.stdout.flush() # ADDED: Flush
         optimizer = optim.Adam([
             {'params': [param for name, param in net.named_parameters() if name.endswith('bias')], 
              'lr': 2 * args['lr']},
@@ -329,6 +348,7 @@ def main():
         ])
     else: 
         logger.info("Using SGD optimizer")
+        sys.stdout.flush() # ADDED: Flush
         optimizer = optim.SGD([
             {'params': [param for name, param in net.named_parameters() if name.endswith('bias')],
              'lr': 2 * args['lr']},
@@ -338,6 +358,7 @@ def main():
 
     if args['snapshot']: 
         logger.info(f'Training Resumes From snapshot: {args["snapshot"]}')
+        sys.stdout.flush() # ADDED: Flush
         model_path = os.path.join(ckpt_path, exp_name, args['snapshot'] + '.pth')
         if os.path.exists(model_path):
             state_dict = torch.load(model_path, map_location=device)
@@ -351,18 +372,22 @@ def main():
                 args['last_epoch'] = int(args['snapshot'])
             except ValueError: 
                 logger.warning(f"Snapshot '{args['snapshot']}' is not an epoch number. Resuming from last_epoch=0.")
+                sys.stdout.flush() # ADDED: Flush warning
                 args['last_epoch'] = 0 
             
             logger.info(f"Resuming training from epoch {args['last_epoch']}")
+            sys.stdout.flush() # ADDED: Flush
         else:
             logger.warning(f"Snapshot not found at {model_path}. Starting from scratch.")
+            sys.stdout.flush() # ADDED: Flush warning
 
     net = nn.DataParallel(net) 
     
     train(net, optimizer)
     writer.close()
     logger.info("Training process completed.")
-
+    print("Training process completed.") # ADDED: Explicit print
+    sys.stdout.flush() # ADDED: Flush
 
 if __name__ == '__main__':
     main()
