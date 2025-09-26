@@ -84,8 +84,9 @@ def make_dataset(root, dataset_name):
                         print(f"Warning: Mask not found for COVID image {f}. Skipping.")
 
     elif dataset_name == 'CVC-ClinicDB':
-        image_path = os.path.join(root, 'original')
-        mask_path = os.path.join(root, 'ground truth')
+        # MODIFIED: Corrected path for CVC-ClinicDB to match user's provided case-sensitive paths
+        image_path = os.path.join(root, 'Original') # Changed 'original' to 'Original'
+        mask_path = os.path.join(root, 'Ground Truth') # Changed 'ground truth' to 'Ground Truth'
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"DEBUG: Checking CVC-ClinicDB. Image path: {image_path}, exists: {os.path.exists(image_path)}")
             print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
