@@ -13,6 +13,8 @@ import argparse
 from collections import OrderedDict
 import logging 
 from PIL import Image 
+import torch.utils.data.dataloader # Import dataloader specifically for default_collate
+
 
 from config import backbone_path, DATASET_PATHS 
 
@@ -39,7 +41,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # Add argparse for dataset selection and model snapshot
 parser = argparse.ArgumentParser(description='DANet Testing')
 parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis',
-                    help='Dataset to use for testing (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB, DentalPanoramic, SixDiseasesChestXRay)') # Updated
+                    help='Dataset to use for testing (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB, DentalPanoramic, SixDiseasesChestXRay)') 
 parser.add_argument('--snapshot', type=str, required=True,
                     help='Path to the trained model snapshot (e.g., ckpt/DANet_TSRS_RSNA-Epiphysis/best.pth)')
 parser.add_argument('--batch_size', type=int, default=1, # Default to 1 for testing
@@ -57,7 +59,7 @@ args_parser = parser.parse_args()
 if args_parser.dataset == 'TSRS_RSNA-Epiphysis':
     test_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_test']
     test_dataset_name = 'TSRS_RSNA-Epiphysis_test'
-elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay']: # Updated
+elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay']:
     test_root_path = DATASET_PATHS[args_parser.dataset]
     test_dataset_name = args_parser.dataset
 else:
@@ -94,11 +96,18 @@ def bce_iou_loss(pred, target):
     loss = bce_out + iou_out
     return loss
 
+# Custom collate function to handle None samples
+def custom_collate_fn(batch):
+    # Filter out None samples
+    batch = [item for item in batch if item is not None]
+    if not batch: # If the entire batch was corrupted/skipped
+        return None # Indicate an empty batch
+    return torch.utils.data.dataloader.default_collate(batch)
 
 # Prepare Data Set.
 test_set = ImageFolder(test_root_path, test_dataset_name, split='test')
 logger.info(f"Test set ({test_dataset_name}): {test_set.__len__()} images")
-test_loader = DataLoader(test_set, batch_size=args['batch_size'], num_workers=0, shuffle=False) # Use batch_size from args
+test_loader = DataLoader(test_set, batch_size=args['batch_size'], num_workers=0, shuffle=False, collate_fn=custom_collate_fn) # Use custom collate_fn
 
 
 def evaluate(net):
@@ -109,6 +118,10 @@ def evaluate(net):
     
     test_iterator = tqdm(test_loader, total=len(test_loader), desc="Testing")
     for data in test_iterator:
+        if data is None: # Skip if collate_fn returned None (entire batch was invalid)
+            logger.warning(f"Testing: Iter {curr_iter}: Skipping empty test batch due to corrupted/missing samples.")
+            continue
+
         inputs, labels, name_tuple = data['image'], data['label'], data['name']
         
         pname = os.path.basename(name_tuple[0][0]) 

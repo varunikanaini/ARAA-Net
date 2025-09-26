@@ -10,7 +10,7 @@ Created on 2022-12-13 09:54:12
 import os
 import os.path
 import torch.utils.data as data
-from PIL import Image
+from PIL import Image, UnidentifiedImageError # Import UnidentifiedImageError
 import numpy as np
 import random 
 
@@ -84,9 +84,8 @@ def make_dataset(root, dataset_name):
                         print(f"Warning: Mask not found for COVID image {f}. Skipping.")
 
     elif dataset_name == 'CVC-ClinicDB':
-        # MODIFIED: Corrected path for CVC-ClinicDB to match user's provided case-sensitive paths
-        image_path = os.path.join(root, 'Original') # Changed 'original' to 'Original'
-        mask_path = os.path.join(root, 'Ground Truth') # Changed 'ground truth' to 'Ground Truth'
+        image_path = os.path.join(root, 'Original') # Corrected casing
+        mask_path = os.path.join(root, 'Ground Truth') # Corrected casing
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"DEBUG: Checking CVC-ClinicDB. Image path: {image_path}, exists: {os.path.exists(image_path)}")
             print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
@@ -195,9 +194,13 @@ class ImageFolder(data.Dataset):
 
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]
-        img = Image.open(img_path).convert('RGB')
-        target = Image.open(gt_path)
-        label = self.convert_label(target)
+        try: # Added try-except block
+            img = Image.open(img_path).convert('RGB')
+            target = Image.open(gt_path)
+            label = self.convert_label(target)
+        except (UnidentifiedImageError, FileNotFoundError) as e:
+            print(f"ERROR: Could not open image or mask for paths: {img_path}, {gt_path}. Error: {e}. Skipping this sample.")
+            return None # Return None if image opening fails
         
         sample = {'image': img, 'label': label}
         if self.split == "train":

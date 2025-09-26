@@ -12,6 +12,7 @@ import os
 import argparse 
 import logging 
 from collections import OrderedDict 
+import torch.utils.data.dataloader # Import dataloader specifically for default_collate
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
@@ -42,7 +43,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Add argparse for all configurable parameters
 parser = argparse.ArgumentParser(description='DANet Training')
 parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis',
-                    help='Dataset to use for training (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB, DentalPanoramic, SixDiseasesChestXRay)') # Updated
+                    help='Dataset to use for training (TSRS_RSNA-Epiphysis, JSRT, COVID19_Radiography, CVC-ClinicDB, DentalPanoramic, SixDiseasesChestXRay)') 
 parser.add_argument('--epoch_num', type=int, default=100,
                     help='Number of training epochs')
 parser.add_argument('--train_batch_size', type=int, default=5, 
@@ -81,7 +82,7 @@ if args_parser.dataset == 'TSRS_RSNA-Epiphysis':
     val_root_path = DATASET_PATHS['TSRS_RSNA-Epiphysis_test'] 
     train_dataset_name = 'TSRS_RSNA-Epiphysis_train'
     val_dataset_name = 'TSRS_RSNA-Epiphysis_test'
-elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay']: # Updated
+elif args_parser.dataset in ['JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay']:
     train_root_path = DATASET_PATHS[args_parser.dataset]
     val_root_path = DATASET_PATHS[args_parser.dataset]
     train_dataset_name = args_parser.dataset
@@ -116,14 +117,22 @@ args = vars(args_parser)
 logger.info(f"Training arguments: {args}")
 logger.info(f"Training dataset: {train_dataset_name}, Validation dataset: {val_dataset_name}")
 
+# Custom collate function to handle None samples
+def custom_collate_fn(batch):
+    # Filter out None samples
+    batch = [item for item in batch if item is not None]
+    if not batch: # If the entire batch was corrupted/skipped
+        return None # Indicate an empty batch
+    return torch.utils.data.dataloader.default_collate(batch)
+
 # Prepare Data Set.
 train_set = ImageFolder(train_root_path, train_dataset_name, split='train')
 logger.info(f"Train set ({train_dataset_name}): {train_set.__len__()} images")
-train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=0, shuffle=True)
+train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
 
 val_set = ImageFolder(val_root_path, val_dataset_name, split='val') 
 logger.info(f"Validation set ({val_dataset_name}): {val_set.__len__()} images")
-val_loader = DataLoader(val_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False) 
+val_loader = DataLoader(val_set, batch_size=args['eval_batch_size'], num_workers=0, shuffle=False, collate_fn=custom_collate_fn) 
 
 total_iterations = args['epoch_num'] * len(train_loader)
 logger.info(f"Total training iterations: {total_iterations}")
@@ -157,6 +166,10 @@ def train(net, optimizer):
         train_iterator = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Train)")
         
         for data in train_iterator:
+            if data is None: # Skip if collate_fn returned None (entire batch was invalid)
+                logger.warning(f"Epoch {epoch}, Iter {curr_iter}: Skipping empty training batch due to corrupted/missing samples.")
+                continue
+
             if args['poly_train']:
                 base_lr = args['lr'] * (1 - float(curr_iter) / float(total_iterations)) ** args['lr_decay']
                 optimizer.param_groups[0]['lr'] = 2 * base_lr
@@ -252,6 +265,10 @@ def validate(net, epoch):
 
     val_iterator = tqdm(val_loader, total=len(val_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Val)")
     for data in val_iterator:
+        if data is None: # Skip if collate_fn returned None (entire batch was invalid)
+            logger.warning(f"Epoch {epoch}, Validation: Skipping empty validation batch due to corrupted/missing samples.")
+            continue
+
         inputs, labels, _ = data['image'], data['label'], data['name'] 
         
         batch_size = inputs.size(0)
@@ -330,9 +347,9 @@ def main():
                 new_state_dict[name] = v
             net.load_state_dict(new_state_dict)
             
-            try: # Try to parse epoch number if snapshot is purely numeric
+            try: 
                 args['last_epoch'] = int(args['snapshot'])
-            except ValueError: # If snapshot is 'best' or 'latest'
+            except ValueError: 
                 logger.warning(f"Snapshot '{args['snapshot']}' is not an epoch number. Resuming from last_epoch=0.")
                 args['last_epoch'] = 0 
             
