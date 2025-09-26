@@ -10,9 +10,10 @@ Created on 2022-12-13 09:54:12
 import os
 import os.path
 import torch.utils.data as data
-from PIL import Image, UnidentifiedImageError # Import UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError 
 import numpy as np
 import random 
+import cv2 # ADDED: Import OpenCV
 
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -194,13 +195,32 @@ class ImageFolder(data.Dataset):
 
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]
-        try: # Added try-except block
-            img = Image.open(img_path).convert('RGB')
-            target = Image.open(gt_path)
+        try:
+            # Use OpenCV for more robust TIFF reading
+            img_np = cv2.imread(img_path)
+            # Read mask as grayscale to ensure it's 2D for convert_label
+            mask_np = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE) 
+
+            if img_np is None:
+                raise FileNotFoundError(f"OpenCV could not read image: {img_path}. File might be corrupted or path incorrect.")
+            if mask_np is None:
+                raise FileNotFoundError(f"OpenCV could not read mask: {gt_path}. File might be corrupted or path incorrect.")
+
+            # Convert OpenCV's BGR to RGB if it's a color image
+            if img_np.ndim == 3 and img_np.shape[2] == 3:
+                img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
+            
+            # Convert NumPy arrays to PIL Images for compatibility with existing transforms
+            img = Image.fromarray(img_np)
+            # Ensure mask_np is 2D before converting to PIL Image 'L' mode
+            if mask_np.ndim == 3: # If mask was read as 3 channels, take one.
+                mask_np = mask_np[:, :, 0]
+            target = Image.fromarray(mask_np, mode='L') # 'L' mode for grayscale
+
             label = self.convert_label(target)
-        except (UnidentifiedImageError, FileNotFoundError) as e:
-            print(f"ERROR: Could not open image or mask for paths: {img_path}, {gt_path}. Error: {e}. Skipping this sample.")
-            return None # Return None if image opening fails
+        except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError) as e: # Catch cv2.error and general ValueError
+            print(f"ERROR: Could not open/process image or mask for paths: {img_path}, {gt_path}. Error: {e}. Skipping this sample.")
+            return None 
         
         sample = {'image': img, 'label': label}
         if self.split == "train":
