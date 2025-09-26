@@ -31,10 +31,11 @@ def make_dataset(root, dataset_name):
         image_path = root
         mask_path = root + '_labels'
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
+            print(f"DEBUG: Checking TSRS_RSNA-Epiphysis_train/test. Image path: {image_path}, exists: {os.path.exists(image_path)}")
+            print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
             print(f"Warning: {dataset_name} paths not found: {image_path}, {mask_path}. Returning empty dataset.")
             return []
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.jpg')]
-        # This dataset is already split by folder, so we directly return its images
         return [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
     
     # For datasets that need programmatic splitting, gather all images first
@@ -42,6 +43,8 @@ def make_dataset(root, dataset_name):
         image_path = os.path.join(root, 'content', 'jsrt', 'cxr')
         mask_path = os.path.join(root, 'content', 'jsrt', 'masks')
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
+            print(f"DEBUG: Checking JSRT. Image path: {image_path}, exists: {os.path.exists(image_path)}")
+            print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
             print(f"Warning: JSRT paths not found: {image_path}, {mask_path}. Did the download complete and extract correctly? Returning empty dataset.")
             return []
         for f in os.listdir(image_path):
@@ -56,15 +59,17 @@ def make_dataset(root, dataset_name):
     elif dataset_name == 'COVID19_Radiography':
         base_dataset_folder = os.path.join(root, 'COVID-19_Radiography_Dataset')
         subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia']
-        print(f"Attempting to load COVID19_Radiography from: {base_dataset_folder}")
+        print(f"DEBUG: Checking COVID19_Radiography. Base path: {base_dataset_folder}, exists: {os.path.exists(base_dataset_folder)}")
         for sub_name in subfolders:
             sub_image_path = os.path.join(base_dataset_folder, sub_name, 'images')
             sub_mask_path = os.path.join(base_dataset_folder, sub_name, 'masks')
             
             if not os.path.exists(sub_image_path):
+                print(f"DEBUG: Image path for {sub_name}: {sub_image_path}, exists: {os.path.exists(sub_image_path)}")
                 print(f"Warning: Image path {sub_image_path} not found for {sub_name}. Skipping this class.")
                 continue
             if not os.path.exists(sub_mask_path):
+                print(f"DEBUG: Mask path for {sub_name}: {sub_mask_path}, exists: {os.path.exists(sub_mask_path)}")
                 print(f"Warning: Mask path {sub_mask_path} not found for {sub_name}. Skipping this class. Please ensure masks are present if you intend to train/validate segmentation.")
                 continue
             
@@ -82,6 +87,8 @@ def make_dataset(root, dataset_name):
         image_path = os.path.join(root, 'original')
         mask_path = os.path.join(root, 'ground truth')
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
+            print(f"DEBUG: Checking CVC-ClinicDB. Image path: {image_path}, exists: {os.path.exists(image_path)}")
+            print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
             print(f"Warning: CVC-ClinicDB paths not found: {image_path}, {mask_path}. Please ensure manual copy is correct. Returning empty dataset.")
             return []
         for f in os.listdir(image_path):
@@ -95,11 +102,12 @@ def make_dataset(root, dataset_name):
                     print(f"Warning: Mask not found for CVC image {f}. Skipping.")
     
     elif dataset_name == 'DentalPanoramic':
-        # User confirmed root is e.g., 'data/dental_panoramic_xrays' which contains 'images', 'segmentation_1', etc.
         image_path = os.path.join(root, 'images')
         mask_path = os.path.join(root, 'segmentation_1') # Using segmentation_1 by default
         
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
+            print(f"DEBUG: Checking DentalPanoramic. Image path: {image_path}, exists: {os.path.exists(image_path)}")
+            print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
             print(f"Warning: DentalPanoramic paths not found: {image_path}, {mask_path}. Returning empty dataset.")
             return []
         
@@ -107,7 +115,6 @@ def make_dataset(root, dataset_name):
             if f.lower().endswith(IMAGE_EXTENSIONS):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
-                # Assuming masks have same name and .png extension for DentalPanoramic
                 mask_full_path = os.path.join(mask_path, img_name_base + '.png') 
                 if os.path.exists(mask_full_path):
                     img_list.append((img_full_path, mask_full_path))
@@ -115,11 +122,11 @@ def make_dataset(root, dataset_name):
                     print(f"Warning: Mask not found for DentalPanoramic image {f}. Skipping.")
 
     elif dataset_name == 'SixDiseasesChestXRay':
-        # User confirmed root is e.g., 'data/Dataset' which contains 'train' folder
         base_dataset_folder = os.path.join(root, 'train')
         subfolders = ['covid', 'normal', 'tuberculosis', 'bacterial pneumonia', 'pneumothorax', 'viral pneumonia']
         
         if not os.path.exists(base_dataset_folder):
+            print(f"DEBUG: Checking SixDiseasesChestXRay. Base path: {base_dataset_folder}, exists: {os.path.exists(base_dataset_folder)}")
             print(f"Warning: SixDiseasesChestXRay base path not found: {base_dataset_folder}. Returning empty dataset.")
             return []
 
@@ -128,9 +135,11 @@ def make_dataset(root, dataset_name):
             sub_mask_path = os.path.join(base_dataset_folder, sub_name, 'masks')
             
             if not os.path.exists(sub_image_path):
+                print(f"DEBUG: Image path for {sub_name}: {sub_image_path}, exists: {os.path.exists(sub_image_path)}")
                 print(f"Warning: Image path {sub_image_path} not found for {sub_name}. Skipping this class.")
                 continue
             if not os.path.exists(sub_mask_path):
+                print(f"DEBUG: Mask path for {sub_name}: {sub_mask_path}, exists: {os.path.exists(sub_mask_path)}")
                 print(f"Warning: Mask path {sub_mask_path} not found for {sub_name}. Skipping this class. Please ensure masks are present.")
                 continue
             
@@ -159,10 +168,9 @@ class ImageFolder(data.Dataset):
         self.split = split
         self.label_mapping = {val: 1 if val > 0 else 0 for val in range(-1, 31)} 
 
-        # For TSRS_RSNA-Epiphysis, make_dataset already returns a split specific list
         if 'TSRS_RSNA-Epiphysis' in dataset_name: 
             self.imgs = make_dataset(root, dataset_name)
-        else: # For datasets that need programmatic splitting (JSRT, COVID, CVC, Dental, SixDiseases)
+        else: # For datasets that need programmatic splitting
             all_imgs = make_dataset(root, dataset_name)
             
             random.seed(42) # For reproducibility
@@ -171,7 +179,6 @@ class ImageFolder(data.Dataset):
             total_size = len(all_imgs)
             train_size = int(0.8 * total_size)
             val_size = int(0.1 * total_size)
-            # Test size is the rest
             
             if split == 'train':
                 self.imgs = all_imgs[:train_size]
