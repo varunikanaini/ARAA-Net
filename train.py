@@ -60,7 +60,7 @@ parser.add_argument('--weight_decay', type=float, default=5e-4,
 parser.add_argument('--momentum', type=float, default=0.9,
                     help='Momentum for SGD optimizer')
 parser.add_argument('--snapshot', type=str, default='',
-                    help='Path to a model snapshot to resume training (e.g., best or epoch number)')
+                    help='Path to a model snapshot to resume training (e.g., best or latest)') # Updated description
 parser.add_argument('--scale_w', type=int, default=576,
                     help='Width to scale input images to (Note: Actual transform sizes are fixed to 576x896 and 576x576 for crop as per paper).')
 parser.add_argument('--scale_h', type=int, default=896,
@@ -217,7 +217,7 @@ def train(net, optimizer):
         # Validation after each epoch
         current_val_mIoU = validate(net, epoch) 
         writer.add_scalar('val/miou', current_val_mIoU, epoch)
-        logger.info(f"Epoch {epoch} validation mIoU: {current_val_mIoU:.5f}") # Print val mIoU to screen/log
+        # logger.info(f"Epoch {epoch} validation mIoU: {current_val_mIoU:.5f}") # Moved into validate func now
 
         if current_val_mIoU > best_mIoU:
             best_mIoU = current_val_mIoU
@@ -232,7 +232,8 @@ def train(net, optimizer):
             patience_counter += 1
             logger.info(f"Epoch {epoch}: Validation mIoU did not improve. Patience counter: {patience_counter}/{args['patience']}")
             
-        latest_checkpoint_path = os.path.join(ckpt_path, exp_name, f'{epoch}.pth')
+        # Save latest checkpoint at the end of every epoch
+        latest_checkpoint_path = os.path.join(ckpt_path, exp_name, 'latest.pth') # Fixed name to latest.pth
         if isinstance(net, nn.DataParallel):
             torch.save(net.module.state_dict(), latest_checkpoint_path)
         else:
@@ -336,10 +337,12 @@ def main():
                 new_state_dict[name] = v
             net.load_state_dict(new_state_dict)
             
-            try:
+            # If snapshot is 'latest', don't try to parse epoch number.
+            # If it's a number, set last_epoch.
+            if args['snapshot'].isdigit():
                 args['last_epoch'] = int(args['snapshot'])
-            except ValueError:
-                args['last_epoch'] = 0 
+            else: # e.g., 'best' or 'latest'
+                args['last_epoch'] = 0 # Or find latest epoch from directory if desired, but 0 is safe.
             
             logger.info(f"Resuming training from epoch {args['last_epoch']}")
         else:

@@ -11,7 +11,8 @@ import datetime
 import os
 import argparse 
 from collections import OrderedDict
-import logging # Import logging
+import logging 
+from PIL import Image # ADDED: Import PIL.Image to fix NameError
 
 from config import backbone_path, DATASET_PATHS 
 
