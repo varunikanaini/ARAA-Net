@@ -27,7 +27,15 @@ from train_lasa_vgg import FocalLoss, DiceLoss
 
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Dataset used for training')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
+                        choices=[
+                            'TSRS_RSNA-Epiphysis', 
+                            'jsrt-247-image-lung-segmentation-mask-dataset', 
+                            'covid19-radiography-database', 
+                            'CVC-ClinicDB', 
+                            'dental_panoramic_xrays', 
+                            'Dataset' # For SixDiseasesChestXRay
+                        ], help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
@@ -77,7 +85,15 @@ def main():
     
     # --- Construct the correct experiment name to find the checkpoint ---
     # This MUST match the naming convention used in train_lasa_vgg.py
-    EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    # Replaced long dataset names with shorter aliases for folder naming
+    exp_name_dataset_alias = args.dataset_name.replace('TSRS_RSNA-', '').lower()
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('jsrt-247-image-lung-segmentation-mask-dataset', 'jsrt')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('covid19-radiography-database', 'covid')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('CVC-ClinicDB', 'cvc')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('dental_panoramic_xrays', 'dental')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('Dataset', 'sixdiseases') # For SixDiseasesChestXRay
+
+    EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{exp_name_dataset_alias}"
     log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
     check_mkdir(log_dir) # Ensure log directory exists
     setup_logging(log_dir) # Setup logging for this specific test run
@@ -86,20 +102,23 @@ def main():
     logging.info(f"Arguments: {args}")
 
     # --- Load the 'test' split of the data ---
-    dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
-    # Assume 'test' split exists. If not, fallback to 'val' and log a warning.
-    test_data_path = os.path.join(dataset_path, 'test') 
-    if not os.path.exists(test_data_path):
-        logging.warning(f"Test data not found at '{test_data_path}'. Falling back to 'val' split for testing.")
-        test_data_path = os.path.join(dataset_path, 'val')
+    dataset_base_path = os.path.join(DATA_ROOT, args.dataset_name)
+
+    if args.dataset_name == 'TSRS_RSNA-Epiphysis':
+        test_data_path = os.path.join(dataset_base_path, 'test') 
         if not os.path.exists(test_data_path):
-            logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for testing at '{test_data_path}'.")
-            sys.exit(1)
-
-
+            logging.warning(f"Test data for {args.dataset_name} not found at '{test_data_path}'. Falling back to 'val' split for testing.")
+            test_data_path = os.path.join(dataset_base_path, 'val')
+            if not os.path.exists(test_data_path):
+                logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for testing {args.dataset_name} at '{test_data_path}'.")
+                sys.exit(1)
+    else:
+        # For new datasets, ImageFolder will handle internal structure and programmatic splits
+        test_data_path = dataset_base_path # Pass the base path, ImageFolder does the split
+        
     test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False)
-    logging.info(f"Found {len(test_set)} testing images in '{test_data_path}'.")
+    logging.info(f"Found {len(test_set)} testing images in '{test_data_path}' for dataset '{args.dataset_name}'.")
 
     # --- Load the BEST trained model ---
     checkpoint_to_load = os.path.join(log_dir, 'best_checkpoint.pth')
@@ -123,6 +142,10 @@ def main():
 
     with torch.no_grad():
         for data in tqdm(test_loader, desc="Testing"):
+            if data is None: # Skip if collate_fn returned None (entire batch was invalid)
+                logging.warning(f"Skipping empty test batch due to corrupted/missing samples.")
+                continue
+
             inputs, labels = data['image'].to(DEVICE), data['label'].to(DEVICE)
             
             outputs = net(inputs) 

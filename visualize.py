@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/visualize_lasa_vgg.py (FINAL & CORRECTED)
+# /kaggle/working/ARAA-Net/visualize.py (FINAL & CORRECTED)
 import torch
 import argparse
 import os
@@ -26,7 +26,15 @@ def setup_logging_visualize(log_dir, filename='visualization.log'):
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize LASA-Unet predictions')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Articular-Surface', help='Dataset used for training')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
+                        choices=[
+                            'TSRS_RSNA-Epiphysis', 
+                            'jsrt-247-image-lung-segmentation-mask-dataset', 
+                            'covid19-radiography-database', 
+                            'CVC-ClinicDB', 
+                            'dental_panoramic_xrays', 
+                            'Dataset' # For SixDiseasesChestXRay
+                        ], help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
     parser.add_argument('--image-index', type=int, default=0, help='Index of the test image to visualize (0-indexed)') # Default to 0 for first image
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
@@ -52,7 +60,15 @@ def main():
     
     # Construct the experiment name to find the checkpoint
     # This MUST match the naming convention used in train_lasa_vgg.py
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    # Replaced long dataset names with shorter aliases for folder naming
+    exp_name_dataset_alias = args.dataset_name.replace('TSRS_RSNA-', '').lower()
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('jsrt-247-image-lung-segmentation-mask-dataset', 'jsrt')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('covid19-radiography-database', 'covid')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('CVC-ClinicDB', 'cvc')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('dental_panoramic_xrays', 'dental')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('Dataset', 'sixdiseases') # For SixDiseasesChestXRay
+
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{exp_name_dataset_alias}"
     output_dir = os.path.join(CKPT_ROOT, 'visual_results', exp_name)
     check_mkdir(output_dir)
     setup_logging_visualize(output_dir) # Setup logging for this specific visualization run
@@ -72,26 +88,36 @@ def main():
     logging.info(f"✅ Model loaded from {model_path}")
 
     # Load image from the 'test' split (or 'val' if no 'test' folder)
-    test_data_path = os.path.join(DATA_ROOT, args.dataset_name, 'test')
-    if not os.path.exists(test_data_path):
-        logging.warning(f"Test data not found at '{test_data_path}'. Using 'val' split for visualization.")
-        test_data_path = os.path.join(DATA_ROOT, args.dataset_name, 'val')
+    dataset_base_path = os.path.join(DATA_ROOT, args.dataset_name)
+
+    if args.dataset_name == 'TSRS_RSNA-Epiphysis':
+        test_data_path = os.path.join(dataset_base_path, 'test')
         if not os.path.exists(test_data_path):
-            logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for visualization at '{test_data_path}'.")
-            sys.exit(1)
+            logging.warning(f"Test data for {args.dataset_name} not found at '{test_data_path}'. Using 'val' split for visualization.")
+            test_data_path = os.path.join(dataset_base_path, 'val')
+            if not os.path.exists(test_data_path):
+                logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for visualization for {args.dataset_name} at '{test_data_path}'.")
+                sys.exit(1)
+    else:
+        # For new datasets, ImageFolder will handle internal structure and programmatic splits
+        test_data_path = dataset_base_path # Pass the base path, ImageFolder does the split
             
     test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
 
     if args.image_index >= len(test_set) or args.image_index < 0:
-        logging.error(f"❌ ERROR: Image index {args.image_index} is out of bounds. Dataset has {len(test_set)} images.")
+        logging.error(f"❌ ERROR: Image index {args.image_index} is out of bounds. Dataset has {len(test_set)} images for {args.dataset_name}.")
         sys.exit(1)
 
     sample = test_set[args.image_index]
+    if sample is None:
+        logging.error(f"❌ ERROR: Sample at index {args.image_index} is corrupted or could not be loaded. Exiting.")
+        sys.exit(1)
+
     image_tensor = sample['image'].unsqueeze(0).to(device)
     label_tensor = sample['label']
     
-    # Ensure 'name' is retrieved correctly, it's a list from ImageFolder if batch_size > 1, but here batch_size=1
-    image_name = sample['name'] if not isinstance(sample['name'], list) else sample['name'][0]
+    # Ensure 'name' is retrieved correctly, it's a string
+    image_name = sample['name']
     logging.info(f"✅ Visualizing image: {image_name} (index {args.image_index})")
 
     with torch.no_grad():
@@ -114,7 +140,7 @@ def main():
     axes[2].imshow(prediction_mask, cmap='gray'); axes[2].set_title("Model's Prediction"); axes[2].axis('off')
 
     # Save path includes experiment name and image identifier
-    save_path = os.path.join(output_dir, f"visual_result_{image_name}_index_{args.image_index}.png")
+    save_path = os.path.join(output_dir, f"visual_result_{image_name.replace('.png', '').replace('.jpg', '')}_index_{args.image_index}.png")
     plt.savefig(save_path, bbox_inches='tight')
     logging.info(f"✅ Visualization saved to {save_path}")
     plt.show() # Uncomment if you want to display plot in interactive environments

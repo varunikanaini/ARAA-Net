@@ -138,4 +138,4 @@ class LASA_Unet(nn.Module): # Renamed for general backbone compatibility (can be
         
         return tuple(aux_outputs + [final_output_upsampled])
 
-LASA_VGG_Unet = LASA_Unet 
+LASA_VGG_Unet = LASA_Unet

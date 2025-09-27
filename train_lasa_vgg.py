@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for new preprocessing arguments)
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for new preprocessing arguments and multi-dataset support)
 import os
 import time
 import sys
@@ -80,8 +80,8 @@ class DiceLoss(nn.Module):
             pred_probs = pred_probs * mask.unsqueeze(1)
             true_oh = true_oh * mask.unsqueeze(1)
         
-        pred_probs = pred_probs.view(-1)
-        true_oh = true_oh.view(-1)
+        pred_probs = pred_probs.contiguous().view(-1) # Use contiguous() before view()
+        true_oh = true_oh.contiguous().view(-1)
 
         intersection = (pred_probs * true_oh).sum()
         dice = (2. * intersection + self.smooth) / (pred_probs.sum() + true_oh.sum() + self.smooth)
@@ -99,7 +99,15 @@ class DiceLoss(nn.Module):
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
-    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface'], help='Name of the dataset')
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
+                        choices=[
+                            'TSRS_RSNA-Epiphysis', 
+                            'jsrt-247-image-lung-segmentation-mask-dataset', 
+                            'covid19-radiography-database', 
+                            'CVC-ClinicDB', 
+                            'dental_panoramic_xrays', 
+                            'Dataset' # For SixDiseasesChestXRay
+                        ], help='Name of the dataset')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to use')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=3)
@@ -176,6 +184,10 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
     loss_recorder = AvgMeter()
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
+            if data is None: # Skip if collate_fn returned None (entire batch was invalid)
+                logging.warning(f"Skipping empty {mode} batch due to corrupted/missing samples.")
+                continue
+
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
             outputs = net(inputs) 
@@ -210,17 +222,33 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}" # <<< CHANGED exp_name
+    # Replaced long dataset names with shorter aliases for folder naming
+    exp_name_dataset_alias = args.dataset_name.replace('TSRS_RSNA-', '').lower()
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('jsrt-247-image-lung-segmentation-mask-dataset', 'jsrt')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('covid19-radiography-database', 'covid')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('CVC-ClinicDB', 'cvc')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('dental_panoramic_xrays', 'dental')
+    exp_name_dataset_alias = exp_name_dataset_alias.replace('Dataset', 'sixdiseases') # For SixDiseasesChestXRay
+
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{exp_name_dataset_alias}" # <<< CHANGED exp_name
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
 
     logging.info(f"Starting operation for '{exp_name}' with arguments: {args}")
 
-    dataset_path = os.path.join(DATA_ROOT, args.dataset_name)
-    train_path = os.path.join(dataset_path, 'train')
-    val_path = os.path.join(dataset_path, 'val')
+    dataset_base_path = os.path.join(DATA_ROOT, args.dataset_name)
     
+    # Conditional path construction for different datasets
+    if args.dataset_name == 'TSRS_RSNA-Epiphysis':
+        # Original logic for TSRS, paths point directly to train/val subfolders
+        train_data_root = os.path.join(dataset_base_path, 'train')
+        val_data_root = os.path.join(dataset_base_path, 'val')
+    else:
+        # For new datasets, ImageFolder handles internal structure and programmatic splits
+        train_data_root = dataset_base_path # Pass the base path, ImageFolder does the split
+        val_data_root = dataset_base_path   # Pass the base path, ImageFolder does the split
+
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
@@ -240,7 +268,9 @@ def main():
             logging.error(f"Error loading model from checkpoint: {e}")
             sys.exit(1)
 
-        test_set_for_eval = ImageFolder(val_path, args, split='val') 
+        # For test_only, evaluate on the validation split or test split if available
+        # ImageFolder will determine the actual split based on 'split' argument for new datasets
+        test_set_for_eval = ImageFolder(val_data_root, args, split='val') # Use 'val' for consistent evaluation during training
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
 
         test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, dice_loss_fn, 
@@ -256,6 +286,13 @@ def main():
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     
+    # Custom collate function to handle None samples
+    def custom_collate_fn(batch):
+        batch = [item for item in batch if item is not None]
+        if not batch:
+            return None # Indicate an empty batch
+        return torch.utils.data.dataloader.default_collate(batch)
+
     if os.path.exists(latest_checkpoint_path):
         try:
             ckpt = torch.load(latest_checkpoint_path, map_location=device)
@@ -270,10 +307,10 @@ def main():
         except Exception as e:
             logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
 
-    train_set = ImageFolder(train_path, args, split='train') 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True)
-    test_set = ImageFolder(val_path, args, split='val') 
-    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True)
+    train_set = ImageFolder(train_data_root, args, split='train') 
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True, collate_fn=custom_collate_fn)
+    test_set = ImageFolder(val_data_root, args, split='val') 
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
 
     for epoch in range(start_epoch, args.epochs):
@@ -281,6 +318,10 @@ def main():
         loss_recorder = AvgMeter()
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         for data in train_iterator:
+            if data is None: # Skip if collate_fn returned None (entire batch was invalid)
+                logging.warning(f"Epoch {epoch+1}: Skipping empty training batch due to corrupted/missing samples.")
+                continue
+
             inputs, labels = data['image'].to(device), data['label'].to(device)
             optimizer.zero_grad(set_to_none=True)
             
