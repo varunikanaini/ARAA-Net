@@ -13,11 +13,12 @@ DATASET_NAME = 'PLACEHOLDER_FOR_DYNAMIC_SELECTION'
 # --- Define paths for all datasets ---
 # These paths assume the datasets are organized under DATA_ROOT
 # For Kaggle environments, you might need to manually copy input datasets
-# to these DATA_ROOT subdirectories as the script does not handle downloads.
+# to these DATA_ROOT subdirectories.
 
 DATASET_PATHS = {
-    # Original dataset
+    # Original datasets (assuming Articular-Surface is also structured like Epiphysis)
     'TSRS_RSNA-Epiphysis': os.path.join(DATA_ROOT, 'TSRS_RSNA-Epiphysis'),
+    'TSRS_RSNA-Articular-Surface': os.path.join(DATA_ROOT, 'TSRS_RSNA-Articular-Surface'),
     # New datasets
     'JSRT': os.path.join(DATA_ROOT, 'jsrt-247-image-lung-segmentation-mask-dataset'),
     'COVID19_Radiography': os.path.join(DATA_ROOT, 'covid19-radiography-database'),
@@ -26,9 +27,6 @@ DATASET_PATHS = {
     'SixDiseasesChestXRay': os.path.join(DATA_ROOT, 'Dataset'), # The root folder in the user's reference code
 }
 
-# Ensure DATA_ROOT and CKPT_ROOT exist (if not handled by Kaggle or environment)
+# Ensure DATA_ROOT and CKPT_ROOT exist
 os.makedirs(DATA_ROOT, exist_ok=True)
 os.makedirs(CKPT_ROOT, exist_ok=True)
-
-# Placeholder for backbone path, if used
-# backbone_path = './backbone/resnet/resnet50-19c8e357.pth'

@@ -1,5 +1,3 @@
-# /kaggle/working/ARAA-Net/datasets.py (FINAL VERSION WITH DASEG-ALIGNED PREPROCESSING)
-
 import os
 import torch.utils.data as data
 from PIL import Image, UnidentifiedImageError
@@ -17,26 +15,27 @@ MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 def make_dataset(root, dataset_name):
     dataset_items = []
 
-    if dataset_name == 'TSRS_RSNA-Epiphysis':
-        image_path = root
+    # Handling TSRS_RSNA-Epiphysis and TSRS_RSNA-Articular-Surface (assuming similar structure)
+    if 'TSRS_RSNA' in dataset_name:
+        image_path = root # 'root' here will be e.g., DATA_ROOT/TSRS_RSNA-Epiphysis/train
         if os.path.exists(os.path.join(root, 'GT')):
             mask_path = os.path.join(root, 'GT')
-        elif os.path.exists(root + '_labels'):
+        elif os.path.exists(root + '_labels'): # Matches original DASEG structure e.g., val_labels
             mask_path = root + '_labels'
         else:
-            print(f"DEBUG: TSRS_RSNA-Epiphysis: Could not find label directory for {root}. Looked in '{os.path.join(root, 'GT')}' and '{root + '_labels'}'.")
+            print(f"DEBUG: {dataset_name}: Could not find label directory for {root}. Looked in '{os.path.join(root, 'GT')}' and '{root + '_labels'}'.")
             return []
         
         for f in os.listdir(image_path):
             if f.lower().endswith(('.png', '.jpg', '.jpeg')):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
-                mask_full_path = os.path.join(mask_path, img_name_base + '.png')
+                mask_full_path = os.path.join(mask_path, img_name_base + '.png') # Assuming masks are png
                 
                 if os.path.exists(img_full_path) and os.path.exists(mask_full_path):
                     dataset_items.append((img_full_path, mask_full_path))
                 else:
-                    print(f"Warning: Missing image or mask for {img_name_base} in TSRS_RSNA-Epiphysis. Skipping.")
+                    print(f"Warning: Missing image or mask for {img_name_base} in {dataset_name}. Skipping.")
 
     elif dataset_name == 'JSRT':
         image_path = os.path.join(root, 'content', 'jsrt', 'cxr')
@@ -151,22 +150,22 @@ class ImageFolder(data.Dataset):
         
         all_imgs = make_dataset(root, dataset_name)
         
-        if dataset_name == 'TSRS_RSNA-Epiphysis':
-            self.imgs = all_imgs
-        else:
-            random.seed(42)
+        if 'TSRS_RSNA' in dataset_name:
+            self.imgs = all_imgs # For TSRS, 'root' is already specific to train/val
+        else: # For other datasets, perform programmatic splitting
+            random.seed(42) # For reproducibility
             random.shuffle(all_imgs)
             
             total_size = len(all_imgs)
             train_size = int(0.8 * total_size)
-            val_size = int(0.1 * total_size)
+            val_size = int(0.1 * total_size) # 10% for validation
             
             if split == 'train':
                 self.imgs = all_imgs[:train_size]
             elif split == 'val':
                 self.imgs = all_imgs[train_size : train_size + val_size]
             elif split == 'test':
-                self.imgs = all_imgs[train_size + val_size :]
+                self.imgs = all_imgs[train_size + val_size :] # Remaining 10% for test
             else:
                 raise ValueError(f"Invalid split '{split}'. Must be 'train', 'val', or 'test'.")
 
@@ -179,29 +178,32 @@ class ImageFolder(data.Dataset):
         min_bbox_w = args.min_bbox_w
 
         # --- DASEG's fixed preprocessing dimensions (hardcoded for faithful comparison) ---
+        # These values override any --scale-h/--scale-w passed via command line
+        # to ensure the LASA-Unet model processes images at the exact same resolution
+        # as the DASEG model's internal hardcoded transformations.
         DASEG_FIXED_RESIZE_W = 576
-        DASEG_FIXED_RESIZE_H = 896
-        DASEG_TRAIN_CROP_H = 576
+        DASEG_FIXED_RESIZE_H = 896 # DASEG FixedResize(w=576, h=896)
+        DASEG_TRAIN_CROP_H = 576 # DASEG RandomCrop((576,576))
         DASEG_TRAIN_CROP_W = 576
         # --- END DASEG dimensions ---
 
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(w=DASEG_FIXED_RESIZE_W, h=DASEG_FIXED_RESIZE_H), # Matches DASEG's FixedResize(576, 896)
+                tr.FixedResize(w=DASEG_FIXED_RESIZE_W, h=DASEG_FIXED_RESIZE_H), 
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)),
                 tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
                 tr.HistogramEqualization(),
                 tr.RandomHorizontalFlip(),
-                tr.RandomCrop((DASEG_TRAIN_CROP_H, DASEG_TRAIN_CROP_W)), # Matches DASEG's RandomCrop((576, 576))
+                tr.RandomCrop((DASEG_TRAIN_CROP_H, DASEG_TRAIN_CROP_W)), 
                 tr.RandomGaussianBlur(),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
         else: # Validation/Test - no data augmentation or complex preprocessing
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(w=DASEG_FIXED_RESIZE_W, h=DASEG_FIXED_RESIZE_H), # Matches DASEG's FixedResize(576, 896)
+                tr.FixedResize(w=DASEG_FIXED_RESIZE_W, h=DASEG_FIXED_RESIZE_H), 
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
@@ -210,7 +212,7 @@ class ImageFolder(data.Dataset):
         img_path, gt_path = self.imgs[index]
         try:
             img_np = cv2.imread(img_path)
-            mask_np = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
+            mask_np = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE) 
 
             if img_np is None:
                 raise FileNotFoundError(f"OpenCV could not read image: {img_path}. File might be corrupted or path incorrect.")
@@ -226,7 +228,7 @@ class ImageFolder(data.Dataset):
             label = self.convert_label(target)
         except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError) as e:
             print(f"ERROR: Could not open/process image or mask for paths: {img_path}, {gt_path}. Error: {e}. Returning None for this sample.")
-            return None
+            return None 
         
         sample = {'image': img, 'label': label}
         transformed_sample = self.composed_transforms(sample)
@@ -242,7 +244,7 @@ class ImageFolder(data.Dataset):
             label_np = label_np.squeeze(2)
         
         label_index = np.zeros_like(label_np, dtype=np.uint8)
-        label_index[label_np > 0] = 1
+        label_index[label_np > 0] = 1 
         return Image.fromarray(label_index, mode='P')
 
     def __len__(self):

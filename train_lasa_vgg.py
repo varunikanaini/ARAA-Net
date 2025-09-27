@@ -17,18 +17,15 @@ if project_path not in sys.path:
 
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet 
-from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS # Updated: Import DATASET_PATHS
+from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS 
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
 # ===================================================================
-#      ✅ FOCAL LOSS CLASS - INCLUDED DIRECTLY IN THIS SCRIPT ✅
+#      FOCAL LOSS CLASS
 # ===================================================================
 class FocalLoss(nn.Module):
-    """
-    Focal Loss for multi-class classification, included directly in the script.
-    """
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
         self.alpha = alpha
@@ -51,13 +48,9 @@ class FocalLoss(nn.Module):
 # ===================================================================
 
 # ===================================================================
-#      ✅ DICE LOSS CLASS - NEWLY ADDED ✅
+#      DICE LOSS CLASS
 # ===================================================================
 class DiceLoss(nn.Module):
-    """
-    Dice Loss for binary or multi-class segmentation.
-    Supports a single foreground class (target 1, background 0).
-    """
     def __init__(self, smooth=1e-6, reduction='mean', ignore_index=255):
         super(DiceLoss, self).__init__()
         self.smooth = smooth
@@ -68,11 +61,11 @@ class DiceLoss(nn.Module):
         num_classes = inputs.shape[1]
         
         if num_classes > 1:
-            pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) # (N, 1, H, W)
-            true_oh = (targets == 1).float().unsqueeze(1) # One-hot for foreground (N, 1, H, W)
+            pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) 
+            true_oh = (targets == 1).float().unsqueeze(1) 
         else: 
             pred_probs = F.sigmoid(inputs)
-            true_oh = targets.float().unsqueeze(1) # (N, 1, H, W)
+            true_oh = targets.float().unsqueeze(1) 
 
         if self.ignore_index is not None:
             mask = (targets != self.ignore_index).float()
@@ -99,17 +92,20 @@ class DiceLoss(nn.Module):
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
-                        choices=['TSRS_RSNA-Epiphysis', 'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay'], # Updated choices
-                        help='Name of the dataset')
+                        choices=[
+                            'TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface', 
+                            'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 
+                            'DentalPanoramic', 'SixDiseasesChestXRay'
+                        ], help='Name of the dataset')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to use')
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--batch-size', type=int, default=3)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--weight-decay', type=float, default=5e-4)
-    parser.add_argument('--patience', type=int, default=20)
-    parser.add_argument('--num-workers', type=int, default=2)
-    parser.add_argument('--scale-h', type=int, default=448, help='Resize height for input images')
-    parser.add_argument('--scale-w', type=int, default=448, help='Resize width for input images')
+    parser.add_argument('--batch-size', type=int, default=6) # As per user's example
+    parser.add_argument('--lr', type=float, default=0.001) # As per user's example
+    parser.add_argument('--weight-decay', type=float, default=0.0005) # As per user's example
+    parser.add_argument('--patience', type=int, default=20) # As per user's example
+    parser.add_argument('--num-workers', type=int, default=2) # As per user's example
+    parser.add_argument('--scale-h', type=int, default=896, help='Height images were nominally resized to (internal logic overrides for DASEG alignment)')
+    parser.add_argument('--scale-w', type=int, default=576, help='Width images were nominally resized to (internal logic overrides for DASEG alignment)')
     
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
                         help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
@@ -142,12 +138,9 @@ def get_args():
 
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
 
-    parser.add_argument('--scheduler-patience', type=int, default=5, 
-                        help='Number of epochs with no improvement after which learning rate will be reduced.')
-    parser.add_argument('--scheduler-factor', type=float, default=0.5, 
-                        help='Factor by which the learning rate will be reduced.')
-    parser.add_argument('--scheduler-min-lr', type=float, default=1e-6, 
-                        help='Minimum learning rate.')
+    parser.add_argument('--scheduler-patience', type=int, default=5) # As per user's example
+    parser.add_argument('--scheduler-factor', type=float, default=0.5) # As per user's example
+    parser.add_argument('--scheduler-min-lr', type=float, default=1e-6) # As per user's example
 
 
     try:
@@ -175,7 +168,8 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
     loss_recorder = AvgMeter()
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
-            if data is None: # Handle potentially empty batches
+            if data is None: 
+                logging.warning(f"Skipping empty {mode} batch due to corrupted/missing samples.")
                 continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
@@ -219,7 +213,7 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    # Updated: Generalize exp_name generation
+    # Generalize exp_name generation
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
@@ -227,8 +221,8 @@ def main():
 
     logging.info(f"Starting operation for '{exp_name}' with arguments: {args}")
 
-    # Updated: Get dataset_path from DATASET_PATHS
-    dataset_root_for_current_run = DATASET_PATHS[args.dataset_name]
+    # Get base dataset path from config
+    base_dataset_path = DATASET_PATHS[args.dataset_name]
 
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
@@ -246,11 +240,18 @@ def main():
             net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
             logging.info(f"Loaded model from {best_checkpoint_path}")
         except Exception as e:
-            logging.error(f"Error loading model from checkpoint: {e}")
+            logging.error(f"Error loading model from checkpoint: {e}. Exiting.")
             sys.exit(1)
 
-        # Updated: Pass dataset_name to ImageFolder
-        test_set_for_eval = ImageFolder(dataset_root_for_current_run, args.dataset_name, args, split='val') 
+        # Handle TSRS-like datasets for testing path
+        if 'TSRS_RSNA' in args.dataset_name:
+            # For TSRS, 'val' folder is used for validation/testing
+            test_data_path = os.path.join(base_dataset_path, 'val') 
+        else:
+            # For other datasets, ImageFolder handles internal splitting
+            test_data_path = base_dataset_path
+        
+        test_set_for_eval = ImageFolder(test_data_path, args.dataset_name, args, split='val') # Use 'val' split for evaluation consistent with training's val
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
         test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, dice_loss_fn, 
@@ -280,11 +281,22 @@ def main():
         except Exception as e:
             logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
 
-    # Updated: Pass dataset_name to ImageFolder for train and val loaders
-    train_set = ImageFolder(dataset_root_for_current_run, args.dataset_name, args, split='train') 
+    # Handle TSRS-like datasets explicitly for train/val paths
+    if 'TSRS_RSNA' in args.dataset_name:
+        train_data_path = os.path.join(base_dataset_path, 'train')
+        val_data_path = os.path.join(base_dataset_path, 'val') 
+    else:
+        # For other datasets, ImageFolder will handle internal splitting
+        train_data_path = base_dataset_path
+        val_data_path = base_dataset_path 
+
+    train_set = ImageFolder(train_data_path, args.dataset_name, args, split='train') 
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True, collate_fn=custom_collate_fn)
-    test_set = ImageFolder(dataset_root_for_current_run, args.dataset_name, args, split='val') 
+    test_set = ImageFolder(val_data_path, args.dataset_name, args, split='val') 
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
+
+    logging.info(f"Found {len(train_set)} training images for dataset '{args.dataset_name}'.")
+    logging.info(f"Found {len(test_set)} validation images for dataset '{args.dataset_name}'.")
 
 
     for epoch in range(start_epoch, args.epochs):
@@ -292,7 +304,7 @@ def main():
         loss_recorder = AvgMeter()
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         for data in train_iterator:
-            if data is None: # Skip if collate_fn returned None (entire batch was invalid)
+            if data is None: 
                 logging.warning(f"Epoch {epoch+1}, Iter: Skipping empty training batch due to corrupted/missing samples.")
                 continue
 
