@@ -1,4 +1,3 @@
-# /kaggle/working/ARAA-Net/seg_utils.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -37,7 +36,6 @@ class ConfusionMatrix(object):
 
     def reset(self):
         self.mat.zero_()
-        self.dice = [] # Reset dice scores too
 
     def compute(self):
         with torch.no_grad():
@@ -104,7 +102,7 @@ class IOUBenchmark(object):
             assert pred.dim() == 4, 'prediction must be of 4 dimensions if num_classes was not specified'
             self.confmat = ConfusionMatrix(pred.shape[1])
         self.confmat.update(target.flatten(), pred.argmax(1).flatten() if pred.dim() == 4 else pred.flatten())
-        acc_global, acc, iou, _, _ = self.confmat.compute() # Adjusted to match compute() return
+        acc_global, acc, iou = self.confmat.compute()
         miou = iou.mean().item()
 
         return {'iou': miou}
