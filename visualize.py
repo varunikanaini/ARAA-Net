@@ -1,4 +1,3 @@
-# /kaggle/working/ARAA-Net/visualize.py (FINAL & CORRECTED)
 import torch
 import argparse
 import os
@@ -15,7 +14,7 @@ if project_path not in sys.path:
 
 from lasa_vgg_model import LASA_Unet # Use generalized LASA_Unet
 from datasets import ImageFolder
-from config import DATA_ROOT, CKPT_ROOT # <<< FIXED: Import CKPT_ROOT from config
+from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS # Updated: Import DATASET_PATHS
 from misc import check_mkdir
 
 def setup_logging_visualize(log_dir, filename='visualization.log'):
@@ -24,19 +23,21 @@ def setup_logging_visualize(log_dir, filename='visualization.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
+# Custom collate function to filter out None samples (from `datasets.py` returning None for corrupted images)
+def custom_collate_fn(batch):
+    batch = [item for item in batch if item is not None]
+    if not batch:
+        return None
+    return torch.utils.data.dataloader.default_collate(batch)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Visualize LASA-Unet predictions')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
-                        choices=[
-                            'TSRS_RSNA-Epiphysis', 
-                            'jsrt-247-image-lung-segmentation-mask-dataset', 
-                            'covid19-radiography-database', 
-                            'CVC-ClinicDB', 
-                            'dental_panoramic_xrays', 
-                            'Dataset' # For SixDiseasesChestXRay
-                        ], help='Dataset used for training')
+                        choices=['TSRS_RSNA-Epiphysis', 'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay'], # Updated choices
+                        help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
-    parser.add_argument('--image-index', type=int, default=0, help='Index of the test image to visualize (0-indexed)') # Default to 0 for first image
+    parser.add_argument('--image-index', type=int, default=0, help='Index of the test image to visualize (0-indexed)') 
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
     
@@ -60,15 +61,7 @@ def main():
     
     # Construct the experiment name to find the checkpoint
     # This MUST match the naming convention used in train_lasa_vgg.py
-    # Replaced long dataset names with shorter aliases for folder naming
-    exp_name_dataset_alias = args.dataset_name.replace('TSRS_RSNA-', '').lower()
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('jsrt-247-image-lung-segmentation-mask-dataset', 'jsrt')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('covid19-radiography-database', 'covid')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('CVC-ClinicDB', 'cvc')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('dental_panoramic_xrays', 'dental')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('Dataset', 'sixdiseases') # For SixDiseasesChestXRay
-
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{exp_name_dataset_alias}"
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     output_dir = os.path.join(CKPT_ROOT, 'visual_results', exp_name)
     check_mkdir(output_dir)
     setup_logging_visualize(output_dir) # Setup logging for this specific visualization run
@@ -87,37 +80,30 @@ def main():
     net.eval()
     logging.info(f"✅ Model loaded from {model_path}")
 
-    # Load image from the 'test' split (or 'val' if no 'test' folder)
-    dataset_base_path = os.path.join(DATA_ROOT, args.dataset_name)
-
-    if args.dataset_name == 'TSRS_RSNA-Epiphysis':
-        test_data_path = os.path.join(dataset_base_path, 'test')
-        if not os.path.exists(test_data_path):
-            logging.warning(f"Test data for {args.dataset_name} not found at '{test_data_path}'. Using 'val' split for visualization.")
-            test_data_path = os.path.join(dataset_base_path, 'val')
-            if not os.path.exists(test_data_path):
-                logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for visualization for {args.dataset_name} at '{test_data_path}'.")
-                sys.exit(1)
-    else:
-        # For new datasets, ImageFolder will handle internal structure and programmatic splits
-        test_data_path = dataset_base_path # Pass the base path, ImageFolder does the split
+    # Updated: Get dataset_path from DATASET_PATHS
+    dataset_root_for_current_run = DATASET_PATHS[args.dataset_name]
             
-    test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
+    # Updated: ImageFolder now takes dataset_name
+    test_set = ImageFolder(dataset_root_for_current_run, args.dataset_name, args, split='test') 
 
-    if args.image_index >= len(test_set) or args.image_index < 0:
-        logging.error(f"❌ ERROR: Image index {args.image_index} is out of bounds. Dataset has {len(test_set)} images for {args.dataset_name}.")
+    if len(test_set) == 0:
+        logging.error(f"❌ ERROR: No images found for dataset '{args.dataset_name}' with 'test' split. Cannot visualize.")
         sys.exit(1)
 
+    if args.image_index >= len(test_set) or args.image_index < 0:
+        logging.error(f"❌ ERROR: Image index {args.image_index} is out of bounds. Dataset has {len(test_set)} images. Defaulting to index 0.")
+        args.image_index = 0 # Default to 0 if out of bounds
+        
     sample = test_set[args.image_index]
-    if sample is None:
-        logging.error(f"❌ ERROR: Sample at index {args.image_index} is corrupted or could not be loaded. Exiting.")
+    
+    if sample is None: # Handle case where ImageFolder returns None for a corrupted image
+        logging.error(f"❌ ERROR: Failed to load image at index {args.image_index} for visualization. It might be corrupted.")
         sys.exit(1)
 
     image_tensor = sample['image'].unsqueeze(0).to(device)
     label_tensor = sample['label']
     
-    # Ensure 'name' is retrieved correctly, it's a string
-    image_name = sample['name']
+    image_name = sample['name'] if 'name' in sample else f"image_idx_{args.image_index}"
     logging.info(f"✅ Visualizing image: {image_name} (index {args.image_index})")
 
     with torch.no_grad():
@@ -140,10 +126,10 @@ def main():
     axes[2].imshow(prediction_mask, cmap='gray'); axes[2].set_title("Model's Prediction"); axes[2].axis('off')
 
     # Save path includes experiment name and image identifier
-    save_path = os.path.join(output_dir, f"visual_result_{image_name.replace('.png', '').replace('.jpg', '')}_index_{args.image_index}.png")
+    save_path = os.path.join(output_dir, f"visual_result_{image_name}_index_{args.image_index}.png")
     plt.savefig(save_path, bbox_inches='tight')
     logging.info(f"✅ Visualization saved to {save_path}")
-    plt.show() # Uncomment if you want to display plot in interactive environments
+    # plt.show() # Uncomment if you want to display plot in interactive environments
 
 if __name__ == '__main__':
     main()

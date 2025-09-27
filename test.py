@@ -1,4 +1,3 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (FINAL & CORRECTED)
 import sys
 import os
 import torch
@@ -19,7 +18,7 @@ from lasa_vgg_model import LASA_Unet # Use the generalized LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter # Import AvgMeter for loss logging in test
-from config import DATA_ROOT, CKPT_ROOT # <<< FIXED: Import CKPT_ROOT from config
+from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS # Updated: Import DATASET_PATHS
 
 # Import loss functions for consistent loss calculation if logging loss during test
 from train_lasa_vgg import FocalLoss, DiceLoss 
@@ -28,14 +27,8 @@ from train_lasa_vgg import FocalLoss, DiceLoss
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
-                        choices=[
-                            'TSRS_RSNA-Epiphysis', 
-                            'jsrt-247-image-lung-segmentation-mask-dataset', 
-                            'covid19-radiography-database', 
-                            'CVC-ClinicDB', 
-                            'dental_panoramic_xrays', 
-                            'Dataset' # For SixDiseasesChestXRay
-                        ], help='Dataset used for training')
+                        choices=['TSRS_RSNA-Epiphysis', 'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay'], # Updated choices
+                        help='Dataset used for training')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture used for training')
     parser.add_argument('--scale-h', type=int, default=448, help='Height images were resized to')
     parser.add_argument('--scale-w', type=int, default=448, help='Width images were resized to')
@@ -78,6 +71,13 @@ def setup_logging(log_dir, filename='final_testing_results.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
+# Custom collate function to filter out None samples (from `datasets.py` returning None for corrupted images)
+def custom_collate_fn(batch):
+    batch = [item for item in batch if item is not None]
+    if not batch:
+        return None
+    return torch.utils.data.dataloader.default_collate(batch)
+
 
 def main():
     args = get_test_args()
@@ -85,40 +85,21 @@ def main():
     
     # --- Construct the correct experiment name to find the checkpoint ---
     # This MUST match the naming convention used in train_lasa_vgg.py
-    # Replaced long dataset names with shorter aliases for folder naming
-    exp_name_dataset_alias = args.dataset_name.replace('TSRS_RSNA-', '').lower()
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('jsrt-247-image-lung-segmentation-mask-dataset', 'jsrt')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('covid19-radiography-database', 'covid')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('CVC-ClinicDB', 'cvc')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('dental_panoramic_xrays', 'dental')
-    exp_name_dataset_alias = exp_name_dataset_alias.replace('Dataset', 'sixdiseases') # For SixDiseasesChestXRay
-
-    EXP_NAME = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{exp_name_dataset_alias}"
-    log_dir = os.path.join(CKPT_ROOT, EXP_NAME)
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    log_dir = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(log_dir) # Ensure log directory exists
     setup_logging(log_dir) # Setup logging for this specific test run
 
-    logging.info(f"Starting FINAL TESTING for experiment '{EXP_NAME}'")
+    logging.info(f"Starting FINAL TESTING for experiment '{exp_name}'")
     logging.info(f"Arguments: {args}")
 
     # --- Load the 'test' split of the data ---
-    dataset_base_path = os.path.join(DATA_ROOT, args.dataset_name)
-
-    if args.dataset_name == 'TSRS_RSNA-Epiphysis':
-        test_data_path = os.path.join(dataset_base_path, 'test') 
-        if not os.path.exists(test_data_path):
-            logging.warning(f"Test data for {args.dataset_name} not found at '{test_data_path}'. Falling back to 'val' split for testing.")
-            test_data_path = os.path.join(dataset_base_path, 'val')
-            if not os.path.exists(test_data_path):
-                logging.error(f"❌ ERROR: Neither 'test' nor 'val' data found for testing {args.dataset_name} at '{test_data_path}'.")
-                sys.exit(1)
-    else:
-        # For new datasets, ImageFolder will handle internal structure and programmatic splits
-        test_data_path = dataset_base_path # Pass the base path, ImageFolder does the split
-        
-    test_set = ImageFolder(test_data_path, args, split='test') # Use split='test' for transform consistency
-    test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False)
-    logging.info(f"Found {len(test_set)} testing images in '{test_data_path}' for dataset '{args.dataset_name}'.")
+    dataset_root_for_current_run = DATASET_PATHS[args.dataset_name]
+    
+    # Updated: ImageFolder now takes dataset_name
+    test_set = ImageFolder(dataset_root_for_current_run, args.dataset_name, args, split='test') 
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False, collate_fn=custom_collate_fn)
+    logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
 
     # --- Load the BEST trained model ---
     checkpoint_to_load = os.path.join(log_dir, 'best_checkpoint.pth')
@@ -142,10 +123,8 @@ def main():
 
     with torch.no_grad():
         for data in tqdm(test_loader, desc="Testing"):
-            if data is None: # Skip if collate_fn returned None (entire batch was invalid)
-                logging.warning(f"Skipping empty test batch due to corrupted/missing samples.")
+            if data is None: # Handle potentially empty batches
                 continue
-
             inputs, labels = data['image'].to(DEVICE), data['label'].to(DEVICE)
             
             outputs = net(inputs) 
@@ -175,7 +154,7 @@ def main():
     logging.info(
         f"\n\n--- Final Test Results ({timestamp}) ---\n"
         f"Model: LASA-Unet with {args.backbone} backbone\n"
-        f"Experiment Name: {EXP_NAME}\n"
+        f"Experiment Name: {exp_name}\n"
         f"Dataset: {args.dataset_name} (evaluated on 'test' split)\n" 
         f"Image scale for test: ({args.scale_h}, {args.scale_w})\n" 
         f"--------------------------------------------------\n"
