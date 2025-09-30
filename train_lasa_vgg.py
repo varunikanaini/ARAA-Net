@@ -1,3 +1,5 @@
+# /kaggle/working/ARAA-Net/train_lasa_vgg.py
+
 import os
 import time
 import sys
@@ -16,15 +18,13 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_Unet 
+from lasa_vgg_model import LASA_Unet # <<< Ensure this imports the updated model
 from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS 
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# ===================================================================
-#      FOCAL LOSS CLASS
-# ===================================================================
+# --- Loss Functions (kept as is) ---
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -45,11 +45,7 @@ class FocalLoss(nn.Module):
             return focal_loss.sum()
         else:
             return focal_loss
-# ===================================================================
 
-# ===================================================================
-#      DICE LOSS CLASS
-# ===================================================================
 class DiceLoss(nn.Module):
     def __init__(self, smooth=1e-6, reduction='mean', ignore_index=255):
         super(DiceLoss, self).__init__()
@@ -61,9 +57,11 @@ class DiceLoss(nn.Module):
         num_classes = inputs.shape[1]
         
         if num_classes > 1:
+            # Assuming binary segmentation where class 1 is the target
+            # If multi-class, this needs to be adapted to calculate dice per class
             pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) 
             true_oh = (targets == 1).float().unsqueeze(1) 
-        else: 
+        else: # Binary case directly
             pred_probs = F.sigmoid(inputs)
             true_oh = targets.float().unsqueeze(1) 
 
@@ -86,8 +84,6 @@ class DiceLoss(nn.Module):
             return loss * inputs.shape[0] 
         else:
             return loss 
-# ===================================================================
-
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
@@ -164,19 +160,22 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
     Evaluates the model on a given data_loader.
     """
     net.eval()
-    confmat = ConfusionMatrix(num_classes=2)
+    confmat = ConfusionMatrix(num_classes=2) # Assuming binary segmentation
     loss_recorder = AvgMeter()
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
             if data is None: 
                 logging.warning(f"Skipping empty {mode} batch due to corrupted/missing samples.")
                 continue
+            
+            # Ensure inputs and labels are on the correct device
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            outputs = net(inputs) 
-            final_pred = outputs[-1] 
+            outputs = net(inputs) # The model returns a tuple of outputs (auxiliary + final)
+            final_pred_for_metrics = outputs[-1] # Use the final prediction for confusion matrix
             
             total_loss = 0
+            # Iterate through all outputs (deep supervision) to calculate the combined loss
             for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
@@ -188,13 +187,17 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
             
-            confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
+            # Use the final output for confusion matrix calculation
+            confmat.update(labels.flatten(), final_pred_for_metrics.argmax(1).flatten())
             
     _, _, class_iou, _, _ = confmat.compute()
     mIoU = class_iou.mean().item()
     logging.info(f"--- {mode} mIoU: {mIoU:.4f} | {mode} Loss: {loss_recorder.avg:.4f} ---")
+    
+    # Return to training mode ONLY if evaluating for validation during training
     if mode == "Validating": 
         net.train()
+        
     return mIoU
 
 # Custom collate function to filter out None samples (from `datasets.py` returning None for corrupted images)
@@ -214,16 +217,17 @@ def main():
     np.random.seed(2024)
 
     # Generalize exp_name generation
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_name = f"{args.backbone}_LASA_Unet_ASPP_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
 
-    logging.info(f"Starting operation for '{exp_name}' with arguments: {args}")
+    logging.info(f"Starting training for '{exp_name}' with arguments: {args}")
 
     # Get base dataset path from config
     base_dataset_path = DATASET_PATHS[args.dataset_name]
 
+    # Instantiate the model (ensure it uses the updated LASA_Unet)
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
@@ -245,13 +249,12 @@ def main():
 
         # Handle TSRS-like datasets for testing path
         if 'TSRS_RSNA' in args.dataset_name:
-            # For TSRS, 'val' folder is used for validation/testing
             test_data_path = os.path.join(base_dataset_path, 'val') 
         else:
-            # For other datasets, ImageFolder handles internal splitting
             test_data_path = base_dataset_path
         
-        test_set_for_eval = ImageFolder(test_data_path, args.dataset_name, args, split='val') # Use 'val' split for evaluation consistent with training's val
+        # Use 'val' split for evaluation consistent with training's val
+        test_set_for_eval = ImageFolder(test_data_path, args.dataset_name, args, split='val') 
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
         test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, dice_loss_fn, 
@@ -267,6 +270,7 @@ def main():
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     
+    # --- Load Checkpoint for Resuming Training ---
     if os.path.exists(latest_checkpoint_path):
         try:
             ckpt = torch.load(latest_checkpoint_path, map_location=device)
@@ -277,10 +281,11 @@ def main():
             start_epoch = ckpt['epoch'] + 1
             best_mIoU = ckpt.get('best_mIoU', 0.0)
             patience_counter = ckpt.get('patience_counter', 0)
-            logging.info(f"Resuming from epoch {start_epoch}, best mIoU was {best_mIoU:.4f}, patience counter: {patience_counter}")
+            logging.info(f"Resuming training from epoch {start_epoch}, best mIoU was {best_mIoU:.4f}, patience counter: {patience_counter}")
         except Exception as e:
-            logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
+            logging.error(f"Could not load checkpoint for resuming: {e}. Starting training from scratch.")
 
+    # --- Dataset Loading ---
     # Handle TSRS-like datasets explicitly for train/val paths
     if 'TSRS_RSNA' in args.dataset_name:
         train_data_path = os.path.join(base_dataset_path, 'train')
@@ -298,22 +303,24 @@ def main():
     logging.info(f"Found {len(train_set)} training images for dataset '{args.dataset_name}'.")
     logging.info(f"Found {len(test_set)} validation images for dataset '{args.dataset_name}'.")
 
-
+    # --- Training Loop ---
     for epoch in range(start_epoch, args.epochs):
         net.train()
         loss_recorder = AvgMeter()
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
-        for data in train_iterator:
+        
+        for i, data in enumerate(train_iterator):
             if data is None: 
-                logging.warning(f"Epoch {epoch+1}, Iter: Skipping empty training batch due to corrupted/missing samples.")
+                logging.warning(f"Epoch {epoch+1}, Iter {i}: Skipping empty training batch due to corrupted/missing samples.")
                 continue
 
             inputs, labels = data['image'].to(device), data['label'].to(device)
             optimizer.zero_grad(set_to_none=True)
             
-            outputs = net(inputs)
+            outputs = net(inputs) # Model returns tuple of outputs
             
             total_loss = 0
+            # Calculate combined loss from all outputs (deep supervision)
             for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
@@ -329,11 +336,14 @@ def main():
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg)
             
+        # --- Validation Step ---
         current_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, 
                                       args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Validating")
 
+        # --- Scheduler Step ---
         scheduler.step(current_mIoU)
 
+        # --- Checkpointing ---
         if current_mIoU > best_mIoU:
             best_mIoU = current_mIoU
             patience_counter = 0
@@ -343,6 +353,7 @@ def main():
             patience_counter += 1
             logging.info(f"⚠️ No improvement for {patience_counter} epoch(s). Best mIoU: {best_mIoU:.4f}.")
 
+        # Save latest checkpoint for resuming
         torch.save({
             'epoch': epoch,
             'model_state_dict': net.state_dict(),
@@ -352,6 +363,7 @@ def main():
             'patience_counter': patience_counter
         }, latest_checkpoint_path)
         
+        # --- Early Stopping ---
         if patience_counter >= args.patience:
             logging.info("Early stopping triggered due to no improvement.")
             break

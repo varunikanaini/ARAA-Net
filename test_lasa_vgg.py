@@ -1,4 +1,5 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (FINAL & CORRECTED - VGG16 only)
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py
+
 print("--- EXECUTING TEST_LASA_VGG.PY ---") # DIAGNOSTIC LINE
 import sys
 import os
@@ -16,7 +17,7 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_Unet 
+from lasa_vgg_model import LASA_Unet # <<< Ensure this imports the updated model
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter 
@@ -45,11 +46,11 @@ def get_test_args():
     parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Weight for Focal Loss component in combined loss.')
     parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss component in combined loss.')
 
+    # Dummy arguments to match ImageFolder's requirements if not used by the test script directly
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
-
     parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
     parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
     parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
@@ -83,7 +84,8 @@ def main():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Construct the correct experiment name to find the checkpoint
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    # Updated exp_name to include ASPP for clarity in logging and checkpoint finding
+    exp_name = f"{args.backbone}_LASA_Unet_ASPP_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     log_dir = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(log_dir) 
     setup_logging(log_dir) 
@@ -98,10 +100,12 @@ def main():
     if 'TSRS_RSNA' in args.dataset_name:
         test_data_path = os.path.join(base_dataset_path, 'val') 
     else:
-        # For other datasets, ImageFolder will handle internal splitting
         test_data_path = base_dataset_path
         
-    test_set = ImageFolder(test_data_path, args.dataset_name, args, split='test') 
+    # Assuming 'test' split is used for final evaluation, but it might be 'val' depending on dataset structure.
+    # If ImageFolder uses 'val' for evaluation, this should remain 'val'. If it splits internally, adjust accordingly.
+    # For consistency with training, we use 'val' split as is common for evaluation during training.
+    test_set = ImageFolder(test_data_path, args.dataset_name, args, split='val') 
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False, collate_fn=custom_collate_fn)
     logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
 
@@ -120,7 +124,7 @@ def main():
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(DEVICE)
     dice_loss_fn = DiceLoss().to(DEVICE)
 
-    # Run Evaluation
+    # --- Run Evaluation ---
     confmat = ConfusionMatrix(num_classes=2)
     loss_recorder = AvgMeter()
 
@@ -131,10 +135,11 @@ def main():
                 continue
             inputs, labels = data['image'].to(DEVICE), data['label'].to(DEVICE)
             
-            outputs = net(inputs) 
-            final_pred = outputs[-1] 
+            outputs = net(inputs) # Model returns tuple of outputs
+            final_pred_for_metrics = outputs[-1] # Use final output for metrics
             
             total_loss = 0
+            # Calculate total loss for logging purposes, using deep supervision weights
             for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
@@ -146,9 +151,10 @@ def main():
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
             
-            confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
+            # Update confusion matrix with final predictions
+            confmat.update(labels.flatten(), final_pred_for_metrics.argmax(1).flatten())
 
-    # Compute and log all metrics from the confusion matrix
+    # --- Compute and Log Metrics ---
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
 
@@ -156,9 +162,9 @@ def main():
     
     logging.info(
         f"\n\n--- Final Test Results ({timestamp}) ---\n"
-        f"Model: LASA-Unet with {args.backbone} backbone\n"
+        f"Model: LASA-Unet with ASPP and {args.backbone} backbone\n" # Updated model description
         f"Experiment Name: {exp_name}\n"
-        f"Dataset: {args.dataset_name} (evaluated on 'test' split)\n" 
+        f"Dataset: {args.dataset_name} (evaluated on 'val' split)\n" 
         f"Image scale for test: ({args.scale_h}, {args.scale_w})\n" 
         f"--------------------------------------------------\n"
         f"Global Accuracy = {global_acc.item():.4f}\n"
