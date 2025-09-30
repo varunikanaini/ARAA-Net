@@ -1,4 +1,6 @@
-# /kaggle/working/ARAA-Net/train_lasa_vgg.py (Updated for LASA tuning, loss tuning, and gradient accumulation)
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py (Modified for imports)
+# --- EXECUTING TEST_LASA_VGG.PY ---
+print("--- EXECUTING TEST_LASA_VGG.PY ---") # DIAGNOSTIC LINE
 import sys
 import os
 import torch
@@ -15,14 +17,15 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_Unet # <<< IMPORT THE UPDATED MODEL
+from lasa_vgg_model import LASA_Unet 
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter 
 from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS 
 
-# --- IMPORT LOSSES FROM SEPARATE FILE ---
-from custom_losses import FocalLoss, DiceLoss 
+# --- IMPORT LOSSES FROM SINGLE FILE ---
+from loss import FocalLoss, DiceLoss 
+# --- REMOVE THE ORIGINAL IMPORT: from train_lasa_vgg import FocalLoss, DiceLoss ---
 
 
 def get_args():
