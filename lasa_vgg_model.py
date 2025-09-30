@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/lasa_vgg_model.py (Updated with THREE LASA Modules: e2, e3, e4)
+# /kaggle/working/ARAA-Net/lasa_vgg_model.py (Updated for LASA parameter passing and three LASA modules)
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -11,8 +11,9 @@ class LASA_Unet(nn.Module):
     the original LASA module for feature enhancement, and a U-Net style decoder with true deep supervision.
     Incorporates MULTIPLE LASA modules at different encoder stages (e2, e3, and e4)
     as suggested by the paper's ablation studies for increased accuracy.
+    LASA parameters (M, L_list) are now passed during initialization.
     """
-    def __init__(self, num_classes=2, backbone_name='vgg16'):
+    def __init__(self, num_classes=2, backbone_name='vgg16', lasa_M=4, lasa_L=[5, 7, 9, 11]):
         super(LASA_Unet, self).__init__()
         self.backbone_name = backbone_name
         self.num_classes = num_classes
@@ -55,10 +56,10 @@ class LASA_Unet(nn.Module):
 
         # --- 2. Multiple LASA Modules for Feature Enhancement ---
         # Adding LASA to earlier stages (e2, e3) in addition to e4.
-        # This aligns with the paper's suggestion of applying LASA to 'dense block 1 & 2'.
-        self.lasa_module_e2 = LASA(in_channels=self.e2_channels)
-        self.lasa_module_e3 = LASA(in_channels=self.e3_channels)
-        self.lasa_module_e4 = LASA(in_channels=self.e4_channels)
+        # Pass the M and L_list parameters to the LASA modules.
+        self.lasa_module_e2 = LASA(in_channels=self.e2_channels, M=lasa_M, L_list=lasa_L)
+        self.lasa_module_e3 = LASA(in_channels=self.e3_channels, M=lasa_M, L_list=lasa_L)
+        self.lasa_module_e4 = LASA(in_channels=self.e4_channels, M=lasa_M, L_list=lasa_L)
 
 
         # --- 3. Define Decoder Blocks and Auxiliary Convs for Deep Supervision ---
@@ -67,12 +68,10 @@ class LASA_Unet(nn.Module):
         self.aux_conv_d4 = nn.Conv2d(self.e4_channels, num_classes, kernel_size=1) # Aux head for d4_out
 
         # Decoder 3: Input from upsampled d4_out + LASA-enhanced e3
-        # e3_enhanced will be used here.
         self.decoder3 = self._decoder_block(self.e4_channels + self.e3_channels, self.e3_channels)
         self.aux_conv_d3 = nn.Conv2d(self.e3_channels, num_classes, kernel_size=1) # Aux head for d3_out
 
         # Decoder 2: Input from upsampled d3_out + LASA-enhanced e2
-        # e2_enhanced will be used here.
         self.decoder2 = self._decoder_block(self.e3_channels + self.e2_channels, self.e2_channels)
         self.aux_conv_d2 = nn.Conv2d(self.e2_channels, num_classes, kernel_size=1) # Aux head for d2_out
 

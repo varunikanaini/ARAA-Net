@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (Updated with more arguments for consistency)
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py (Updated with arguments to find correct checkpoint)
 # --- EXECUTING TEST_LASA_VGG.PY ---
 print("--- EXECUTING TEST_LASA_VGG.PY ---") # DIAGNOSTIC LINE
 import sys
@@ -23,7 +23,7 @@ from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter 
 from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS 
 
-# Import loss functions for consistent loss calculation if logging loss during test
+# Import loss functions for consistent loss calculation
 from train_lasa_vgg import FocalLoss, DiceLoss 
 
 
@@ -39,35 +39,34 @@ def get_test_args():
     parser.add_argument('--scale-h', type=int, default=896, help='Height images were nominally resized to (internal logic overrides for DASEG alignment)')
     parser.add_argument('--scale-w', type=int, default=576, help='Width images were nominally resized to (internal logic overrides for DASEG alignment)')
     
-    # --- LASA Module Tuning Arguments (for consistency with training) ---
-    parser.add_argument('--lasa-M', type=int, default=4, help='Number of groups (M) for LASA module.')
+    # --- LASA Module Tuning Arguments (to match training config for checkpoint finding) ---
+    parser.add_argument('--lasa-M', type=int, default=4, help='Number of groups (M) for LASA module. Default: 4.')
     parser.add_argument('--lasa-L', nargs='+', type=int, default=[5, 7, 9, 11], 
-                        help='List of square side lengths (L) for LASA module.')
+                        help='List of square side lengths (L) for LASA module. Default: [5, 7, 9, 11].')
 
-    # --- Deep Supervision Weights (for consistent loss calculation) ---
+    # --- Deep Supervision Weights (for consistent loss calculation during eval) ---
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
                         help='Weights for deep supervision losses. Must have 5 values.')
     
-    # --- Loss Function Parameters (for consistent loss calculation) ---
+    # --- Loss Function Parameters (for consistent loss calculation during eval) ---
     parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha parameter for Focal Loss.')
     parser.add_argument('--focal-gamma', type=float, default=2.0, help='Gamma parameter for Focal Loss.')
     parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Weight for Focal Loss component in combined loss.')
     parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss component in combined loss.')
 
-    # --- Other potential arguments (kept from original for completeness, might be dummy for testing) ---
-    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
-    parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
-    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
+    # --- Other potential arguments (dummy for consistency, not used for actual processing here) ---
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg.')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg.')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg.')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg.')
+    parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg.')
+    parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg.')
+    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg.')
 
     try:
         args = parser.parse_args()
     except SystemExit:
-        logging.warning("Could not parse arguments, potentially in an interactive environment. Using defaults or exiting.")
-        args = parser.parse_args([]) # Attempt to parse with defaults
+        args = parser.parse_args([])
     
     # Basic validation for test arguments
     if len(args.deep_supervision_weights) != 5:
@@ -77,7 +76,6 @@ def get_test_args():
 
 def setup_logging(log_dir, filename='final_testing_results.log'):
     log_file = os.path.join(log_dir, filename)
-    # Clear existing handlers to prevent duplicate logging
     for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
@@ -98,37 +96,40 @@ def main():
     # Use the same naming convention as in train_lasa_vgg.py
     exp_name_parts = [
         args.backbone,
-        f"LASA_M{args.lasa_M}_L{'_'.join(map(str, args.lasa_L))}",
+        f"LASA_M{args.lasa_M}_L{'_'.join(map(str, args.lasa_L))}", # Include LASA params
         "FocalDice",
         "DS",
         "WaveletHE"
     ]
-    exp_name = "_".join(exp_name_parts) + f"_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    dataset_name_clean = args.dataset_name.replace('TSRS_RSNA-', '').lower()
+    exp_name = "_".join(exp_name_parts) + f"_{dataset_name_clean}"
     
     log_dir = os.path.join(CKPT_ROOT, exp_name)
-    check_mkdir(log_dir) # Ensure log directory exists
+    check_mkdir(log_dir) 
     setup_logging(log_dir) 
 
     logging.info(f"Starting FINAL TESTING for experiment '{exp_name}'")
     logging.info(f"Arguments used for testing: {args}")
 
-    # Get base dataset path from config
     try:
         base_dataset_path = DATASET_PATHS[args.dataset_name]
     except KeyError:
         logging.error(f"Dataset '{args.dataset_name}' not found in DATASET_PATHS configuration.")
         sys.exit(1)
 
-    # Handle TSRS-like datasets explicitly for test path
+    # --- Data Loading for Testing ---
+    # For TSRS datasets, we expect the 'val' directory to contain the test data.
+    # For other datasets, we expect a 'test' directory if it exists.
     if 'TSRS_RSNA' in args.dataset_name:
-        test_data_path = os.path.join(base_dataset_path, 'val') # Use 'val' split for testing TSRS
+        test_data_path = os.path.join(base_dataset_path, 'val') 
+        # Pass 'val' as the split to ImageFolder, because for TSRS, the 'val' dir contains the test data.
+        test_split_arg = 'val' 
     else:
-        test_data_path = base_dataset_path # Use the base path, ImageFolder will handle internal splits if defined
+        test_data_path = base_dataset_path
+        # For non-TSRS datasets, explicitly request the 'test' split.
+        test_split_arg = 'test' 
         
-    # IMPORTANT: Use 'test' split for final evaluation if your ImageFolder dataset is structured that way.
-    # If your test set is within the 'val' split (like for TSRS), adjust accordingly.
-    # For general cases, assuming 'test' split exists or it defaults to 'val' if 'test' is not specified.
-    test_set = ImageFolder(test_data_path, args.dataset_name, args, split='test') 
+    test_set = ImageFolder(test_data_path, args.dataset_name, args, split=test_split_arg) 
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False, collate_fn=custom_collate_fn)
     
     if not test_set:
@@ -142,11 +143,11 @@ def main():
         logging.error(f"❌ ERROR: 'best_checkpoint.pth' not found in '{log_dir}'. Please run training first for this experiment configuration.")
         sys.exit(1)
 
-    # Initialize the model with the specified backbone
-    net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(DEVICE)
+    # Initialize the model with the specified backbone and LASA parameters used during training
+    net = LASA_Unet(num_classes=2, backbone_name=args.backbone, 
+                    lasa_M=args.lasa_M, lasa_L=args.lasa_L).to(DEVICE)
     
     try:
-        # Load the state dict onto the correct device
         net.load_state_dict(torch.load(checkpoint_to_load, map_location=DEVICE))
         logging.info(f"✅ Model loaded successfully from best checkpoint: {checkpoint_to_load}")
     except Exception as e:
@@ -200,7 +201,7 @@ def main():
         f"\n\n--- Final Test Results ({timestamp}) ---\n"
         f"Model: LASA-Unet with {args.backbone} backbone\n"
         f"Experiment Name: {exp_name}\n"
-        f"Dataset: {args.dataset_name} (evaluated on 'test' split)\n" 
+        f"Dataset: {args.dataset_name} (evaluated on '{test_split_arg}' split)\n" 
         f"Image scale for test: ({args.scale_h}, {args.scale_w})\n" 
         f"--------------------------------------------------\n"
         f"Global Accuracy = {global_acc.item():.4f}\n"

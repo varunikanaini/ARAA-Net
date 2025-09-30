@@ -1,3 +1,4 @@
+# /kaggle/working/ARAA-Net/datasets.py (Further refined split handling to strictly use 'test' for testing)
 import os
 import torch.utils.data as data
 from PIL import Image, UnidentifiedImageError
@@ -16,8 +17,9 @@ def make_dataset(root, dataset_name):
     dataset_items = []
 
     # Handling TSRS_RSNA-Epiphysis and TSRS_RSNA-Articular-Surface (assuming similar structure)
+    # For TSRS, the 'root' provided will already be the specific split (train/val)
     if 'TSRS_RSNA' in dataset_name:
-        image_path = root # 'root' here will be e.g., DATA_ROOT/TSRS_RSNA-Epiphysis/train
+        image_path = root 
         if os.path.exists(os.path.join(root, 'GT')):
             mask_path = os.path.join(root, 'GT')
         elif os.path.exists(root + '_labels'): # Matches original DASEG structure e.g., val_labels
@@ -27,7 +29,7 @@ def make_dataset(root, dataset_name):
             return []
         
         for f in os.listdir(image_path):
-            if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+            if f.lower().endswith(IMAGE_EXTENSIONS):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
                 mask_full_path = os.path.join(mask_path, img_name_base + '.png') # Assuming masks are png
@@ -107,7 +109,7 @@ def make_dataset(root, dataset_name):
                     print(f"Warning: Mask not found for DentalPanoramic image {f}. Skipping.")
 
     elif dataset_name == 'SixDiseasesChestXRay':
-        base_dataset_folder = os.path.join(root, 'train')
+        base_dataset_folder = os.path.join(root, 'train') # Assuming 'train' is the root for this dataset
         subfolders = ['Covid', 'Normal', 'Tuberculosis', 'Bacterial Pneumonia', 'Pneumothorax', 'Viral Pneumonia']
         
         if not os.path.exists(base_dataset_folder):
@@ -151,39 +153,45 @@ class ImageFolder(data.Dataset):
         all_imgs = make_dataset(root, dataset_name)
         
         if 'TSRS_RSNA' in dataset_name:
-            self.imgs = all_imgs # For TSRS, 'root' is already specific to train/val
-        else: # For other datasets, perform programmatic splitting
-            random.seed(42) # For reproducibility
+            # For TSRS datasets, the 'root' provided should already be the specific split (train or val).
+            # We use all_imgs directly collected from that 'root' path.
+            self.imgs = all_imgs 
+        else: 
+            # For other datasets, perform programmatic splitting based on 'split' argument.
+            # This logic will be applied IF the dataset is NOT a TSRS type.
+            random.seed(42) # Ensure reproducibility for splitting
             random.shuffle(all_imgs)
             
             total_size = len(all_imgs)
+            # Define split ratios: 80% train, 10% val, 10% test.
+            # This ensures a dedicated test set that is not used during validation.
             train_size = int(0.8 * total_size)
-            val_size = int(0.1 * total_size) # 10% for validation
+            val_size = int(0.1 * total_size) 
             
             if split == 'train':
                 self.imgs = all_imgs[:train_size]
             elif split == 'val':
+                # Use the validation split for validation during training
                 self.imgs = all_imgs[train_size : train_size + val_size]
             elif split == 'test':
-                self.imgs = all_imgs[train_size + val_size :] # Remaining 10% for test
+                # Use the test split ONLY for final evaluation (e.g., in test_lasa_vgg.py)
+                self.imgs = all_imgs[train_size + val_size :] 
             else:
                 raise ValueError(f"Invalid split '{split}'. Must be 'train', 'val', or 'test'.")
 
         if not self.imgs:
             print(f"Warning: {self.split} split for {self.dataset_name} is empty. Check dataset path and contents.")
 
+        # Get parameters for transformations from args
         min_lesion_area = args.min_lesion_area_pixels
         expansion_factor = args.expansion_factor
         min_bbox_h = args.min_bbox_h
         min_bbox_w = args.min_bbox_w
 
-        # --- DASEG's fixed preprocessing dimensions (hardcoded for faithful comparison) ---
-        # These values override any --scale-h/--scale-w passed via command line
-        # to ensure the LASA-Unet model processes images at the exact same resolution
-        # as the DASEG model's internal hardcoded transformations.
+        # --- DASEG's fixed preprocessing dimensions (hardcoded as per DASEG paper for direct comparison) ---
         DASEG_FIXED_RESIZE_W = 576
-        DASEG_FIXED_RESIZE_H = 896 # DASEG FixedResize(w=576, h=896)
-        DASEG_TRAIN_CROP_H = 576 # DASEG RandomCrop((576,576))
+        DASEG_FIXED_RESIZE_H = 896
+        DASEG_TRAIN_CROP_H = 576
         DASEG_TRAIN_CROP_W = 576
         # --- END DASEG dimensions ---
 
@@ -219,8 +227,11 @@ class ImageFolder(data.Dataset):
             if mask_np is None:
                 raise FileNotFoundError(f"OpenCV could not read mask: {gt_path}. File might be corrupted or path incorrect.")
 
+            # Ensure image is RGB if it's loaded as BGR or grayscale
             if img_np.ndim == 3 and img_np.shape[2] == 3:
                 img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
+            elif img_np.ndim == 2: # If it's grayscale, convert to RGB for consistency
+                img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
             
             img = Image.fromarray(img_np)
             target = Image.fromarray(mask_np, mode='L')
@@ -233,17 +244,20 @@ class ImageFolder(data.Dataset):
         sample = {'image': img, 'label': label}
         transformed_sample = self.composed_transforms(sample)
         
+        # Add filename for debugging or analysis if not in training mode
         if self.split != 'train':
             transformed_sample['name'] = os.path.basename(img_path)
         
         return transformed_sample
     
     def convert_label(self, label):
+        # Converts label image to a binary format (0 or 1)
         label_np = np.array(label, dtype=np.uint8)
-        if label_np.ndim == 3 and label_np.shape[2] == 1:
+        if label_np.ndim == 3 and label_np.shape[2] == 1: # Handle potential extra channel dim
             label_np = label_np.squeeze(2)
         
         label_index = np.zeros_like(label_np, dtype=np.uint8)
+        # Assume any non-zero pixel is a positive label (lesion)
         label_index[label_np > 0] = 1 
         return Image.fromarray(label_index, mode='P')
 
