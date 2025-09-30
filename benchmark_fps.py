@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/benchmark_fps.py (CORRECTED CONTENT)
+# /kaggle/working/ARAA-Net/benchmark_fps.py
 
 import torch
 import argparse
@@ -37,7 +37,7 @@ def benchmark_fps(model, device, input_h, input_w, num_warmup=20, num_inference=
     model.to(device)
     model.eval() # Set model to evaluation mode
     
-    # Create a dummy input tensor
+    # Create a dummy input tensor with the correct input dimensions
     dummy_input = torch.randn(1, 3, input_h, input_w, dtype=torch.float32).to(device)
 
     logging.info(f"Performing GPU warm-up ({num_warmup} inferences)...")
@@ -86,14 +86,16 @@ def main():
     device = torch.device("cuda")
 
     # Set up logging for benchmark results
-    benchmark_log_dir = os.path.join(CKPT_ROOT, 'benchmark_results')
+    # Use a more specific log directory for benchmark results based on backbone
+    benchmark_log_dir = os.path.join(CKPT_ROOT, 'benchmark_logs')
     check_mkdir(benchmark_log_dir)
-    setup_logging_benchmark(benchmark_log_dir, filename=f'{args.backbone}_benchmark.log')
+    setup_logging_benchmark(benchmark_log_dir, filename=f'benchmark_{args.backbone}_input{args.input_h}x{args.input_w}.log')
 
     logging.info(f"--- Benchmarking LASA-Unet with {args.backbone} backbone and input size {args.input_h}x{args.input_w} ---")
     logging.info(f"Arguments: {args}")
 
     # Instantiate the model with the correct backbone
+    # IMPORTANT: Ensure the model definition uses the ASPP integrated version from lasa_vgg_model.py
     model = LASA_Unet(num_classes=2, backbone_name=args.backbone) 
 
     # --- Calculate Parameters ---
@@ -105,7 +107,7 @@ def main():
     fps = benchmark_fps(model, device, args.input_h, args.input_w, args.num_warmup, args.num_inference)
     
     logging.info("\n--- FPS Benchmark Results ---")
-    logging.info(f"Model: LASA-Unet with {args.backbone} backbone")
+    logging.info(f"Model: LASA-Unet with {args.backbone} backbone (including ASPP)") # Added mention of ASPP
     logging.info(f"Input Size: {args.input_h}x{args.input_w}")
     logging.info(f"Achieved: {fps:.2f} FPS ({1000/fps:.2f} ms/frame)")
     logging.info("---------------------------------")
