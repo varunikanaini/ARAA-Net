@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/lasa_vgg_model.py (Updated with Multiple LASA Modules)
+# /kaggle/working/ARAA-Net/lasa_vgg_model.py (Updated with THREE LASA Modules: e2, e3, e4)
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -9,7 +9,7 @@ class LASA_Unet(nn.Module):
     """
     A standalone segmentation model using a VGG16 or ResNet50 backbone,
     the original LASA module for feature enhancement, and a U-Net style decoder with true deep supervision.
-    Incorporates multiple LASA modules at different encoder stages (e3 and e4)
+    Incorporates MULTIPLE LASA modules at different encoder stages (e2, e3, and e4)
     as suggested by the paper's ablation studies for increased accuracy.
     """
     def __init__(self, num_classes=2, backbone_name='vgg16'):
@@ -54,8 +54,9 @@ class LASA_Unet(nn.Module):
             raise ValueError(f"Unsupported backbone: {backbone_name}")
 
         # --- 2. Multiple LASA Modules for Feature Enhancement ---
-        # Now, LASA will enhance features from the 3rd (e3) and 4th (e4) encoder blocks.
-        # This aligns with the ablation studies in the paper suggesting benefits from earlier blocks.
+        # Adding LASA to earlier stages (e2, e3) in addition to e4.
+        # This aligns with the paper's suggestion of applying LASA to 'dense block 1 & 2'.
+        self.lasa_module_e2 = LASA(in_channels=self.e2_channels)
         self.lasa_module_e3 = LASA(in_channels=self.e3_channels)
         self.lasa_module_e4 = LASA(in_channels=self.e4_channels)
 
@@ -70,7 +71,8 @@ class LASA_Unet(nn.Module):
         self.decoder3 = self._decoder_block(self.e4_channels + self.e3_channels, self.e3_channels)
         self.aux_conv_d3 = nn.Conv2d(self.e3_channels, num_classes, kernel_size=1) # Aux head for d3_out
 
-        # Decoder 2: Input from upsampled d3_out + e2 (e2 remains unenhanced by LASA)
+        # Decoder 2: Input from upsampled d3_out + LASA-enhanced e2
+        # e2_enhanced will be used here.
         self.decoder2 = self._decoder_block(self.e3_channels + self.e2_channels, self.e2_channels)
         self.aux_conv_d2 = nn.Conv2d(self.e2_channels, num_classes, kernel_size=1) # Aux head for d2_out
 
@@ -100,7 +102,8 @@ class LASA_Unet(nn.Module):
         e3 = self.encoder3(e2) 
         e4 = self.encoder4(e3) 
 
-        # Apply LASA enhancement to e3 and e4
+        # Apply LASA enhancement to e2, e3, and e4
+        e2_enhanced = self.lasa_module_e2(e2)
         e3_enhanced = self.lasa_module_e3(e3)
         e4_enhanced = self.lasa_module_e4(e4)
         
@@ -127,15 +130,15 @@ class LASA_Unet(nn.Module):
         aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
         # Decoder 2
-        # Uses original e2 features
-        d2_interp_size = e2.shape[2:]
+        # Uses the enhanced e2 features for concatenation
+        d2_interp_size = e2_enhanced.shape[2:]
         d2 = F.interpolate(d3_out, size=d2_interp_size, mode='bilinear', align_corners=True)
-        d2 = torch.cat([d2, e2], dim=1) 
+        d2 = torch.cat([d2, e2_enhanced], dim=1) 
         d2_out = self.decoder2(d2) 
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
         # Decoder 1 (Lowest stride, highest resolution decoder stage)
-        # Uses original e1 features
+        # Uses original e1 features (no LASA here for now, to balance complexity)
         d1_interp_size = e1.shape[2:]
         d1 = F.interpolate(d2_out, size=d1_interp_size, mode='bilinear', align_corners=True)
         d1 = torch.cat([d1, e1], dim=1) 

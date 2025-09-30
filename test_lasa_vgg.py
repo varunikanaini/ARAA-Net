@@ -1,4 +1,5 @@
-# /kaggle/working/ARAA-Net/test_lasa_vgg.py (FINAL & CORRECTED - VGG16 only)
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py (Updated with more arguments for consistency)
+# --- EXECUTING TEST_LASA_VGG.PY ---
 print("--- EXECUTING TEST_LASA_VGG.PY ---") # DIAGNOSTIC LINE
 import sys
 import os
@@ -16,7 +17,7 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_vgg_model import LASA_Unet 
+from lasa_vgg_model import LASA_Unet # <<< IMPORT THE UPDATED MODEL
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import check_mkdir, AvgMeter 
@@ -38,18 +39,26 @@ def get_test_args():
     parser.add_argument('--scale-h', type=int, default=896, help='Height images were nominally resized to (internal logic overrides for DASEG alignment)')
     parser.add_argument('--scale-w', type=int, default=576, help='Width images were nominally resized to (internal logic overrides for DASEG alignment)')
     
+    # --- LASA Module Tuning Arguments (for consistency with training) ---
+    parser.add_argument('--lasa-M', type=int, default=4, help='Number of groups (M) for LASA module.')
+    parser.add_argument('--lasa-L', nargs='+', type=int, default=[5, 7, 9, 11], 
+                        help='List of square side lengths (L) for LASA module.')
+
+    # --- Deep Supervision Weights (for consistent loss calculation) ---
     parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
-                        help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
+                        help='Weights for deep supervision losses. Must have 5 values.')
+    
+    # --- Loss Function Parameters (for consistent loss calculation) ---
     parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha parameter for Focal Loss.')
     parser.add_argument('--focal-gamma', type=float, default=2.0, help='Gamma parameter for Focal Loss.')
     parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Weight for Focal Loss component in combined loss.')
     parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss component in combined loss.')
 
+    # --- Other potential arguments (kept from original for completeness, might be dummy for testing) ---
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
     parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
     parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
-
     parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
     parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
     parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
@@ -57,15 +66,18 @@ def get_test_args():
     try:
         args = parser.parse_args()
     except SystemExit:
-        args = parser.parse_args([])
+        logging.warning("Could not parse arguments, potentially in an interactive environment. Using defaults or exiting.")
+        args = parser.parse_args([]) # Attempt to parse with defaults
     
+    # Basic validation for test arguments
     if len(args.deep_supervision_weights) != 5:
-        parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
+        parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     return args
 
 def setup_logging(log_dir, filename='final_testing_results.log'):
     log_file = os.path.join(log_dir, filename)
+    # Clear existing handlers to prevent duplicate logging
     for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
@@ -83,38 +95,65 @@ def main():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Construct the correct experiment name to find the checkpoint
-    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    # Use the same naming convention as in train_lasa_vgg.py
+    exp_name_parts = [
+        args.backbone,
+        f"LASA_M{args.lasa_M}_L{'_'.join(map(str, args.lasa_L))}",
+        "FocalDice",
+        "DS",
+        "WaveletHE"
+    ]
+    exp_name = "_".join(exp_name_parts) + f"_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    
     log_dir = os.path.join(CKPT_ROOT, exp_name)
-    check_mkdir(log_dir) 
+    check_mkdir(log_dir) # Ensure log directory exists
     setup_logging(log_dir) 
 
     logging.info(f"Starting FINAL TESTING for experiment '{exp_name}'")
-    logging.info(f"Arguments: {args}")
+    logging.info(f"Arguments used for testing: {args}")
 
     # Get base dataset path from config
-    base_dataset_path = DATASET_PATHS[args.dataset_name]
+    try:
+        base_dataset_path = DATASET_PATHS[args.dataset_name]
+    except KeyError:
+        logging.error(f"Dataset '{args.dataset_name}' not found in DATASET_PATHS configuration.")
+        sys.exit(1)
 
     # Handle TSRS-like datasets explicitly for test path
     if 'TSRS_RSNA' in args.dataset_name:
-        test_data_path = os.path.join(base_dataset_path, 'val') 
+        test_data_path = os.path.join(base_dataset_path, 'val') # Use 'val' split for testing TSRS
     else:
-        # For other datasets, ImageFolder will handle internal splitting
-        test_data_path = base_dataset_path
+        test_data_path = base_dataset_path # Use the base path, ImageFolder will handle internal splits if defined
         
+    # IMPORTANT: Use 'test' split for final evaluation if your ImageFolder dataset is structured that way.
+    # If your test set is within the 'val' split (like for TSRS), adjust accordingly.
+    # For general cases, assuming 'test' split exists or it defaults to 'val' if 'test' is not specified.
     test_set = ImageFolder(test_data_path, args.dataset_name, args, split='test') 
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False, collate_fn=custom_collate_fn)
+    
+    if not test_set:
+        logging.error(f"Test dataset is empty for '{args.dataset_name}'. Check dataset path and split configuration.")
+        sys.exit(1)
     logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
 
     # Load the BEST trained model
     checkpoint_to_load = os.path.join(log_dir, 'best_checkpoint.pth')
     if not os.path.exists(checkpoint_to_load):
-        logging.error(f"❌ ERROR: 'best_checkpoint.pth' not found in '{log_dir}'. Please run training first for this backbone/dataset combination.")
+        logging.error(f"❌ ERROR: 'best_checkpoint.pth' not found in '{log_dir}'. Please run training first for this experiment configuration.")
         sys.exit(1)
 
+    # Initialize the model with the specified backbone
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(DEVICE)
-    net.load_state_dict(torch.load(checkpoint_to_load, map_location=DEVICE))
-    net.eval()
-    logging.info(f"✅ Model loaded successfully from best checkpoint: {checkpoint_to_load}")
+    
+    try:
+        # Load the state dict onto the correct device
+        net.load_state_dict(torch.load(checkpoint_to_load, map_location=DEVICE))
+        logging.info(f"✅ Model loaded successfully from best checkpoint: {checkpoint_to_load}")
+    except Exception as e:
+        logging.error(f"Error loading model state dict: {e}. Exiting.")
+        sys.exit(1)
+
+    net.eval() # Set model to evaluation mode
 
     # Initialize Loss Functions (for consistent loss calculation in evaluation)
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(DEVICE)
@@ -134,8 +173,10 @@ def main():
             outputs = net(inputs) 
             final_pred = outputs[-1] 
             
+            # Calculate total loss for logging purposes
             total_loss = 0
             for i, pred_output in enumerate(outputs):
+                pred_output = pred_output.to(labels.device) # Ensure same device
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
                 
@@ -146,6 +187,7 @@ def main():
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
             
+            # Update confusion matrix
             confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
 
     # Compute and log all metrics from the confusion matrix
