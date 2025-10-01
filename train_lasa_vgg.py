@@ -17,7 +17,7 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-from config import DATA_ROOT, CKPT_ROOT
+from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet # <<< Ensure this imports the updated model
 from datasets import ImageFolder, mixup_data # <<< Import mixup_data
