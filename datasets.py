@@ -9,33 +9,30 @@ import random
 import cv2 
 import albumentations as A 
 from albumentations.pytorch import ToTensorV2 
-import pywt # For wavelet enhancement (if needed)
+import pywt 
 
 # --- Data Loading Logic ---
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
 MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 
 def make_dataset(root, dataset_name):
-    """
-    Creates a list of (image_path, mask_path) tuples.
-    """
+    # --- (Your make_dataset function remains the same as the previous correct version) ---
+    # ... Ensure it's correctly defined and returns (img_path, mask_path) tuples ...
     dataset_items = []
 
     if 'TSRS_RSNA' in dataset_name:
-        image_path = root 
-        mask_dir_candidate_sibling = os.path.join(os.path.dirname(root), os.path.basename(root) + '_labels') 
+        image_path = root
+        mask_dir_candidate_sibling = os.path.join(os.path.dirname(root), os.path.basename(root) + '_labels')
         mask_dir_candidate_in_root = os.path.join(root, 'GT') 
 
-        if os.path.isdir(mask_dir_candidate_sibling):
-            mask_path = mask_dir_candidate_sibling
-        elif os.path.isdir(mask_dir_candidate_in_root):
-            mask_path = mask_dir_candidate_in_root
+        if os.path.isdir(mask_dir_candidate_sibling): mask_path = mask_dir_candidate_sibling
+        elif os.path.isdir(mask_dir_candidate_in_root): mask_path = mask_dir_candidate_in_root
         else:
-            print(f"DEBUG: {dataset_name}: Could not find label directory for '{root}'. Looked in '{mask_dir_candidate_sibling}' and '{mask_dir_candidate_in_root}'.")
+            print(f"DEBUG: {dataset_name}: Could not find label directory for '{root}'.")
             return []
         
         if not os.path.isdir(image_path):
-            print(f"Warning: Image path '{image_path}' is not a directory for dataset '{dataset_name}'. Returning empty dataset.")
+            print(f"Warning: Image path '{image_path}' is not a directory for dataset '{dataset_name}'.")
             return []
         
         for f in os.listdir(image_path):
@@ -46,112 +43,76 @@ def make_dataset(root, dataset_name):
                 
                 if os.path.exists(img_full_path) and os.path.exists(mask_full_path):
                     dataset_items.append((img_full_path, mask_full_path))
-                else:
-                    pass 
-
+    
     elif dataset_name == 'JSRT':
         image_path = os.path.join(root, 'images')
         mask_path = os.path.join(root, 'masks')
-        if not os.path.isdir(image_path) or not os.path.isdir(mask_path):
-            print(f"Warning: JSRT paths not found: '{image_path}', '{mask_path}'. Returning empty dataset.")
-            return []
+        if not os.path.isdir(image_path) or not os.path.isdir(mask_path): return []
         for f in os.listdir(image_path):
             if f.lower().endswith('.png'):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
                 mask_full_path = os.path.join(mask_path, img_name_base + '.png')
-                if os.path.exists(mask_full_path):
-                    dataset_items.append((img_full_path, mask_full_path))
-                else:
-                    print(f"Warning: Mask not found for JSRT image '{f}'. Skipping.")
-
+                if os.path.exists(mask_full_path): dataset_items.append((img_full_path, mask_full_path))
+    
     elif dataset_name == 'COVID19_Radiography':
         base_dataset_folder = os.path.join(root, 'COVID-19_Radiography_Database')
         subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia']
         for sub_name in subfolders:
             sub_image_path = os.path.join(base_dataset_folder, sub_name, 'images')
             sub_mask_path = os.path.join(base_dataset_folder, sub_name, 'masks')
-            
-            if not os.path.isdir(sub_image_path) or not os.path.isdir(sub_mask_path):
-                print(f"Warning: Image or mask path for '{sub_name}' not found in '{base_dataset_folder}'. Skipping class.")
-                continue
-            
+            if not os.path.isdir(sub_image_path) or not os.path.isdir(sub_mask_path): continue
             for f in os.listdir(sub_image_path):
                 if f.lower().endswith(IMAGE_EXTENSIONS):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(sub_image_path, f)
                     mask_full_path = os.path.join(sub_mask_path, img_name_base + '.png')
-                    if os.path.exists(mask_full_path):
-                        dataset_items.append((img_full_path, mask_full_path))
-                    else:
-                        print(f"Warning: Mask not found for COVID19 image '{f}' in '{sub_name}'. Skipping.")
+                    if os.path.exists(mask_full_path): dataset_items.append((img_full_path, mask_full_path))
 
     elif dataset_name == 'CVC-ClinicDB':
         image_path = os.path.join(root, 'Original')
         mask_path = os.path.join(root, 'Ground Truth')
-        if not os.path.isdir(image_path) or not os.path.isdir(mask_path):
-            print(f"Warning: CVC-ClinicDB paths not found: '{image_path}', '{mask_path}'. Returning empty dataset.")
-            return []
+        if not os.path.isdir(image_path) or not os.path.isdir(mask_path): return []
         for f in os.listdir(image_path):
             if f.lower().endswith('.tif'):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
                 mask_full_path = os.path.join(mask_path, img_name_base + '.tif')
-                if os.path.exists(mask_full_path):
-                    dataset_items.append((img_full_path, mask_full_path))
-                else:
-                    print(f"Warning: Mask not found for CVC image '{f}'. Skipping.")
+                if os.path.exists(mask_full_path): dataset_items.append((img_full_path, mask_full_path))
 
     elif dataset_name == 'DentalPanoramic':
         image_path = os.path.join(root, 'images')
         mask_path = os.path.join(root, 'segmentation_1')
-        if not os.path.isdir(image_path) or not os.path.isdir(mask_path):
-            print(f"Warning: DentalPanoramic paths not found: '{image_path}', '{mask_path}'. Returning empty dataset.")
-            return []
+        if not os.path.isdir(image_path) or not os.path.isdir(mask_path): return []
         for f in os.listdir(image_path):
             if f.lower().endswith(IMAGE_EXTENSIONS):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
-                mask_full_path = os.path.join(mask_path, img_name_base + '.png') # Assuming masks are png
-                if os.path.exists(mask_full_path):
-                    dataset_items.append((img_full_path, mask_full_path))
-                else:
-                    print(f"Warning: Mask not found for DentalPanoramic image '{f}'. Skipping.")
+                mask_full_path = os.path.join(mask_path, img_name_base + '.png')
+                if os.path.exists(mask_full_path): dataset_items.append((img_full_path, mask_full_path))
 
     elif dataset_name == 'SixDiseasesChestXRay':
         base_split_folder = root 
-        if not os.path.isdir(base_split_folder):
-            print(f"Warning: SixDiseasesChestXRay split path not found: '{base_split_folder}'. Returning empty dataset.")
-            return []
-
+        if not os.path.isdir(base_split_folder): return []
         subfolders = ['Covid', 'Normal', 'Tuberculosis', 'Bacterial Pneumonia', 'Pneumothorax', 'Viral Pneumonia']
-        
         for sub_name in subfolders:
             sub_image_path = os.path.join(base_split_folder, sub_name, 'images')
             sub_mask_path = os.path.join(base_split_folder, sub_name, 'masks')
-            
-            if not os.path.isdir(sub_image_path) or not os.path.isdir(sub_mask_path):
-                print(f"Warning: Image or mask path for '{sub_name}' not found in '{base_split_folder}'. Skipping class.")
-                continue
-            
+            if not os.path.isdir(sub_image_path) or not os.path.isdir(sub_mask_path): continue
             for f in os.listdir(sub_image_path):
                 if f.lower().endswith(IMAGE_EXTENSIONS):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(sub_image_path, f)
                     mask_full_path = os.path.join(sub_mask_path, img_name_base + '.png')
-                    if os.path.exists(mask_full_path):
-                        dataset_items.append((img_full_path, mask_full_path))
-                    else:
-                        print(f"Warning: Mask not found for {sub_name} image '{f}'. Skipping.")
+                    if os.path.exists(mask_full_path): dataset_items.append((img_full_path, mask_full_path))
 
     else:
-        raise ValueError(f"Unknown dataset_name: {dataset_name}. This dataset does not have a defined data loading mechanism.")
+        raise ValueError(f"Unknown dataset_name: {dataset_name}.")
     
-    if not dataset_items and (dataset_name != 'PLACEHOLDER_FOR_DYNAMIC_SELECTION'): 
+    if not dataset_items and (dataset_name != 'PLACEHOLDER_FOR_DYNAMIC_SELECTION'):
         print(f"Warning: Found 0 items for dataset '{dataset_name}' at root '{root}'. Please check dataset path, file extensions, and directory structure.")
         
     return dataset_items
-
 
 # --- ImageFolder Class ---
 class ImageFolder(data.Dataset):
@@ -165,8 +126,7 @@ class ImageFolder(data.Dataset):
         
         if 'TSRS_RSNA' in dataset_name or dataset_name == 'SixDiseasesChestXRay':
             self.imgs = all_imgs
-            if not self.imgs:
-                print(f"Warning: The '{split}' split for {dataset_name} is empty. Expected data at: '{root}'")
+            if not self.imgs: print(f"Warning: The '{split}' split for {dataset_name} is empty. Expected data at: '{root}'")
         else:
             train_dir = os.path.join(root, 'train')
             val_dir = os.path.join(root, 'val')
@@ -174,14 +134,10 @@ class ImageFolder(data.Dataset):
 
             if os.path.isdir(train_dir) and os.path.isdir(val_dir) and os.path.isdir(test_dir):
                 print(f"Detected pre-split directories in '{root}'. Using '{split}' split.")
-                if split == 'train':
-                    self.imgs = make_dataset(train_dir, dataset_name)
-                elif split == 'val':
-                    self.imgs = make_dataset(val_dir, dataset_name)
-                elif split == 'test':
-                    self.imgs = make_dataset(test_dir, dataset_name)
-                else:
-                    raise ValueError(f"Invalid split '{split}'. Must be 'train', 'val', or 'test'.")
+                if split == 'train': self.imgs = make_dataset(train_dir, dataset_name)
+                elif split == 'val': self.imgs = make_dataset(val_dir, dataset_name)
+                elif split == 'test': self.imgs = make_dataset(test_dir, dataset_name)
+                else: raise ValueError(f"Invalid split '{split}'.")
             else:
                 if not all_imgs:
                      print(f"Warning: No images found for dataset '{dataset_name}' at root '{root}'.")
@@ -200,7 +156,6 @@ class ImageFolder(data.Dataset):
                     if total_size < 3: 
                         train_size = 1 if total_size > 0 else 0
                         val_size = 1 if total_size > 1 else 0
-                        test_size = total_size - train_size - val_size
                     else:
                         test_size = total_size - train_size - val_size
                         if test_size < 0:
@@ -208,15 +163,11 @@ class ImageFolder(data.Dataset):
                             test_size = total_size - train_size - val_size
                         test_size = max(0, test_size)
 
-                    if split == 'train':
-                        self.imgs = all_imgs[:train_size]
-                    elif split == 'val':
-                        self.imgs = all_imgs[train_size : train_size + val_size]
-                    elif split == 'test':
-                        self.imgs = all_imgs[train_size + val_size :] 
-                    else:
-                        raise ValueError(f"Invalid split '{split}'. Must be 'train', 'val', or 'test'.")
-                    print(f"Performing programmatic split on '{root}'. Total items: {total_size}. Split '{split}': {len(self.imgs)} items (Train: {train_size}, Val: {val_size}, Test remainder).")
+                    if split == 'train': self.imgs = all_imgs[:train_size]
+                    elif split == 'val': self.imgs = all_imgs[train_size : train_size + val_size]
+                    elif split == 'test': self.imgs = all_imgs[train_size + val_size :] 
+                    else: raise ValueError(f"Invalid split '{split}'.")
+                    print(f"Performing programmatic split on '{root}'. Total items: {total_size}. Split '{split}': {len(self.imgs)} items.")
 
         if not self.imgs:
             print(f"Warning: {self.split} split for {self.dataset_name} is empty. No images loaded. Please check dataset path and contents: '{root}'")
@@ -227,14 +178,14 @@ class ImageFolder(data.Dataset):
 
         DASEG_FIXED_RESIZE_W = 576
         DASEG_FIXED_RESIZE_H = 896
-        DASEG_TRAIN_CROP_H = 576 
-        DASEG_TRAIN_CROP_W = 576 
 
         if self.split == 'train':
             self.composed_transforms = A.Compose([
                 A.LongestMaxSize(max_size=max(DASEG_FIXED_RESIZE_H, DASEG_FIXED_RESIZE_W), interpolation=cv2.INTER_LINEAR), 
-                # Removed 'value' argument from PadIfNeeded
-                A.PadIfNeeded(min_height=DASEG_FIXED_RESIZE_H, min_width=DASEG_FIXED_RESIZE_W, border_mode=cv2.BORDER_CONSTANT),
+                # Corrected PadIfNeeded: 'value' must be a tuple for RGB images.
+                A.PadIfNeeded(min_height=DASEG_FIXED_RESIZE_H, min_width=DASEG_FIXED_RESIZE_W, 
+                              border_mode=cv2.BORDER_CONSTANT, value=(0, 0, 0)), # Padding with black for RGB
+                
                 A.ToFloat(max_value=255.0), 
                 
                 A.OneOf([
@@ -252,19 +203,18 @@ class ImageFolder(data.Dataset):
                     A.MedianBlur(blur_limit=5, p=0.5),
                 ], p=0.5),
                 
-                # Placeholder for Wavelet and Histogram Equalization
-                # A.Lambda(image=custom_wavelet_func, mask=custom_wavelet_func_mask, p=0.5),
-                # A.Lambda(image=custom_histo_func, mask=custom_histo_func_mask, p=0.5),
-                # A.RandomCrop(height=DASEG_TRAIN_CROP_H, width=DASEG_TRAIN_CROP_W, p=1.0), # If needed
+                # If you have custom transforms, they should be A.Lambda.
+                # Ensure custom transforms handle NumPy arrays and return NumPy arrays.
+                # Example: A.Lambda(image=custom_wavelet_transform_func, mask=custom_wavelet_transform_func_mask, p=0.5),
                 
                 A.Normalize(mean=self.mean, std=self.std, max_pixel_value=1.0), 
-                ToTensorV2(), 
+                ToTensorV2(), # Converts NumPy array to PyTorch tensor
             ])
         else: # Validation/Test Transforms
             self.composed_transforms = A.Compose([
                 A.LongestMaxSize(max_size=max(DASEG_FIXED_RESIZE_H, DASEG_FIXED_RESIZE_W), interpolation=cv2.INTER_LINEAR),
-                # Removed 'value' argument from PadIfNeeded
-                A.PadIfNeeded(min_height=DASEG_FIXED_RESIZE_H, min_width=DASEG_FIXED_RESIZE_W, border_mode=cv2.BORDER_CONSTANT),
+                A.PadIfNeeded(min_height=DASEG_FIXED_RESIZE_H, min_width=DASEG_FIXED_RESIZE_W, 
+                              border_mode=cv2.BORDER_CONSTANT, value=(0, 0, 0)), # Padding with black for RGB
                 A.ToFloat(max_value=255.0), 
                 A.Normalize(mean=self.mean, std=self.std, max_pixel_value=1.0),
                 ToTensorV2(),
@@ -282,25 +232,18 @@ class ImageFolder(data.Dataset):
             if img_np is None: raise FileNotFoundError(f"OpenCV could not read image: '{img_path}'.")
             if mask_np is None: raise FileNotFoundError(f"OpenCV could not read mask: '{gt_path}'.")
 
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB) # Convert BGR to RGB
+            
             label_np = self.convert_label_to_numpy(Image.fromarray(mask_np, mode='L'))
-
-            # Basic check for data integrity before transforms
-            if img_np.shape[0] == 0 or img_np.shape[1] == 0 or label_np.shape[0] == 0 or label_np.shape[1] == 0:
-                print(f"Warning: Image or mask has zero dimension for {img_path}. Skipping.")
-                return None
 
         except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError) as e:
             print(f"ERROR: Could not open/process image or mask for paths: '{img_path}', '{gt_path}'. Error: {e}. Returning None for this sample.")
             return None 
         
+        # Albumentations expects input as a dictionary with 'image' and 'mask' keys
         sample = {'image': img_np, 'mask': label_np} 
         
-        try:
-            transformed_sample = self.composed_transforms(**sample)
-        except Exception as e:
-            print(f"ERROR applying transforms to {img_path}: {e}. Returning None.")
-            return None
+        transformed_sample = self.composed_transforms(**sample) # Apply transforms
         
         if self.split != 'train':
             transformed_sample['name'] = os.path.basename(img_path)
@@ -308,7 +251,7 @@ class ImageFolder(data.Dataset):
         return transformed_sample
     
     def convert_label_to_numpy(self, label_pil):
-        label_np = np.array(label_pil, dtype=np.uint8)
+        label_np = np.array(label_pil, dtype=np.uint8) 
         if label_np.ndim == 3 and label_np.shape[2] == 1:
             label_np = label_np.squeeze(2)
         elif label_np.ndim != 2:
@@ -316,23 +259,13 @@ class ImageFolder(data.Dataset):
 
         label_index = np.zeros_like(label_np, dtype=np.uint8)
         label_index[label_np > 0] = 1 
+        
         return label_index
 
     def __len__(self):
         return len(self.imgs)
 
-# --- Custom Collate Function (from train_lasa_vgg.py) ---
-# This needs to be accessible by the DataLoader. If it's in train_lasa_vgg.py,
-# ensure it's imported or defined here if this datasets.py is standalone.
-# Assuming it's defined in train_lasa_vgg.py and imported.
-# def custom_collate_fn(batch):
-#     batch = [item for item in batch if item is not None] 
-#     if not batch: 
-#         return None # Return None if the batch is empty after filtering
-#     return torch.utils.data.dataloader.default_collate(batch)
-
 # --- MixUp Helper ---
-# Only call during training loop, not in Dataset.
 def mixup_data(x, y, alpha=1.0):
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -343,7 +276,6 @@ def mixup_data(x, y, alpha=1.0):
         return x, y
 
     index = torch.randperm(batch_size)
-
     mixed_x = lam * x + (1 - lam) * x[index, :]
     mixed_y = lam * y + (1 - lam) * y[index, :]
     return mixed_x, mixed_y
