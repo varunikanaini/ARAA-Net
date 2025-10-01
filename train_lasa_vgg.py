@@ -19,12 +19,12 @@ if project_path not in sys.path:
 
 # --- Import Standalone Model and Utilities ---
 from lasa_vgg_model import LASA_Unet # <<< Ensure this imports the updated model
-from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS 
-from datasets import ImageFolder
+from datasets import ImageFolder, mixup_data # <<< Import mixup_data
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- Loss Functions (kept as is) ---
+# --- Loss Functions (keep as is) ---
+# ... (your FocalLoss and DiceLoss classes) ...
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -57,11 +57,9 @@ class DiceLoss(nn.Module):
         num_classes = inputs.shape[1]
         
         if num_classes > 1:
-            # Assuming binary segmentation where class 1 is the target
-            # If multi-class, this needs to be adapted to calculate dice per class
             pred_probs = F.softmax(inputs, dim=1)[:, 1, :, :].unsqueeze(1) 
             true_oh = (targets == 1).float().unsqueeze(1) 
-        else: # Binary case directly
+        else: 
             pred_probs = F.sigmoid(inputs)
             true_oh = targets.float().unsqueeze(1) 
 
@@ -86,58 +84,40 @@ class DiceLoss(nn.Module):
             return loss 
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
+    parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Augmentations')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
-                        choices=[
-                            'TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface', 
-                            'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 
-                            'DentalPanoramic', 'SixDiseasesChestXRay'
-                        ], help='Name of the dataset')
+                        choices=['TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface', 'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 'DentalPanoramic', 'SixDiseasesChestXRay'], help='Name of the dataset')
     parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to use')
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--batch-size', type=int, default=6) # As per user's example
-    parser.add_argument('--lr', type=float, default=0.001) # As per user's example
-    parser.add_argument('--weight-decay', type=float, default=0.0005) # As per user's example
-    parser.add_argument('--patience', type=int, default=20) # As per user's example
-    parser.add_argument('--num-workers', type=int, default=2) # As per user's example
-    parser.add_argument('--scale-h', type=int, default=896, help='Height images were nominally resized to (internal logic overrides for DASEG alignment)')
-    parser.add_argument('--scale-w', type=int, default=576, help='Width images were nominally resized to (internal logic overrides for DASEG alignment)')
+    parser.add_argument('--batch-size', type=int, default=2) # Keeping batch size as per error log
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--weight-decay', type=float, default=0.0005)
+    parser.add_argument('--patience', type=int, default=20)
+    parser.add_argument('--num-workers', type=int, default=2)
+    parser.add_argument('--scale-h', type=int, default=896)
+    parser.add_argument('--scale-w', type=int, default=576)
     
-    parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
-                        help='Weights for deep supervision losses, from earliest (d4) to final (d1) output. Must have 5 values.')
+    parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], help='Weights for deep supervision losses.')
+    parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha for Focal Loss.')
+    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Gamma for Focal Loss.')
+    parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Weight for Focal Loss.')
+    parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss.')
     
-    parser.add_argument('--focal-alpha', type=float, default=0.5, 
-                        help='Alpha parameter for Focal Loss. Balance between positive/negative examples.')
-    parser.add_argument('--focal-gamma', type=float, default=2.0, 
-                        help='Gamma parameter for Focal Loss. Focus on hard examples.')
-    parser.add_argument('--focal-loss-weight', type=float, default=1.0, 
-                        help='Weight for Focal Loss component in combined loss.')
+    # Augmentation parameters (if you want to expose them to command line)
+    parser.add_argument('--mixup-alpha', type=float, default=0.4, help='Alpha for MixUp beta distribution.')
 
-    parser.add_argument('--dice-loss-weight', type=float, default=1.0, 
-                        help='Weight for Dice Loss component in combined loss.')
-    
-    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, 
-                        help='Minimum lesion area in pixels to trigger CenterAmplification (STS-Net default 576)')
-    parser.add_argument('--expansion-factor', type=float, default=1.5, 
-                        help='Factor by which to expand the bounding box during CenterAmplification')
-    parser.add_argument('--min-bbox-h', type=int, default=32, 
-                        help='Minimum height of the expanded bounding box in pixels for CenterAmplification')
-    parser.add_argument('--min-bbox-w', type=int, default=32, 
-                        help='Minimum width of the expanded bounding box in pixels for CenterAmplification')
-
-    parser.add_argument('--wavelet-type', type=str, default='haar', 
-                        help='Wavelet type for DWT-based contrast enhancement (e.g., haar, db1, db2).')
-    parser.add_argument('--wavelet-level', type=int, default=1, 
-                        help='Decomposition level for DWT-based contrast enhancement.')
-    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, 
-                        help='Scaling factor for detail coefficients in wavelet enhancement.')
-
-    parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
-
-    parser.add_argument('--scheduler-patience', type=int, default=5) # As per user's example
-    parser.add_argument('--scheduler-factor', type=float, default=0.5) # As per user's example
-    parser.add_argument('--scheduler-min-lr', type=float, default=1e-6) # As per user's example
-
+    # Other parameters (keep as they are)
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576)
+    parser.add_argument('--expansion-factor', type=float, default=1.5)
+    parser.add_argument('--min-bbox-h', type=int, default=32)
+    parser.add_argument('--min-bbox-w', type=int, default=32)
+    parser.add_argument('--wavelet-type', type=str, default='haar')
+    parser.add_argument('--wavelet-level', type=int, default=1)
+    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5)
+    parser.add_argument('--test-only', action='store_true')
+    parser.add_argument('--scheduler-patience', type=int, default=5) 
+    parser.add_argument('--scheduler-factor', type=float, default=0.5)
+    parser.add_argument('--scheduler-min-lr', type=float, default=1e-6)
 
     try:
         args = parser.parse_args()
@@ -145,7 +125,7 @@ def get_args():
         args = parser.parse_args([])
     
     if len(args.deep_supervision_weights) != 5:
-        parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
+        parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     return args
 
@@ -156,57 +136,44 @@ def setup_logging(log_dir):
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_supervision_weights, focal_loss_weight, dice_loss_weight, mode="Validating"):
-    """
-    Evaluates the model on a given data_loader.
-    """
     net.eval()
-    confmat = ConfusionMatrix(num_classes=2) # Assuming binary segmentation
+    confmat = ConfusionMatrix(num_classes=2) 
     loss_recorder = AvgMeter()
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
             if data is None: 
-                logging.warning(f"Skipping empty {mode} batch due to corrupted/missing samples.")
+                logging.warning(f"Skipping empty {mode} batch.")
                 continue
             
-            # Ensure inputs and labels are on the correct device
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            outputs = net(inputs) # The model returns a tuple of outputs (auxiliary + final)
-            final_pred_for_metrics = outputs[-1] # Use the final prediction for confusion matrix
+            outputs = net(inputs) 
+            final_pred_for_metrics = outputs[-1] 
             
             total_loss = 0
-            # Iterate through all outputs (deep supervision) to calculate the combined loss
             for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
-                
-                combined_loss_per_head = (focal_loss_weight * current_focal_loss) + \
-                                         (dice_loss_weight * current_dice_loss)
-                
+                combined_loss_per_head = (focal_loss_weight * current_focal_loss) + (dice_loss_weight * current_dice_loss)
                 total_loss += deep_supervision_weights[i] * combined_loss_per_head
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
-            
-            # Use the final output for confusion matrix calculation
             confmat.update(labels.flatten(), final_pred_for_metrics.argmax(1).flatten())
             
     _, _, class_iou, _, _ = confmat.compute()
     mIoU = class_iou.mean().item()
     logging.info(f"--- {mode} mIoU: {mIoU:.4f} | {mode} Loss: {loss_recorder.avg:.4f} ---")
     
-    # Return to training mode ONLY if evaluating for validation during training
     if mode == "Validating": 
-        net.train()
+        net.train() # Return to train mode after validation
         
     return mIoU
 
-# Custom collate function to filter out None samples (from `datasets.py` returning None for corrupted images)
 def custom_collate_fn(batch):
     batch = [item for item in batch if item is not None]
     if not batch:
         return None
     return torch.utils.data.dataloader.default_collate(batch)
-
 
 def main():
     args = get_args()
@@ -216,18 +183,15 @@ def main():
     if torch.cuda.is_available(): torch.cuda.manual_seed(2024)
     np.random.seed(2024)
 
-    # Generalize exp_name generation
-    exp_name = f"{args.backbone}_LASA_Unet_ASPP_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_name = f"{args.backbone}_LASA_Enc_ASPP_Attn_MixUp_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path)
 
     logging.info(f"Starting training for '{exp_name}' with arguments: {args}")
 
-    # Get base dataset path from config
     base_dataset_path = DATASET_PATHS[args.dataset_name]
 
-    # Instantiate the model (ensure it uses the updated LASA_Unet)
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
     
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
@@ -237,32 +201,28 @@ def main():
         logging.info("Running in TEST ONLY mode.")
         best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
         if not os.path.exists(best_checkpoint_path):
-            logging.error(f"Best checkpoint not found at {best_checkpoint_path}. Please run training first for this backbone/dataset combination.")
+            logging.error(f"Best checkpoint not found at {best_checkpoint_path}.")
             sys.exit(1)
-
         try:
             net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
             logging.info(f"Loaded model from {best_checkpoint_path}")
         except Exception as e:
-            logging.error(f"Error loading model from checkpoint: {e}. Exiting.")
+            logging.error(f"Error loading model: {e}. Exiting.")
             sys.exit(1)
 
-        # Handle TSRS-like datasets for testing path
         if 'TSRS_RSNA' in args.dataset_name:
             test_data_path = os.path.join(base_dataset_path, 'val') 
         else:
             test_data_path = base_dataset_path
         
-        # Use 'val' split for evaluation consistent with training's val
         test_set_for_eval = ImageFolder(test_data_path, args.dataset_name, args, split='val') 
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
-
         test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, dice_loss_fn, 
                                    args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Testing")
         logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
         return 
 
-    optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = optim.AdamW(net.parameters(), lr=args.lr, weight_decay=args.weight_decay) # Switched to AdamW
     
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                      patience=args.scheduler_patience, min_lr=args.scheduler_min_lr, verbose=True)
@@ -270,7 +230,6 @@ def main():
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
     
-    # --- Load Checkpoint for Resuming Training ---
     if os.path.exists(latest_checkpoint_path):
         try:
             ckpt = torch.load(latest_checkpoint_path, map_location=device)
@@ -283,15 +242,13 @@ def main():
             patience_counter = ckpt.get('patience_counter', 0)
             logging.info(f"Resuming training from epoch {start_epoch}, best mIoU was {best_mIoU:.4f}, patience counter: {patience_counter}")
         except Exception as e:
-            logging.error(f"Could not load checkpoint for resuming: {e}. Starting training from scratch.")
+            logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
 
     # --- Dataset Loading ---
-    # Handle TSRS-like datasets explicitly for train/val paths
     if 'TSRS_RSNA' in args.dataset_name:
         train_data_path = os.path.join(base_dataset_path, 'train')
         val_data_path = os.path.join(base_dataset_path, 'val') 
     else:
-        # For other datasets, ImageFolder will handle internal splitting
         train_data_path = base_dataset_path
         val_data_path = base_dataset_path 
 
@@ -300,8 +257,8 @@ def main():
     test_set = ImageFolder(val_data_path, args.dataset_name, args, split='val') 
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
-    logging.info(f"Found {len(train_set)} training images for dataset '{args.dataset_name}'.")
-    logging.info(f"Found {len(test_set)} validation images for dataset '{args.dataset_name}'.")
+    logging.info(f"Found {len(train_set)} training images.")
+    logging.info(f"Found {len(test_set)} validation images.")
 
     # --- Training Loop ---
     for epoch in range(start_epoch, args.epochs):
@@ -311,23 +268,25 @@ def main():
         
         for i, data in enumerate(train_iterator):
             if data is None: 
-                logging.warning(f"Epoch {epoch+1}, Iter {i}: Skipping empty training batch due to corrupted/missing samples.")
+                logging.warning(f"Epoch {epoch+1}, Iter {i}: Skipping empty batch.")
                 continue
 
             inputs, labels = data['image'].to(device), data['label'].to(device)
+
+            # --- Apply MixUp ---
+            # Only apply MixUp during training, and only if batch size > 1
+            if args.batch_size > 1 and args.mixup_alpha > 0:
+                inputs, labels = mixup_data(inputs, labels, alpha=args.mixup_alpha)
+            
             optimizer.zero_grad(set_to_none=True)
             
-            outputs = net(inputs) # Model returns tuple of outputs
+            outputs = net(inputs) 
             
             total_loss = 0
-            # Calculate combined loss from all outputs (deep supervision)
             for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
-                
-                combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + \
-                                         (args.dice_loss_weight * current_dice_loss)
-                
+                combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + (args.dice_loss_weight * current_dice_loss)
                 total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
             
             total_loss.backward()
@@ -336,14 +295,11 @@ def main():
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg)
             
-        # --- Validation Step ---
         current_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, 
                                       args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Validating")
 
-        # --- Scheduler Step ---
         scheduler.step(current_mIoU)
 
-        # --- Checkpointing ---
         if current_mIoU > best_mIoU:
             best_mIoU = current_mIoU
             patience_counter = 0
@@ -353,7 +309,6 @@ def main():
             patience_counter += 1
             logging.info(f"⚠️ No improvement for {patience_counter} epoch(s). Best mIoU: {best_mIoU:.4f}.")
 
-        # Save latest checkpoint for resuming
         torch.save({
             'epoch': epoch,
             'model_state_dict': net.state_dict(),
@@ -363,9 +318,8 @@ def main():
             'patience_counter': patience_counter
         }, latest_checkpoint_path)
         
-        # --- Early Stopping ---
         if patience_counter >= args.patience:
-            logging.info("Early stopping triggered due to no improvement.")
+            logging.info("Early stopping triggered.")
             break
 
 if __name__ == '__main__':
