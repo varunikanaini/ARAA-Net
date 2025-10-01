@@ -17,7 +17,6 @@ MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 
 def make_dataset(root, dataset_name):
     # --- (Your make_dataset function remains the same as the previous correct version) ---
-    # ... Ensure it's correctly defined and returns (img_path, mask_path) tuples ...
     dataset_items = []
 
     if 'TSRS_RSNA' in dataset_name:
@@ -124,50 +123,43 @@ class ImageFolder(data.Dataset):
         
         all_imgs = make_dataset(root, dataset_name)
         
+        # --- Data Splitting Logic ---
         if 'TSRS_RSNA' in dataset_name or dataset_name == 'SixDiseasesChestXRay':
+            # For these datasets, `root` is already a specific split dir (e.g., 'train', 'val', 'test')
             self.imgs = all_imgs
             if not self.imgs: print(f"Warning: The '{split}' split for {dataset_name} is empty. Expected data at: '{root}'")
         else:
-            train_dir = os.path.join(root, 'train')
-            val_dir = os.path.join(root, 'val')
-            test_dir = os.path.join(root, 'test')
-
-            if os.path.isdir(train_dir) and os.path.isdir(val_dir) and os.path.isdir(test_dir):
-                print(f"Detected pre-split directories in '{root}'. Using '{split}' split.")
-                if split == 'train': self.imgs = make_dataset(train_dir, dataset_name)
-                elif split == 'val': self.imgs = make_dataset(val_dir, dataset_name)
-                elif split == 'test': self.imgs = make_dataset(test_dir, dataset_name)
-                else: raise ValueError(f"Invalid split '{split}'.")
+            # Handle programmatic splitting if data is not pre-split into subfolders
+            if not all_imgs:
+                 print(f"Warning: No images found for dataset '{dataset_name}' at root '{root}'.")
+                 self.imgs = []
             else:
-                if not all_imgs:
-                     print(f"Warning: No images found for dataset '{dataset_name}' at root '{root}'.")
-                     self.imgs = []
+                random.seed(42) 
+                random.shuffle(all_imgs)
+                
+                total_size = len(all_imgs)
+                train_ratio = 0.8
+                val_ratio = 0.1
+                
+                train_size = int(train_ratio * total_size)
+                val_size = int(val_ratio * total_size)
+                
+                # Adjust split sizes to avoid empty splits
+                if total_size < 3: 
+                    train_size = 1 if total_size > 0 else 0
+                    val_size = 1 if total_size > 1 else 0
                 else:
-                    random.seed(42) 
-                    random.shuffle(all_imgs)
-                    
-                    total_size = len(all_imgs)
-                    train_ratio = 0.8
-                    val_ratio = 0.1
-                    
-                    train_size = int(train_ratio * total_size)
-                    val_size = int(val_ratio * total_size)
-                    
-                    if total_size < 3: 
-                        train_size = 1 if total_size > 0 else 0
-                        val_size = 1 if total_size > 1 else 0
-                    else:
+                    test_size = total_size - train_size - val_size
+                    if test_size < 0:
+                        if val_size > 1: val_size -= 1
                         test_size = total_size - train_size - val_size
-                        if test_size < 0:
-                            if val_size > 1: val_size -= 1
-                            test_size = total_size - train_size - val_size
-                        test_size = max(0, test_size)
+                    test_size = max(0, test_size)
 
-                    if split == 'train': self.imgs = all_imgs[:train_size]
-                    elif split == 'val': self.imgs = all_imgs[train_size : train_size + val_size]
-                    elif split == 'test': self.imgs = all_imgs[train_size + val_size :] 
-                    else: raise ValueError(f"Invalid split '{split}'.")
-                    print(f"Performing programmatic split on '{root}'. Total items: {total_size}. Split '{split}': {len(self.imgs)} items.")
+                if split == 'train': self.imgs = all_imgs[:train_size]
+                elif split == 'val': self.imgs = all_imgs[train_size : train_size + val_size]
+                elif split == 'test': self.imgs = all_imgs[train_size + val_size :] 
+                else: raise ValueError(f"Invalid split '{split}'.")
+                print(f"Performing programmatic split on '{root}'. Total items: {total_size}. Split '{split}': {len(self.imgs)} items.")
 
         if not self.imgs:
             print(f"Warning: {self.split} split for {self.dataset_name} is empty. No images loaded. Please check dataset path and contents: '{root}'")
@@ -179,36 +171,34 @@ class ImageFolder(data.Dataset):
         DASEG_FIXED_RESIZE_W = 576
         DASEG_FIXED_RESIZE_H = 896
 
+        # Define transforms using albumentations
         if self.split == 'train':
             self.composed_transforms = A.Compose([
+                # Resize maintaining aspect ratio, then pad to fixed size
                 A.LongestMaxSize(max_size=max(DASEG_FIXED_RESIZE_H, DASEG_FIXED_RESIZE_W), interpolation=cv2.INTER_LINEAR), 
-                # Corrected PadIfNeeded: 'value' must be a tuple for RGB images.
+                # Pad to target size. 'value' MUST be a tuple for RGB images.
                 A.PadIfNeeded(min_height=DASEG_FIXED_RESIZE_H, min_width=DASEG_FIXED_RESIZE_W, 
                               border_mode=cv2.BORDER_CONSTANT, value=(0, 0, 0)), # Padding with black for RGB
                 
-                A.ToFloat(max_value=255.0), 
+                A.ToFloat(max_value=255.0), # Convert image to float in [0, 1] range
                 
-                A.OneOf([
-                    A.HorizontalFlip(p=0.5),
-                    A.VerticalFlip(p=0.5),
-                ], p=1.0), 
-                
-                A.OneOf([
-                    A.RandomBrightnessContrast(p=0.7, brightness_limit=0.2, contrast_limit=0.2),
-                    A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.7),
-                ], p=1.0),
-                
-                A.OneOf([
-                    A.GaussianBlur(blur_limit=(3, 7), p=0.5), 
-                    A.MedianBlur(blur_limit=5, p=0.5),
-                ], p=0.5),
-                
-                # If you have custom transforms, they should be A.Lambda.
-                # Ensure custom transforms handle NumPy arrays and return NumPy arrays.
+                # --- Augmentations ---
+                A.OneOf([A.HorizontalFlip(p=0.5), A.VerticalFlip(p=0.5)], p=1.0), 
+                A.OneOf([A.RandomBrightnessContrast(p=0.7, brightness_limit=0.2, contrast_limit=0.2),
+                         A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.7)], p=1.0),
+                A.OneOf([A.GaussianBlur(blur_limit=(3, 7), p=0.5), A.MedianBlur(blur_limit=5, p=0.5)], p=0.5),
+
+                # --- Placeholder for Custom Transforms (e.g., Wavelet, Histogram) ---
+                # If you have custom albumentations transforms, they should be A.Lambda
+                # Make sure they handle NumPy arrays and return NumPy arrays of correct shape.
                 # Example: A.Lambda(image=custom_wavelet_transform_func, mask=custom_wavelet_transform_func_mask, p=0.5),
                 
-                A.Normalize(mean=self.mean, std=self.std, max_pixel_value=1.0), 
-                ToTensorV2(), # Converts NumPy array to PyTorch tensor
+                # --- Random Crop (if applicable and desired) ---
+                # If RandomCrop was part of original DASEG training, it should be added here.
+                # A.RandomCrop(height=DASEG_TRAIN_CROP_H, width=DASEG_TRAIN_CROP_W, p=1.0),
+                
+                A.Normalize(mean=self.mean, std=self.std, max_pixel_value=1.0), # Normalize [0,1] float image
+                ToTensorV2(), # Converts NumPy array to PyTorch tensor [C, H, W]
             ])
         else: # Validation/Test Transforms
             self.composed_transforms = A.Compose([
@@ -234,16 +224,29 @@ class ImageFolder(data.Dataset):
 
             img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB) # Convert BGR to RGB
             
+            # Ensure mask is processed correctly and returns a NumPy array
             label_np = self.convert_label_to_numpy(Image.fromarray(mask_np, mode='L'))
+
+            # --- IMPORTANT: Ensure Mask Shape Consistency ---
+            # After all transforms, the mask MUST have the same spatial dimensions as the image.
+            # Albumentations transforms should handle this if applied to both image and mask correctly.
+            # If an error occurs here, it means the mask's shape is not matching the image's shape after transforms.
 
         except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError) as e:
             print(f"ERROR: Could not open/process image or mask for paths: '{img_path}', '{gt_path}'. Error: {e}. Returning None for this sample.")
             return None 
         
-        # Albumentations expects input as a dictionary with 'image' and 'mask' keys
+        # Prepare sample for albumentations: both image and mask should be NumPy arrays
         sample = {'image': img_np, 'mask': label_np} 
         
-        transformed_sample = self.composed_transforms(**sample) # Apply transforms
+        try:
+            transformed_sample = self.composed_transforms(**sample) # Apply transforms
+        except Exception as e:
+            print(f"ERROR: Albumentations transform failed for sample {index} ({img_path}). Error: {e}. Returning None.")
+            return None
+        
+        # Ensure the mask also has the correct tensor type and shape after transforms
+        # ToTensorV2 handles this conversion.
         
         if self.split != 'train':
             transformed_sample['name'] = os.path.basename(img_path)
@@ -255,7 +258,9 @@ class ImageFolder(data.Dataset):
         if label_np.ndim == 3 and label_np.shape[2] == 1:
             label_np = label_np.squeeze(2)
         elif label_np.ndim != 2:
-            raise ValueError(f"Unexpected label dimension: {label_np.ndim}")
+            # If label_np is already 2D (e.g., from cv2.imread(..., cv2.IMREAD_GRAYSCALE)), this check is fine.
+            # If PIL creates it in a way that's not 2D and not reducible to 2D, this will catch it.
+            raise ValueError(f"Unexpected label dimension: {label_np.ndim} for {label_pil.size}")
 
         label_index = np.zeros_like(label_np, dtype=np.uint8)
         label_index[label_np > 0] = 1 
