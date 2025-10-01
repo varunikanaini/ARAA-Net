@@ -98,14 +98,11 @@ def main():
 
     # Handle TSRS-like datasets explicitly for test path
     if 'TSRS_RSNA' in args.dataset_name:
-        test_data_path = os.path.join(base_dataset_path, 'val') 
+        test_data_path = os.path.join(base_dataset_path, 'test') 
     else:
         test_data_path = base_dataset_path
         
-    # Assuming 'test' split is used for final evaluation, but it might be 'val' depending on dataset structure.
-    # If ImageFolder uses 'val' for evaluation, this should remain 'val'. If it splits internally, adjust accordingly.
-    # For consistency with training, we use 'val' split as is common for evaluation during training.
-    test_set = ImageFolder(test_data_path, args.dataset_name, args, split='val') 
+    test_set = ImageFolder(test_data_path, args.dataset_name, args, split='test') 
     test_loader = DataLoader(test_set, batch_size=1, num_workers=2, shuffle=False, collate_fn=custom_collate_fn)
     logging.info(f"Found {len(test_set)} testing images for dataset '{args.dataset_name}'.")
 
@@ -164,7 +161,7 @@ def main():
         f"\n\n--- Final Test Results ({timestamp}) ---\n"
         f"Model: LASA-Unet with ASPP and {args.backbone} backbone\n" # Updated model description
         f"Experiment Name: {exp_name}\n"
-        f"Dataset: {args.dataset_name} (evaluated on 'val' split)\n" 
+        f"Dataset: {args.dataset_name} (evaluated on 'test' split)\n" 
         f"Image scale for test: ({args.scale_h}, {args.scale_w})\n" 
         f"--------------------------------------------------\n"
         f"Global Accuracy = {global_acc.item():.4f}\n"
