@@ -16,7 +16,7 @@ IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
 MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 
 def make_dataset(root, dataset_name):
-    # --- (Your make_dataset function remains the same as before) ---
+    # --- (Your make_dataset function remains the same as the previous correct version) ---
     dataset_items = []
 
     if 'TSRS_RSNA' in dataset_name:
@@ -179,20 +179,21 @@ class ImageFolder(data.Dataset):
         DASEG_FIXED_RESIZE_W = 576
         DASEG_FIXED_RESIZE_H = 896
 
+        # Define transforms using albumentations
         if self.split == 'train':
             self.composed_transforms = A.Compose([
-                # Resize maintaining aspect ratio, then pad to fixed size.
-                # Ensure output shape is exactly DASEG_FIXED_RESIZE_H x DASEG_FIXED_RESIZE_W
+                # Resize maintaining aspect ratio
                 A.LongestMaxSize(max_size=max(DASEG_FIXED_RESIZE_H, DASEG_FIXED_RESIZE_W), interpolation=cv2.INTER_LINEAR), 
                 
-                # Pad to target size with black color (0,0,0) for RGB.
-                # This is critical for consistent batching.
+                # Pad to target size. Use `pad_val` for the padding color.
+                # The `value` parameter is deprecated or incorrect.
+                # `pad_val` should be a tuple (0,0,0) for RGB images for black padding.
                 A.PadIfNeeded(
                     min_height=DASEG_FIXED_RESIZE_H, 
                     min_width=DASEG_FIXED_RESIZE_W, 
                     border_mode=cv2.BORDER_CONSTANT, 
-                    value=(0, 0, 0),  # Correct value for RGB padding
-                    always_apply=True # Ensure padding is always applied
+                    pad_val=(0, 0, 0),  # CORRECTED: Using 'pad_val' for RGB padding
+                    # always_apply=True # Removed always_apply as it's for different purposes
                 ),
                 
                 # Convert image from [0, 255] uint8 to [0.0, 1.0] float
@@ -214,15 +215,12 @@ class ImageFolder(data.Dataset):
                     A.MedianBlur(blur_limit=5, p=0.5),
                 ], p=0.5),
 
-                # --- Custom Transforms (e.g., Wavelet, Histogram) ---
-                # If you have custom transforms that might change spatial dimensions,
-                # ensure they are either applied BEFORE PadIfNeeded or re-pad them.
-                # For simplicity, these are commented out for now. If you re-enable them,
-                # ensure they are A.Lambda and preserve/reset spatial dims or pad afterwards.
-                # A.Lambda(image=custom_wavelet_transform_func, mask=custom_wavelet_transform_func_mask, p=0.5),
+                # If you re-introduce custom transforms (like Wavelet/Histogram) using A.Lambda,
+                # ensure they return NumPy arrays with the SAME spatial dimensions as the input,
+                # or modify the pipeline to re-pad AFTER them if they change dimensions.
                 
                 A.Normalize(mean=self.mean, std=self.std, max_pixel_value=1.0), 
-                ToTensorV2(), # Converts NumPy array to PyTorch tensor [C, H, W]
+                ToTensorV2(), 
             ])
         else: # Validation/Test Transforms
             self.composed_transforms = A.Compose([
@@ -231,8 +229,8 @@ class ImageFolder(data.Dataset):
                     min_height=DASEG_FIXED_RESIZE_H, 
                     min_width=DASEG_FIXED_RESIZE_W, 
                     border_mode=cv2.BORDER_CONSTANT, 
-                    value=(0, 0, 0), # Padding with black for RGB
-                    always_apply=True # Ensure padding is always applied
+                    pad_val=(0, 0, 0),  # CORRECTED: Using 'pad_val' for RGB padding
+                    # always_apply=True # Removed always_apply
                 ),
                 A.ToFloat(max_value=255.0), 
                 A.Normalize(mean=self.mean, std=self.std, max_pixel_value=1.0),
@@ -251,41 +249,33 @@ class ImageFolder(data.Dataset):
             if img_np is None: raise FileNotFoundError(f"OpenCV could not read image: '{img_path}'.")
             if mask_np is None: raise FileNotFoundError(f"OpenCV could not read mask: '{gt_path}'.")
 
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB) # Convert BGR to RGB
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB) 
             
             label_np = self.convert_label_to_numpy(Image.fromarray(mask_np, mode='L'))
 
-            # --- Ensure Mask Shape Consistency ---
-            # After loading, mask_np might not have the same spatial dimensions as img_np
-            # if the original images have varying sizes.
-            # Albumentations handles resizing/padding of masks if they are passed correctly.
-            # The issue might be if the mask's spatial dimensions don't match what
-            # albumentations expects AFTER the image has been processed by LongestMaxSize.
-            # We need to ensure the mask is also resized and padded to the SAME final dimensions as the image.
+            # Ensure mask shape is compatible BEFORE passing to albumentations
+            # Albumentations will resize/pad the mask along with the image IF they have matching spatial dimensions initially.
+            # If the mask loaded has different dimensions than the image (which shouldn't happen if they are pairs),
+            # it needs to be resized/padded here.
+            # Given 'make_dataset' finds pairs, they should be compatible, but let's add a check just in case.
+            if label_np.shape[:2] != img_np.shape[:2]:
+                 print(f"Warning: Shape mismatch before transform for {img_path}. Image shape: {img_np.shape[:2]}, Mask shape: {label_np.shape}. Attempting to resize mask.")
+                 # Resize mask to image's original shape BEFORE the albumentations pipeline
+                 # This ensures consistent input to the pipeline.
+                 label_np = cv2.resize(label_np, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_NEAREST)
+
 
         except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError) as e:
             print(f"ERROR: Could not open/process image or mask for paths: '{img_path}', '{gt_path}'. Error: {e}. Returning None for this sample.")
             return None 
         
-        # Prepare sample for albumentations: both image and mask should be NumPy arrays
-        # Albumentations requires the mask to have the same spatial dimensions as the image *before* transforms are applied.
-        # This means we need to apply spatial transforms to the mask *before* passing it to albumentations' compose.
-        # However, albumentations can handle masks directly if specified correctly.
-        # Let's try passing the mask to the compose pipeline.
-        
         sample = {'image': img_np, 'mask': label_np} 
         
         try:
-            # Apply transforms. Albumentations applies spatial transforms to both image and mask if 'mask' key is present.
             transformed_sample = self.composed_transforms(**sample) 
         except Exception as e:
             print(f"ERROR: Albumentations transform failed for sample {index} ({img_path}). Error: {e}. Returning None.")
             return None
-        
-        # --- Final check on tensor shapes ---
-        # It's a good idea to assert or print shapes if debugging is needed
-        # print(f"Transformed image shape: {transformed_sample['image'].shape}")
-        # print(f"Transformed mask shape: {transformed_sample['mask'].shape}")
         
         if self.split != 'train':
             transformed_sample['name'] = os.path.basename(img_path)
