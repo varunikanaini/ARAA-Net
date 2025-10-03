@@ -26,7 +26,10 @@ from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS
 from train_lasa_vgg import FocalLoss, DiceLoss 
 
 
-# --- DEFINE get_args() FUNCTION HERE ---
+# /kaggle/working/ARAA-Net/test_lasa_vgg.py
+
+# ... (other imports) ...
+
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
@@ -58,6 +61,10 @@ def get_test_args():
     parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
     parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
 
+    # --- ADD THIS LINE ---
+    parser.add_argument('--num-workers', type=int, default=2, help='Number of data loader workers')
+    # --- END ADD ---
+
     try:
         args = parser.parse_args()
     except SystemExit:
@@ -67,7 +74,6 @@ def get_test_args():
         parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
     
     return args
-# --- END OF get_args() FUNCTION DEFINITION ---
 
 def setup_logging(log_dir, filename='final_testing_results.log'):
     """Configures logging for the testing script."""
