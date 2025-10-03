@@ -26,6 +26,7 @@ from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS
 from train_lasa_vgg import FocalLoss, DiceLoss 
 
 
+# --- DEFINE get_args() FUNCTION HERE ---
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
     parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
@@ -66,14 +67,16 @@ def get_test_args():
         parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
     
     return args
+# --- END OF get_args() FUNCTION DEFINITION ---
 
 def setup_logging(log_dir, filename='final_testing_results.log'):
+    """Configures logging for the testing script."""
     log_file = os.path.join(log_dir, filename)
-    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler) # Clear existing handlers
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[
-                            logging.FileHandler(log_file),
-                            logging.StreamHandler()
+                            logging.FileHandler(log_file),  # Log to file
+                            logging.StreamHandler()         # Log to console
                         ])
 
 # Custom collate function to filter out None samples
@@ -85,7 +88,7 @@ def custom_collate_fn(batch):
 
 
 def main():
-    args = get_test_args()
+    args = get_test_args() # <-- get_args() is now defined above
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
@@ -101,10 +104,6 @@ def main():
     base_dataset_path = DATASET_PATHS[args.dataset_name]
 
     # --- CORRECTED PATH HANDLING FOR TESTING ---
-    # For TSRS_RSNA datasets, we need to pass the base path, and ImageFolder should
-    # look for the 'test' split subfolders directly within that.
-    # For other datasets, the same logic applies.
-    
     # Pass the path to the specific split directory to ImageFolder
     test_data_path = os.path.join(base_dataset_path, 'test')
         
