@@ -17,7 +17,7 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-from lasa_unet_model import LASA_UNet
+from lasa_unet_model import Enhanced_LASA_VGG_UNet
 from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS 
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
