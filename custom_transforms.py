@@ -276,6 +276,6 @@ class RandomAffine(object):
                                              translate=(tx, ty),
                                              scale=s,
                                              shear=sh,
-                                             fillcolor=self.mask_fill_value) # Ensure mask gets correct background fill
+                                             fill=self.mask_fill_value) # Ensure mask gets correct background fill
 
         return {'image': img, 'label': label}
