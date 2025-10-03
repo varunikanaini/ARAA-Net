@@ -1,11 +1,11 @@
 # /kaggle/working/ARAA-Net/datasets.py
 import os
-import torch.utils.data as data
+import torch.data
 from PIL import Image, UnidentifiedImageError
 import numpy as np
 from torchvision import transforms
-import random 
-import cv2 
+import random
+import cv2
 
 import custom_transforms as tr
 
@@ -16,44 +16,36 @@ MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 def make_dataset(root_dir, dataset_name, split):
     """
     Creates a list of (image_path, mask_path) tuples for a given dataset and split.
-    Handles different dataset structures, including cases where root_dir is already the split folder.
+    Handles different dataset structures, including the specific TSRS_RSNA structure
+    where images and labels are directly in the split folders.
     """
     dataset_items = []
     
     # --- Logic for TSRS-like datasets ---
-    # We need to check if root_dir is already the split folder.
-    # If root_dir is '/path/to/dataset/split', we should look for '/path/to/dataset/split/images/'
-    # Otherwise, if root_dir is '/path/to/dataset/', we should look for '/path/to/dataset/split/images/'
-    
-    is_split_dir = any(root_dir.endswith(s) for s in ['train', 'val', 'test']) # Simple check if root_dir itself is a split folder
+    # This logic is specifically tailored for the structure you described:
+    # root_dir/train/     (contains images)
+    # root_dir/train_labels/ (contains labels)
+    # root_dir/val/       (contains images)
+    # root_dir/val_labels/  (contains labels)
+    # etc.
     
     if 'TSRS_RSNA' in dataset_name:
-        if is_split_dir:
-            # If root_dir is already the split folder (e.g., '/.../TSRS_RSNA-Epiphysis/train')
-            image_path = os.path.join(root_dir, 'images') # Look for 'images' directly inside
-            mask_path = os.path.join(root_dir, 'GT')     # Look for 'GT' directly inside
-        else:
-            # If root_dir is the dataset base folder (e.g., '/.../TSRS_RSNA-Epiphysis')
-            image_path = os.path.join(root_dir, split, 'images')
-            mask_path = os.path.join(root_dir, split, 'GT')
+        # `root_dir` passed to ImageFolder IS the split directory (e.g., /.../TSRS_RSNA-Epiphysis/train)
+        image_path = os.path.join(root_dir) # Images are directly in the root_dir (which is the split folder)
         
-        # Fallback for masks if 'GT' doesn't exist, e.g., '_labels'
-        if not os.path.exists(mask_path):
-            mask_path_alt = os.path.join(os.path.dirname(mask_path), split + '_labels') # Adjust alt path if root_dir was split dir
-            if not is_split_dir: # If root_dir was base dataset dir
-                 mask_path_alt = os.path.join(os.path.dirname(mask_path), split + '_labels')
-            
-            if os.path.exists(mask_path_alt):
-                mask_path = mask_path_alt
-            else:
-                # Construct the full paths checked for the warning message
-                checked_path1 = os.path.join(root_dir, split, 'GT') if not is_split_dir else os.path.join(root_dir, 'GT')
-                checked_path2 = os.path.join(root_dir, split, split + '_labels') if not is_split_dir else os.path.join(root_dir, split + '_labels')
-                print(f"Warning: TSRS-like dataset '{dataset_name}' split '{split}': Could not find label directory. Looked in '{checked_path1}' and '{checked_path2}'.")
-                return []
-
+        # The label path is formed by taking the parent of root_dir and appending split_labels
+        # e.g., if root_dir is /.../TSRS_RSNA-Epiphysis/train
+        # then parent is /.../TSRS_RSNA-Epiphysis/
+        # and label path becomes /.../TSRS_RSNA-Epiphysis/train_labels/
+        
+        parent_dir = os.path.dirname(root_dir) # Get the parent directory (e.g., /.../TSRS_RSNA-Epiphysis/)
+        mask_path = os.path.join(parent_dir, split + '_labels') # e.g., /.../TSRS_RSNA-Epiphysis/train_labels/
+        
         if not os.path.exists(image_path):
             print(f"Warning: TSRS-like dataset '{dataset_name}' split '{split}': Image directory not found at '{image_path}'.")
+            return []
+        if not os.path.exists(mask_path):
+            print(f"Warning: TSRS-like dataset '{dataset_name}' split '{split}': Label directory not found at '{mask_path}'.")
             return []
 
         # List images and find corresponding masks
@@ -62,7 +54,7 @@ def make_dataset(root_dir, dataset_name, split):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
                 
-                # Try common mask extensions
+                # Try common mask extensions (your labels are PNG)
                 mask_found = False
                 for ext in MASK_EXTENSIONS:
                     mask_full_path = os.path.join(mask_path, img_name_base + ext)
@@ -74,33 +66,31 @@ def make_dataset(root_dir, dataset_name, split):
                     print(f"Warning: Mask not found for image {f} in {dataset_name}/{split}. Skipping.")
 
     # --- Logic for JSRT ---
+    # Assuming structure: root_dir/cxr/ and .../masks/ where root_dir IS the split folder
     elif dataset_name == 'JSRT':
-        if is_split_dir: # root_dir is already the split folder (e.g., train)
-            base_folder_for_split = root_dir
-        else: # root_dir is the dataset base (e.g., '/.../jsrt-dataset')
-            base_folder_for_split = os.path.join(root_dir, split)
-
-        image_path = os.path.join(base_folder_for_split, 'cxr')
-        mask_path = os.path.join(base_folder_for_split, 'masks')
+        image_path = os.path.join(root_dir, 'cxr')
+        mask_path = os.path.join(root_dir, 'masks')
 
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"Warning: JSRT split '{split}' paths not found: {image_path}, {mask_path}. Returning empty dataset.")
             return []
 
         for f in os.listdir(image_path):
-            if f.lower().endswith('.png'): # JSRT images are typically PNG
+            if f.lower().endswith('.png'): 
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
-                mask_full_path = os.path.join(mask_path, img_name_base + '.png') # JSRT masks are PNG
+                mask_full_path = os.path.join(mask_path, img_name_base + '.png')
                 if os.path.exists(mask_full_path):
                     dataset_items.append((img_full_path, mask_full_path))
                 else:
                     print(f"Warning: Mask not found for JSRT image {f} in split '{split}'. Skipping.")
 
     # --- Logic for COVID19_Radiography ---
+    # root_dir passed to ImageFolder is the dataset base path (e.g., /.../COVID19_Radiography_Dataset)
+    # make_dataset needs to iterate through classes and find images/masks.
     elif dataset_name == 'COVID19_Radiography':
         base_dataset_folder = os.path.join(root_dir, 'COVID-19_Radiography_Dataset')
-        subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia'] # Classes
+        subfolders = ['COVID', 'NORMAL', 'Lung_Opacity', 'Viral Pneumonia']
 
         if not os.path.exists(base_dataset_folder):
             print(f"Warning: COVID19_Radiography dataset base folder not found: '{base_dataset_folder}'.")
@@ -118,43 +108,37 @@ def make_dataset(root_dir, dataset_name, split):
                 if f.lower().endswith(IMAGE_EXTENSIONS):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(sub_image_path, f)
-                    mask_full_path = os.path.join(sub_mask_path, img_name_base + '.png') # Masks are PNG
+                    mask_full_path = os.path.join(sub_mask_path, img_name_base + '.png')
                     if os.path.exists(mask_full_path):
                         dataset_items.append((img_full_path, mask_full_path))
                     else:
                         print(f"Warning: Mask not found for COVID19 image {f} in class '{sub_name}'. Skipping.")
 
     # --- Logic for CVC-ClinicDB ---
+    # root_dir passed to ImageFolder is the specific split folder (e.g., /.../CVC-ClinicDB/train)
     elif dataset_name == 'CVC-ClinicDB':
-        if is_split_dir: # root_dir is already the split folder
-            image_path = os.path.join(root_dir, 'Original')
-            mask_path = os.path.join(root_dir, 'Ground Truth')
-        else: # root_dir is dataset base
-            image_path = os.path.join(root_dir, dataset_name, split, 'Original')
-            mask_path = os.path.join(root_dir, dataset_name, split, 'Ground Truth')
+        image_path = os.path.join(root_dir, 'Original')
+        mask_path = os.path.join(root_dir, 'Ground Truth')
 
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"Warning: CVC-ClinicDB split '{split}' paths not found: {image_path}, {mask_path}. Returning empty dataset.")
             return []
 
         for f in os.listdir(image_path):
-            if f.lower().endswith('.tif'): # Images are TIFF
+            if f.lower().endswith('.tif'):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
-                mask_full_path = os.path.join(mask_path, img_name_base + '.tif') # Masks are TIFF
+                mask_full_path = os.path.join(mask_path, img_name_base + '.tif')
                 if os.path.exists(mask_full_path):
                     dataset_items.append((img_full_path, mask_full_path))
                 else:
                     print(f"Warning: Mask not found for CVC image {f} in split '{split}'. Skipping.")
 
     # --- Logic for DentalPanoramic ---
+    # root_dir passed to ImageFolder is the specific split folder (e.g., /.../DentalPanoramic/train)
     elif dataset_name == 'DentalPanoramic':
-        if is_split_dir: # root_dir is already the split folder
-            image_path = os.path.join(root_dir, 'images')
-            mask_path = os.path.join(root_dir, 'segmentation_1')
-        else: # root_dir is dataset base
-            image_path = os.path.join(root_dir, dataset_name, split, 'images')
-            mask_path = os.path.join(root_dir, dataset_name, split, 'segmentation_1')
+        image_path = os.path.join(root_dir, 'images')
+        mask_path = os.path.join(root_dir, 'segmentation_1')
 
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
             print(f"Warning: DentalPanoramic split '{split}' paths not found: {image_path}, {mask_path}. Returning empty dataset.")
@@ -164,22 +148,18 @@ def make_dataset(root_dir, dataset_name, split):
             if f.lower().endswith(IMAGE_EXTENSIONS):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(image_path, f)
-                mask_full_path = os.path.join(mask_path, img_name_base + '.png') # Masks are PNG
+                mask_full_path = os.path.join(mask_path, img_name_base + '.png')
                 if os.path.exists(mask_full_path):
                     dataset_items.append((img_full_path, mask_full_path))
                 else:
                     print(f"Warning: Mask not found for DentalPanoramic image {f} in split '{split}'. Skipping.")
 
     # --- Logic for SixDiseasesChestXRay ---
+    # root_dir passed to ImageFolder is the specific split folder (e.g., /.../Dataset/train)
     elif dataset_name == 'SixDiseasesChestXRay':
-        if is_split_dir: # root_dir is already the split folder
-            base_folder_for_split = root_dir
-        else: # root_dir is dataset base
-            base_folder_for_split = os.path.join(root_dir, 'Dataset') # This seems to be the root based on the path in config
-            if not is_split_dir: # If root_dir was not split, path should include the split
-                 base_folder_for_split = os.path.join(base_folder_for_split, split)
-
-        subfolders = ['Covid', 'Normal', 'Tuberculosis', 'Bacterial Pneumonia', 'Pneumothorax', 'Viral Pneumonia'] # Classes
+        base_folder_for_split = root_dir
+        
+        subfolders = ['Covid', 'Normal', 'Tuberculosis', 'Bacterial Pneumonia', 'Pneumothorax', 'Viral Pneumonia']
         
         if not os.path.exists(base_folder_for_split):
             print(f"Warning: SixDiseasesChestXRay base path '{base_folder_for_split}' not found. Returning empty dataset.")
@@ -197,7 +177,7 @@ def make_dataset(root_dir, dataset_name, split):
                 if f.lower().endswith(IMAGE_EXTENSIONS):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(sub_image_path, f)
-                    mask_full_path = os.path.join(sub_mask_path, img_name_base + '.png') # Masks are PNG
+                    mask_full_path = os.path.join(sub_mask_path, img_name_base + '.png')
                     if os.path.exists(mask_full_path):
                         dataset_items.append((img_full_path, mask_full_path))
                     else:
@@ -217,17 +197,17 @@ class ImageFolder(data.Dataset):
     def __init__(self, root, dataset_name, args, split='train'):
         """
         Args:
-            root (str): Path to the dataset's root directory (e.g., /kaggle/working/ARAA-Net/data/TSRS_RSNA-Epiphysis/train)
+            root (str): Path to the dataset split directory (e.g., /kaggle/working/ARAA-Net/data/TSRS_RSNA-Epiphysis/train)
             dataset_name (str): Name of the dataset (e.g., 'TSRS_RSNA-Epiphysis')
             args: Arguments object containing dataset-specific parameters.
             split (str): 'train', 'val', or 'test'.
         """
-        self.root = root
+        self.root = root # This IS the split directory (e.g., .../train)
         self.dataset_name = dataset_name
         self.split = split
         self.args = args 
         
-        # Call make_dataset with the provided root (which is already the split directory for TSRS)
+        # Call make_dataset. `root` is already the split dir, so make_dataset handles it.
         all_imgs_masks = make_dataset(root, dataset_name, split) 
         self.imgs = all_imgs_masks
 
@@ -279,7 +259,6 @@ class ImageFolder(data.Dataset):
             img_np = cv2.imread(img_path)
             if img_np is None:
                 raise FileNotFoundError(f"OpenCV could not read image: {img_path}. File might be corrupted or path incorrect.")
-            # Ensure image is RGB
             if img_np.ndim == 3 and img_np.shape[2] == 3:
                 img_np = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
             elif img_np.ndim == 2: # Grayscale, convert to RGB
@@ -290,7 +269,7 @@ class ImageFolder(data.Dataset):
                 raise FileNotFoundError(f"OpenCV could not read mask: {gt_path}. File might be corrupted or path incorrect.")
 
             img = Image.fromarray(img_np)
-            target = Image.fromarray(mask_np, mode='L') # Ensure mask is loaded as 'L' mode
+            target = Image.fromarray(mask_np, mode='L')
             
             label = self.convert_label(target)
             
