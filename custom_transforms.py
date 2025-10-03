@@ -21,7 +21,6 @@ class FixedResize(object):
 
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        # Use Image.BILINEAR for images and Image.NEAREST for masks to avoid interpolation artifacts on labels
         img = img.resize((self.w, self.h), Image.BILINEAR)
         label = label.resize((self.w, self.h), Image.NEAREST)
         return {'image': img, 'label': label}
@@ -35,17 +34,14 @@ class RandomCrop(object):
         w, h = img.size
         th, tw = self.size
         
-        # If image is already the target size, return as is
         if w == tw and h == th:
             return {'image': img, 'label': label}
         
-        # If image is smaller than target, resize it to target size
         if h < th or w < tw:
             img = img.resize((tw, th), Image.BILINEAR)
             label = label.resize((tw, th), Image.NEAREST)
             return {'image': img, 'label': label}
 
-        # Otherwise, perform random cropping
         i = np.random.randint(0, h - th + 1)
         j = np.random.randint(0, w - tw + 1)
         
@@ -59,7 +55,7 @@ class RandomGaussianBlur(object):
 
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        if np.random.rand() < 0.5: # Apply with 50% probability
+        if np.random.rand() < 0.5:
             radius = np.random.uniform(self.radius_range[0], self.radius_range[1])
             img = img.filter(ImageFilter.GaussianBlur(radius=radius))
         return {'image': img, 'label': label}
@@ -71,7 +67,6 @@ class Normalize(object):
 
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        # Convert PIL image to tensor and then normalize
         img = transforms.functional.to_tensor(img)
         img = transforms.functional.normalize(img, self.mean, self.std)
         return {'image': img, 'label': label}
@@ -80,7 +75,6 @@ class ToTensor(object):
     """ Converts the PIL label to a PyTorch LongTensor. Image is assumed to be already a Tensor. """
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        # Convert PIL label to numpy array, then to LongTensor
         label = torch.from_numpy(np.array(label, dtype=np.uint8)).long()
         return {'image': img, 'label': label}
 
@@ -109,52 +103,47 @@ class CenterAmplification(object):
             h_lesion, w_lesion = y_max - y_min + 1, x_max - x_min + 1
             center_y, center_x = (y_min + y_max) // 2, (x_min + x_max) // 2
 
-            # Calculate expanded dimensions
             expanded_h = max(self.min_bbox_size[0], int(h_lesion * self.expansion_factor))
             expanded_w = max(self.min_bbox_size[1], int(w_lesion * self.expansion_factor))
             
             img_w, img_h = img.size
             
-            # Calculate potential crop boundaries based on center and expanded size
-            crop_x_min_raw = center_x - expanded_w // 2
-            crop_y_min_raw = center_y - expanded_h // 2
-            crop_x_max_raw = center_x + (expanded_w // 2) + (expanded_w % 2) # Add 1 if odd
-            crop_y_max_raw = center_y + (expanded_h // 2) + (expanded_h % 2) # Add 1 if odd
+            cx1_raw = center_x - expanded_w // 2
+            cy1_raw = center_y - expanded_h // 2
+            
+            cx2_raw = center_x + (expanded_w // 2) + (expanded_w % 2)
+            cy2_raw = center_y + (expanded_h // 2) + (expanded_h % 2)
 
-            # Clamp boundaries to image dimensions
-            crop_x_min = max(0, crop_x_min_raw)
-            crop_y_min = max(0, crop_y_min_raw)
-            crop_x_max = min(img_w, crop_x_max_raw)
-            crop_y_max = min(img_h, crop_y_max_raw)
+            crop_x_min = max(0, cx1_raw)
+            crop_y_min = max(0, cy1_raw)
+            crop_x_max = min(img_w, cx2_raw)
+            crop_y_max = min(img_h, cy2_raw)
 
-            # Adjust if clamping made the crop box smaller than intended, and ensure it meets min_bbox_size
             current_crop_w = crop_x_max - crop_x_min
             current_crop_h = crop_y_max - crop_y_min
 
             if current_crop_w < expanded_w:
-                if crop_x_min == 0: # If left edge was clamped, extend right edge
+                if crop_x_min == 0:
                     crop_x_max = min(img_w, crop_x_min + expanded_w)
-                else: # If right edge was clamped, extend left edge
+                else:
                     crop_x_min = max(0, crop_x_max - expanded_w)
             
             if current_crop_h < expanded_h:
-                if crop_y_min == 0: # If top edge was clamped, extend bottom edge
+                if crop_y_min == 0:
                     crop_y_max = min(img_h, crop_y_min + expanded_h)
-                else: # If bottom edge was clamped, extend top edge
+                else:
                     crop_y_min = max(0, crop_y_max - expanded_h)
             
-            # Ensure minimum bounding box size is respected after adjustments
             crop_x_max = max(crop_x_min + self.min_bbox_size[1], crop_x_max)
             crop_y_max = max(crop_y_min + self.min_bbox_size[0], crop_y_max)
-            crop_x_max = min(img_w, crop_x_max) # Re-clamp after ensuring min size
+            crop_x_max = min(img_w, crop_x_max)
             crop_y_max = min(img_h, crop_y_max)
-            crop_x_min = max(0, crop_x_max - self.min_bbox_size[1]) # Re-clamp after ensuring min size
+            crop_x_min = max(0, crop_x_max - self.min_bbox_size[1])
             crop_y_min = max(0, crop_y_max - self.min_bbox_size[0])
 
             img_cropped = img.crop((crop_x_min, crop_y_min, crop_x_max, crop_y_max))
             label_cropped = label.crop((crop_x_min, crop_y_min, crop_x_max, crop_y_max))
             
-            # Resize the cropped region back to the original image size for consistency
             target_img_size = img.size
             img = img_cropped.resize(target_img_size, Image.BILINEAR)
             label = label_cropped.resize(target_img_size, Image.NEAREST)
@@ -178,7 +167,6 @@ class HistogramEqualization(object):
             img_eq = ImageOps.equalize(img)
         sample['image'] = img_eq
         return sample
-
 
 class WaveletContrastEnhancement(object):
     """
@@ -251,6 +239,16 @@ class RandomAffine(object):
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
         
+        # --- FIX FOR SCALE HANDLING ---
+        # Ensure scale is handled correctly: if None, use default. If a scalar, use it. If a tuple, use it.
+        if self.scale is None:
+            scale_val = 1.0 # Default scale if not provided
+        elif isinstance(self.scale, (tuple, list)):
+            scale_val = np.random.uniform(self.scale[0], self.scale[1])
+        else: # Assume it's a scalar value (e.g., 0.1 for +/- 10%)
+            scale_val = np.random.uniform(1.0 - self.scale, 1.0 + self.scale)
+        # --- END FIX ---
+
         # Generate random affine parameters
         angle = np.random.uniform(-self.degrees, self.degrees)
         
@@ -260,9 +258,7 @@ class RandomAffine(object):
             tx = np.random.uniform(-self.translate[0], self.translate[0])
             ty = np.random.uniform(-self.translate[1], self.translate[1])
         
-        s = 1.0
-        if self.scale:
-            s = np.random.uniform(1.0 - self.scale, 1.0 + self.scale)
+        s = scale_val # Use the correctly determined scale value
         
         sh = 0.0
         if self.shear:
