@@ -1,6 +1,6 @@
 # /kaggle/working/ARAA-Net/datasets.py
 import os
-import torch.data
+import torch.utils.data as data
 from PIL import Image, UnidentifiedImageError
 import numpy as np
 from torchvision import transforms
