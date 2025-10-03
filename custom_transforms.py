@@ -1,9 +1,9 @@
 # /kaggle/working/ARAA-Net/custom_transforms.py
 import torch
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps 
+from PIL import Image, ImageFilter, ImageOps
 from torchvision import transforms
-import pywt 
+import pywt
 
 
 class RandomHorizontalFlip(object):
@@ -21,7 +21,8 @@ class FixedResize(object):
 
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        img = img.resize((self.w, self.h), Image.BILINEAR) 
+        # Use Image.BILINEAR for images and Image.NEAREST for masks to avoid interpolation artifacts on labels
+        img = img.resize((self.w, self.h), Image.BILINEAR)
         label = label.resize((self.w, self.h), Image.NEAREST)
         return {'image': img, 'label': label}
 
@@ -34,14 +35,17 @@ class RandomCrop(object):
         w, h = img.size
         th, tw = self.size
         
+        # If image is already the target size, return as is
         if w == tw and h == th:
             return {'image': img, 'label': label}
         
+        # If image is smaller than target, resize it to target size
         if h < th or w < tw:
             img = img.resize((tw, th), Image.BILINEAR)
             label = label.resize((tw, th), Image.NEAREST)
             return {'image': img, 'label': label}
 
+        # Otherwise, perform random cropping
         i = np.random.randint(0, h - th + 1)
         j = np.random.randint(0, w - tw + 1)
         
@@ -55,7 +59,7 @@ class RandomGaussianBlur(object):
 
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        if np.random.rand() < 0.5:
+        if np.random.rand() < 0.5: # Apply with 50% probability
             radius = np.random.uniform(self.radius_range[0], self.radius_range[1])
             img = img.filter(ImageFilter.GaussianBlur(radius=radius))
         return {'image': img, 'label': label}
@@ -67,6 +71,7 @@ class Normalize(object):
 
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
+        # Convert PIL image to tensor and then normalize
         img = transforms.functional.to_tensor(img)
         img = transforms.functional.normalize(img, self.mean, self.std)
         return {'image': img, 'label': label}
@@ -75,6 +80,7 @@ class ToTensor(object):
     """ Converts the PIL label to a PyTorch LongTensor. Image is assumed to be already a Tensor. """
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
+        # Convert PIL label to numpy array, then to LongTensor
         label = torch.from_numpy(np.array(label, dtype=np.uint8)).long()
         return {'image': img, 'label': label}
 
@@ -103,47 +109,52 @@ class CenterAmplification(object):
             h_lesion, w_lesion = y_max - y_min + 1, x_max - x_min + 1
             center_y, center_x = (y_min + y_max) // 2, (x_min + x_max) // 2
 
+            # Calculate expanded dimensions
             expanded_h = max(self.min_bbox_size[0], int(h_lesion * self.expansion_factor))
             expanded_w = max(self.min_bbox_size[1], int(w_lesion * self.expansion_factor))
             
             img_w, img_h = img.size
             
-            cx1_raw = center_x - expanded_w // 2
-            cy1_raw = center_y - expanded_h // 2
-            
-            cx2_raw = center_x + (expanded_w // 2) + (expanded_w % 2)
-            cy2_raw = center_y + (expanded_h // 2) + (expanded_h % 2)
+            # Calculate potential crop boundaries based on center and expanded size
+            crop_x_min_raw = center_x - expanded_w // 2
+            crop_y_min_raw = center_y - expanded_h // 2
+            crop_x_max_raw = center_x + (expanded_w // 2) + (expanded_w % 2) # Add 1 if odd
+            crop_y_max_raw = center_y + (expanded_h // 2) + (expanded_h % 2) # Add 1 if odd
 
-            crop_x_min = max(0, cx1_raw)
-            crop_y_min = max(0, cy1_raw)
-            crop_x_max = min(img_w, cx2_raw)
-            crop_y_max = min(img_h, cy2_raw)
+            # Clamp boundaries to image dimensions
+            crop_x_min = max(0, crop_x_min_raw)
+            crop_y_min = max(0, crop_y_min_raw)
+            crop_x_max = min(img_w, crop_x_max_raw)
+            crop_y_max = min(img_h, crop_y_max_raw)
 
+            # Adjust if clamping made the crop box smaller than intended, and ensure it meets min_bbox_size
             current_crop_w = crop_x_max - crop_x_min
             current_crop_h = crop_y_max - crop_y_min
 
             if current_crop_w < expanded_w:
-                if crop_x_min == 0:
+                if crop_x_min == 0: # If left edge was clamped, extend right edge
                     crop_x_max = min(img_w, crop_x_min + expanded_w)
-                else:
+                else: # If right edge was clamped, extend left edge
                     crop_x_min = max(0, crop_x_max - expanded_w)
             
             if current_crop_h < expanded_h:
-                if crop_y_min == 0:
+                if crop_y_min == 0: # If top edge was clamped, extend bottom edge
                     crop_y_max = min(img_h, crop_y_min + expanded_h)
-                else:
+                else: # If bottom edge was clamped, extend top edge
                     crop_y_min = max(0, crop_y_max - expanded_h)
             
+            # Ensure minimum bounding box size is respected after adjustments
             crop_x_max = max(crop_x_min + self.min_bbox_size[1], crop_x_max)
             crop_y_max = max(crop_y_min + self.min_bbox_size[0], crop_y_max)
-            crop_x_max = min(img_w, crop_x_max)
+            crop_x_max = min(img_w, crop_x_max) # Re-clamp after ensuring min size
             crop_y_max = min(img_h, crop_y_max)
-            crop_x_min = max(0, crop_x_max - self.min_bbox_size[1])
+            crop_x_min = max(0, crop_x_max - self.min_bbox_size[1]) # Re-clamp after ensuring min size
             crop_y_min = max(0, crop_y_max - self.min_bbox_size[0])
 
             img_cropped = img.crop((crop_x_min, crop_y_min, crop_x_max, crop_y_max))
             label_cropped = label.crop((crop_x_min, crop_y_min, crop_x_max, crop_y_max))
             
+            # Resize the cropped region back to the original image size for consistency
             target_img_size = img.size
             img = img_cropped.resize(target_img_size, Image.BILINEAR)
             label = label_cropped.resize(target_img_size, Image.NEAREST)
@@ -187,12 +198,11 @@ class WaveletContrastEnhancement(object):
     def __call__(self, sample):
         img_pil = sample['image']
         
-        if img_pil.mode == 'RGB':
+        original_mode = img_pil.mode
+        if original_mode == 'RGB':
             img_gray = img_pil.convert('L')
-            original_mode = 'RGB'
         else:
             img_gray = img_pil
-            original_mode = 'L'
 
         img_np = np.array(img_gray, dtype=np.float32) / 255.0
 
@@ -209,7 +219,7 @@ class WaveletContrastEnhancement(object):
             modified_coeffs_list.append((cH_e, cV_e, cD_e)) # Add modified tuple back to the list
 
         # Reconstruct the image from the modified coefficients list
-        img_reconstructed = pywt.waverec2(modified_coeffs_list, self.wavelet, mode='periodization') # <<< FIXED THIS LINE
+        img_reconstructed = pywt.waverec2(modified_coeffs_list, self.wavelet, mode='periodization')
 
         img_reconstructed = np.clip(img_reconstructed, 0, 1)
         img_enhanced_pil = Image.fromarray((img_reconstructed * 255).astype(np.uint8))
@@ -219,3 +229,57 @@ class WaveletContrastEnhancement(object):
         
         sample['image'] = img_enhanced_pil
         return sample
+
+class ColorJitter(object):
+    def __init__(self, brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05):
+        self.jitter = transforms.ColorJitter(brightness, contrast, saturation, hue)
+
+    def __call__(self, sample):
+        img, label = sample['image'], sample['label']
+        img = self.jitter(img)
+        return {'image': img, 'label': label}
+
+class RandomAffine(object):
+    def __init__(self, degrees=10, translate=None, scale=None, shear=None, fill_color=(0,0,0), mask_fill_value=0):
+        self.degrees = degrees
+        self.translate = translate
+        self.scale = scale
+        self.shear = shear
+        self.fill_color = fill_color # For image
+        self.mask_fill_value = mask_fill_value # For mask
+
+    def __call__(self, sample):
+        img, label = sample['image'], sample['label']
+        
+        # Generate random affine parameters
+        angle = np.random.uniform(-self.degrees, self.degrees)
+        
+        tx = 0.0
+        ty = 0.0
+        if self.translate:
+            tx = np.random.uniform(-self.translate[0], self.translate[0])
+            ty = np.random.uniform(-self.translate[1], self.translate[1])
+        
+        s = 1.0
+        if self.scale:
+            s = np.random.uniform(1.0 - self.scale, 1.0 + self.scale)
+        
+        sh = 0.0
+        if self.shear:
+            sh = np.random.uniform(-self.shear, self.shear)
+
+        # Apply random affine transformation to the image
+        img = transforms.functional.affine(img, angle=angle, 
+                                           translate=(tx, ty),
+                                           scale=s,
+                                           shear=sh,
+                                           fillcolor=self.fill_color)
+        
+        # Apply the EXACT same affine transformation to the mask
+        label = transforms.functional.affine(label, angle=angle, 
+                                             translate=(tx, ty),
+                                             scale=s,
+                                             shear=sh,
+                                             fillcolor=self.mask_fill_value) # Ensure mask gets correct background fill
+
+        return {'image': img, 'label': label}

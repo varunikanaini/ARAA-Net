@@ -1,3 +1,4 @@
+# /kaggle/working/ARAA-Net/seg_utils.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -15,54 +16,72 @@ class ConfusionMatrix(object):
     def __init__(self, num_classes):
         self.num_classes = num_classes
         self.mat = None
-        self.dice = []
+        self.dice = [] # Store dice scores for each batch
 
     def update(self, a, b):
         with torch.no_grad():
             n = self.num_classes
             if self.mat is None:
                 self.mat = torch.zeros((n, n), dtype=torch.int64, device=a.device)
+            
+            # Ensure inputs are on the same device and have correct types
+            a = a.long().to(self.mat.device)
+            b = b.long().to(self.mat.device)
+
+            # Compute confusion matrix update
             k = (a >= 0) & (a < n)
-            inds = n * a[k].to(torch.int64) + b[k]
+            inds = n * a[k] + b[k]
             self.mat += torch.bincount(inds, minlength=n**2).reshape(n, n)
             
-            input_flatten = b.cpu().numpy().flatten()
-            target_flatten = a.cpu().numpy().flatten()
-            # 计算交集中的数量
-            overlap = np.sum(input_flatten * target_flatten)
-            # 返回值，让值在0和1之间波动
-            dice = np.clip(((2. * overlap) / (np.sum(target_flatten) + np.sum(input_flatten) + 1)), 1e-4, 0.9999)
-            self.dice.append(dice)
+            # Calculate Dice score for this batch
+            # Assuming binary segmentation (class 1 vs background class 0) for Dice calculation
+            # If multi-class dice is needed, this part requires adjustment.
+            # For now, we assume we are interested in the foreground Dice.
+            if n > 1:
+                # Extract predicted and target for class 1 (foreground)
+                # If targets can be multi-class, this needs more careful handling.
+                # Assuming binary target for simplicity here as well.
+                target_binary = (a == 1).float()
+                pred_binary = (b == 1).float()
+            else: # Binary case already
+                target_binary = a.float()
+                pred_binary = b.float()
+
+            overlap = (pred_binary * target_binary).sum()
+            dice = torch.clamp(((2. * overlap) / (target_binary.sum() + pred_binary.sum() + 1e-6)), 1e-4, 0.9999)
+            self.dice.append(dice.item()) # Append scalar item to list
 
     def reset(self):
-        self.mat.zero_()
+        if self.mat is not None:
+            self.mat.zero_()
+        self.dice = [] # Clear dice scores
 
     def compute(self):
         with torch.no_grad():
             h = self.mat.float()
-            acc_global = torch.diag(h).sum() / h.sum()
+            
+            # Global Accuracy
+            acc_global = torch.diag(h).sum() / (h.sum() + 1e-6)
 
-            # TODO: Make sure this is correct
+            # Class-wise Accuracy
             h_sum1 = h.sum(1)
-            # h_sum1[h_sum1 == 0.] = 1.   # Avoid division by 0
             acc = torch.diag(h) / (h_sum1 + 1e-6)
-            iu = torch.diag(h) / (h_sum1 + h.sum(0) - torch.diag(h) + 1e-6)
+            
+            # Class-wise IoU (Intersection over Union)
+            h_sum0 = h.sum(0)
+            iu = torch.diag(h) / (h_sum1 + h_sum0 - torch.diag(h) + 1e-6)
 
-            # acc = torch.diag(h) / h.sum(1)
-            # iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h))
-            
-            
-            # pixel_accuracy = torch.diag(h).sum() / (h.sum() + 1e-6)
-            # pixel_accuracy_class = torch.diag(h) / (h_sum1 + 1e-6)
-            
-            freq = h_sum1 / h.sum()
+            # Frequency weighted IoU
+            freq = h_sum1 / (h.sum() + 1e-6)
             FWIoU = (freq[freq > 0] * iu[freq > 0]).sum()
             
-            
-            mDice = np.mean(self.dice)
-            
+            # Mean Dice (average of all batch dice scores)
+            mDice = np.mean(self.dice) if self.dice else 0.0
 
-        return acc_global, acc, iu,FWIoU,mDice
+            # Mean IoU (average of all class IoUs)
+            mIoU = iu.mean().item() if not iu.nelement() == 0 else 0.0
+            
+        return acc_global, acc, iu, FWIoU, mDice, mIoU
 
     def reduce_from_all_processes(self):
         if not torch.distributed.is_available():
@@ -71,41 +90,24 @@ class ConfusionMatrix(object):
             return
         torch.distributed.barrier()
         torch.distributed.all_reduce(self.mat)
+        # Reduce dice scores if needed (requires distributed averaging)
+        # For now, assuming single GPU or manual aggregation of dice
 
     def __str__(self):
-        acc_global, acc, iu = self.compute()
+        acc_global, acc, iu, FWIoU, mDice, mIoU = self.compute()
         return (
-            'global correct: {:.1f}\n'
-            'average row correct: {}\n'
-            'IoU: {}\n'
-            'mean IoU: {:.1f}').format(
+            'Global Correct: {:.1f}%\n'
+            'Class Accuracy: {}\n'
+            'Class IoU: {}\n'
+            'Mean IoU: {:.1f}%\n'
+            'FWIoU: {:.1f}%\n'
+            'Mean Dice: {:.1f}%').format(
                 acc_global.item() * 100,
                 ['{:.1f}'.format(i) for i in (acc * 100).tolist()],
                 ['{:.1f}'.format(i) for i in (iu * 100).tolist()],
-                iu.mean().item() * 100)
-
-
-class IOUBenchmark(object):
-    def __init__(self, num_classes=None):
-        self.confmat = None if num_classes is None else ConfusionMatrix(num_classes)
-
-    def reset(self):
-        # self.confmat = None
-        if self.confmat is not None:
-            self.confmat.reset()
-
-    def to(self, device):
-        return self
-
-    def __call__(self, pred, target):
-        if self.confmat is None:
-            assert pred.dim() == 4, 'prediction must be of 4 dimensions if num_classes was not specified'
-            self.confmat = ConfusionMatrix(pred.shape[1])
-        self.confmat.update(target.flatten(), pred.argmax(1).flatten() if pred.dim() == 4 else pred.flatten())
-        acc_global, acc, iou = self.confmat.compute()
-        miou = iou.mean().item()
-
-        return {'iou': miou}
+                mIoU * 100,
+                FWIoU.item() * 100,
+                mDice * 100)
 
 
 def blend_seg(img, seg, color_map=None, alpha=0.5, ignore_index=0):
@@ -122,7 +124,6 @@ def blend_seg(img, seg, color_map=None, alpha=0.5, ignore_index=0):
     Returns:
         torch.Tensor: The blended image.
     """
-    # color_map_tensor = torch.from_numpy(color_map.astype('float32')).to(img.device).div_(128.).sub_(1.)
     color_map_tensor = torch.from_numpy(np.array(color_map, dtype='float32')).to(img.device).div_(128.).sub_(1.)
     seg_classes = seg.argmax(1) if seg.dim() == 4 else seg.clone()
     seg_classes[seg_classes >= color_map_tensor.shape[0]] = ignore_index

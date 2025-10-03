@@ -1,6 +1,9 @@
+# /kaggle/working/ARAA-Net/config.py
 import os
 
 # READ data from the original, read-only INPUT directory
+# Ensure this path exists and contains your datasets.
+# For Kaggle, you'd typically upload datasets to this directory.
 DATA_ROOT = '/kaggle/working/ARAA-Net/data'
 
 # WRITE checkpoints to the new, writable WORKING directory
@@ -15,6 +18,7 @@ DATASET_NAME = 'PLACEHOLDER_FOR_DYNAMIC_SELECTION'
 # For Kaggle environments, you might need to manually copy input datasets
 # to these DATA_ROOT subdirectories.
 
+# The keys here MUST match the --dataset-name argument used in scripts.
 DATASET_PATHS = {
     # Original datasets (assuming Articular-Surface is also structured like Epiphysis)
     'TSRS_RSNA-Epiphysis': os.path.join(DATA_ROOT, 'TSRS_RSNA-Epiphysis'),
