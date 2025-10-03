@@ -1,12 +1,13 @@
-# /kaggle/working/ARAA-Net/lasa_unet_model.py
+# /kaggle/working/ARAA-Net/enhanced_lasa_vgg_unet.py
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
-from lasa import LASA 
+from lasa import LASA # Your original LASA module
 
 # --- New Lightweight Squeeze-and-Excitation Block ---
 class SEBlock(nn.Module):
+    """ A very lightweight channel attention block. """
     def __init__(self, channel, reduction=16):
         super(SEBlock, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
@@ -23,62 +24,48 @@ class SEBlock(nn.Module):
         y = self.fc(y).view(b, c, 1, 1)
         return x * y.expand_as(x)
 
-class LASA_UNet(nn.Module):
+# --- The Main Enhanced Model ---
+class Enhanced_LASA_VGG_UNet(nn.Module):
     """
-    An enhanced segmentation model using a flexible backbone (VGG16 or ResNet50),
-    the original LASA module for feature enhancement at a strategic layer,
-    and a U-Net style decoder with SE blocks and true deep supervision.
+    The enhanced U-Net using a VGG16 backbone with three key improvements:
+    1.  LASA module is strategically moved to an earlier layer (encoder3).
+    2.  Lightweight SE blocks are added to each decoder stage for better feature fusion.
+    3.  A robust 5-output deep supervision structure is maintained.
     """
-    def __init__(self, num_classes=2, backbone_name='resnet50'):
-        super(LASA_UNet, self).__init__()
-        self.backbone_name = backbone_name
-        self.num_classes = num_classes
-
-        # --- 1. Load Pre-trained Backbone ---
-        if backbone_name == 'vgg16':
-            features = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).features
-            self.encoder1 = features[:6]      # 64 channels
-            self.encoder2 = features[6:13]    # 128 channels
-            self.encoder3 = features[13:23]   # 256 channels
-            self.encoder4 = features[23:33]   # 512 channels
-            self.bottleneck = features[33:43] # 512 channels
-            
-            # Channel dimensions for VGG
-            (e1_c, e2_c, e3_c, e4_c, bn_c) = (64, 128, 256, 512, 512)
-
-        elif backbone_name == 'resnet50':
-            resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-            self.encoder1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
-            self.encoder2 = resnet.layer1
-            self.encoder3 = resnet.layer2
-            self.encoder4 = resnet.layer3
-            self.bottleneck = resnet.layer4
-            
-            # Channel dimensions for ResNet50
-            (e1_c, e2_c, e3_c, e4_c, bn_c) = (64, 256, 512, 1024, 2048)
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone_name}")
+    def __init__(self, num_classes=2):
+        super(Enhanced_LASA_VGG_UNet, self).__init__()
+        
+        # --- 1. Load Pre-trained VGG16 Backbone ---
+        vgg_features = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).features
+        
+        self.encoder1 = vgg_features[:6]      # Output channels: 64
+        self.encoder2 = vgg_features[6:13]    # Output channels: 128
+        self.encoder3 = vgg_features[13:23]   # Output channels: 256
+        self.encoder4 = vgg_features[23:33]   # Output channels: 512
+        self.bottleneck = vgg_features[33:43] # Output channels: 512
 
         # --- 2. Strategically Placed LASA Module ---
-        # Applied to encoder3 output based on paper's findings for better performance.
-        self.lasa_module = LASA(in_channels=e3_c)
+        # Moved to encoder3 output (256 channels) for better focus on mid-level features.
+        self.lasa_module = LASA(in_channels=256)
 
-        # --- 3. U-Net Decoder with SE Blocks and Deep Supervision Heads ---
-        self.decoder4 = self._decoder_block(bn_c + e4_c, e4_c)
-        self.decoder3 = self._decoder_block(e4_c + e3_c, e3_c)
-        self.decoder2 = self._decoder_block(e3_c + e2_c, e2_c)
-        self.decoder1 = self._decoder_block(e2_c + e1_c, e1_c)
+        # --- 3. U-Net Decoder with SE Blocks ---
+        self.decoder4 = self._decoder_block(512 + 512, 512) # in: bottleneck + e4
+        self.decoder3 = self._decoder_block(512 + 256, 256) # in: up(d4) + e3_enhanced
+        self.decoder2 = self._decoder_block(256 + 128, 128) # in: up(d3) + e2
+        self.decoder1 = self._decoder_block(128 + 64, 64)   # in: up(d2) + e1
         
-        # Auxiliary heads for deep supervision
-        self.ds_out4 = nn.Conv2d(e4_c, num_classes, kernel_size=1)
-        self.ds_out3 = nn.Conv2d(e3_c, num_classes, kernel_size=1)
-        self.ds_out2 = nn.Conv2d(e2_c, num_classes, kernel_size=1)
+        # --- 4. Deep Supervision Heads ---
+        # 4 auxiliary heads + 1 final output head
+        self.ds_out4 = nn.Conv2d(512, num_classes, kernel_size=1)
+        self.ds_out3 = nn.Conv2d(256, num_classes, kernel_size=1)
+        self.ds_out2 = nn.Conv2d(128, num_classes, kernel_size=1)
+        self.ds_out1 = nn.Conv2d(64, num_classes, kernel_size=1) # Aux head from final decoder stage
         
-        # Final output convolution
-        self.final_conv = nn.Conv2d(e1_c, num_classes, kernel_size=1)
+        # The main final output convolution
+        self.final_conv = nn.Conv2d(64, num_classes, kernel_size=1)
 
     def _decoder_block(self, in_channels, out_channels):
-        # Decoder block now includes an SEBlock for channel-wise feature refinement
+        """ Decoder block now includes an SEBlock for smarter feature fusion. """
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
@@ -86,7 +73,7 @@ class LASA_UNet(nn.Module):
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            SEBlock(channel=out_channels) # <-- Added SE block
+            SEBlock(channel=out_channels) # <<< Lightweight enhancement
         )
 
     def forward(self, x):
@@ -97,41 +84,38 @@ class LASA_UNet(nn.Module):
         e2 = self.encoder2(e1)
         e3 = self.encoder3(e2)
         
-        # Apply LASA enhancement to e3 (mid-level features)
+        # Apply LASA enhancement to mid-level features
         e3_enhanced = self.lasa_module(e3)
         
         e4 = self.encoder4(e3_enhanced) 
         bottleneck = self.bottleneck(e4)
 
-        # --- Decoder Path with Skip Connections & Deep Supervision ---
+        # --- Decoder Path with Deep Supervision ---
         aux_outputs = []
 
-        # Decoder 4
         d4 = F.interpolate(bottleneck, size=e4.shape[2:], mode='bilinear', align_corners=True)
         d4 = torch.cat([d4, e4], dim=1)
         d4_out = self.decoder4(d4)
         aux_outputs.append(F.interpolate(self.ds_out4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Decoder 3
         d3 = F.interpolate(d4_out, size=e3_enhanced.shape[2:], mode='bilinear', align_corners=True)
         d3 = torch.cat([d3, e3_enhanced], dim=1)
         d3_out = self.decoder3(d3)
         aux_outputs.append(F.interpolate(self.ds_out3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Decoder 2
         d2 = F.interpolate(d3_out, size=e2.shape[2:], mode='bilinear', align_corners=True)
         d2 = torch.cat([d2, e2], dim=1)
         d2_out = self.decoder2(d2)
         aux_outputs.append(F.interpolate(self.ds_out2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
         
-        # Decoder 1
         d1 = F.interpolate(d2_out, size=e1.shape[2:], mode='bilinear', align_corners=True)
         d1 = torch.cat([d1, e1], dim=1)
         d1_out = self.decoder1(d1)
+        aux_outputs.append(F.interpolate(self.ds_out1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
         
-        # Final Output
+        # Final, primary output
         final_output = self.final_conv(d1_out)
         final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
         
-        # Return all decoder outputs for deep supervision loss calculation
+        # Return all 5 outputs for deep supervision loss calculation
         return tuple(aux_outputs + [final_output_upsampled])
