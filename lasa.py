@@ -1,4 +1,5 @@
-# /kaggle/working/ARAA-Net/lasa.py (User's ORIGINAL code, with structural fix for r_ks)
+# /kaggle/working/ARAA-Net/lasa.py
+# This file remains unchanged from your original version.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
