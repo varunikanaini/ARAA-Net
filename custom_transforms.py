@@ -269,7 +269,7 @@ class RandomAffine(object):
                                            translate=(tx, ty),
                                            scale=s,
                                            shear=sh,
-                                           fillcolor=self.fill_color)
+                                           fill=self.fill_color)
         
         # Apply the EXACT same affine transformation to the mask
         label = transforms.functional.affine(label, angle=angle, 
