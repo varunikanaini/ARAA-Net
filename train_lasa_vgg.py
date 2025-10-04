@@ -95,7 +95,6 @@ class DiceLoss(nn.Module):
 
 # ===================================================================
 
-# --- DEFINE get_args() FUNCTION HERE ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Deep Supervision and Amplification')
     
@@ -130,24 +129,32 @@ def get_args():
                         help='Gamma parameter for Focal Loss.')
     parser.add_argument('--focal-loss-weight', type=float, default=1.0, 
                         help='Weight for Focal Loss component in combined loss.')
-    parser.add_argument('--dice-loss-weight', type=float, default=1.5, 
+    parser.add_argument('--dice-loss-weight', type=float, default=3.0, # Increased Dice weight
                         help='Weight for Dice Loss component in combined loss (tuned for MIOU)')
 
-    # --- Data Augmentation Parameters (passed to datasets.py) ---
+    # --- Data Augmentation Parameters ---
     parser.add_argument('--min-lesion-area-pixels', type=int, default=576, 
-                        help='Minimum lesion area in pixels to trigger CenterAmplification (STS-Net default 576)')
+                        help='Minimum lesion area in pixels to trigger CenterAmplification')
     parser.add_argument('--expansion-factor', type=float, default=1.5, 
                         help='Factor by which to expand the bounding box during CenterAmplification')
     parser.add_argument('--min-bbox-h', type=int, default=32, 
-                        help='Minimum height of the expanded bounding box in pixels for CenterAmplification')
+                        help='Minimum height of the expanded bounding box in pixels')
     parser.add_argument('--min-bbox-w', type=int, default=32, 
-                        help='Minimum width of the expanded bounding box in pixels for CenterAmplification')
+                        help='Minimum width of the expanded bounding box in pixels')
+    
+    # Wavelet params
     parser.add_argument('--wavelet-type', type=str, default='haar', 
-                        help='Wavelet type for DWT-based contrast enhancement (e.g., haar, db1, db2).')
+                        help='Wavelet type for DWT-based contrast enhancement.')
     parser.add_argument('--wavelet-level', type=int, default=1, 
                         help='Decomposition level for DWT-based contrast enhancement.')
     parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, 
                         help='Scaling factor for detail coefficients in wavelet enhancement.')
+                        
+    # Cutout params
+    parser.add_argument('--cutout-num-holes', type=int, default=1, help='Number of holes for Cutout augmentation')
+    parser.add_argument('--cutout-max-h-size', type=int, default=64, help='Max height of cutout square')
+    parser.add_argument('--cutout-max-w-size', type=int, default=64, help='Max width of cutout square')
+    parser.add_argument('--cutout-fill-value', type=int, default=0, help='Fill value for cutout region (0 for black)')
 
     # --- Scheduler Configuration ---
     parser.add_argument('--scheduler-patience', type=int, default=5, help='Patience for ReduceLROnPlateau scheduler')
@@ -160,7 +167,6 @@ def get_args():
     try:
         args = parser.parse_args()
     except SystemExit:
-        # For notebook environments or if script is run without args to avoid exiting
         args = parser.parse_args([])
     
     # Validation of argument constraints
@@ -168,17 +174,15 @@ def get_args():
         parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
     
     return args
-# --- END OF get_args() FUNCTION DEFINITION ---
-
 
 def setup_logging(log_dir):
     """Sets up logging to both file and console."""
     log_file = os.path.join(log_dir, 'training.log')
-    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler) 
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[
-                            logging.FileHandler(log_file),  # Log to file
-                            logging.StreamHandler()         # Log to console
+                            logging.FileHandler(log_file),
+                            logging.StreamHandler()
                         ])
 
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_supervision_weights, focal_loss_weight, dice_loss_weight, mode="Validating"):
@@ -186,11 +190,11 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
     Evaluates the model on a given data_loader.
     Returns the mean IoU (mIoU) and the average loss.
     """
-    net.eval() # Set model to evaluation mode
-    confmat = ConfusionMatrix(num_classes=net.num_classes) # Use model's num_classes
+    net.eval()
+    confmat = ConfusionMatrix(num_classes=net.num_classes)
     loss_recorder = AvgMeter()
     
-    with torch.no_grad(): # Disable gradient calculation for evaluation
+    with torch.no_grad():
         for data in tqdm(data_loader, desc=f"Evaluating ({mode})", leave=False):
             if data is None: 
                 logging.warning(f"Skipping empty {mode} batch due to corrupted/missing samples.")
@@ -199,11 +203,10 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
             inputs = data['image'].to(device)
             labels = data['label'].to(device)
             
-            outputs = net(inputs) # Forward pass; outputs is a tuple of predictions
-            final_pred = outputs[-1] # The final prediction is the last element
+            outputs = net(inputs) 
+            final_pred = outputs[-1]
             
             total_loss = 0
-            # Calculate combined loss from all deep supervision outputs
             for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
@@ -211,37 +214,31 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
                 combined_loss_per_head = (focal_loss_weight * current_focal_loss) + \
                                          (dice_loss_weight * current_dice_loss)
                 
-                # Weight the loss from each head according to deep_supervision_weights
                 total_loss += deep_supervision_weights[i] * combined_loss_per_head
             
-            loss_recorder.update(total_loss.item(), inputs.size(0)) # Update average loss
+            loss_recorder.update(total_loss.item(), inputs.size(0))
             
-            # Update confusion matrix with final prediction and ground truth labels
             confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
             
-    # Compute final metrics from confusion matrix
-    _, _, class_iou, _, _, mIoU_val = confmat.compute() # Unpack all metrics, but we need mIoU
+    _, _, class_iou, _, _, mIoU_val = confmat.compute()
     
     logging.info(f"--- {mode} Results ---")
     logging.info(f"mIoU: {mIoU_val:.4f} | Avg Loss: {loss_recorder.avg:.4f}")
     logging.info(f"--------------------")
     
     if mode == "Validating": 
-        net.train() # Set model back to training mode after validation
-    return mIoU_val # Return mIoU for scheduler and early stopping
+        net.train()
+    return mIoU_val
 
-# Custom collate function to filter out None samples (returned by ImageFolder for corrupted images)
 def custom_collate_fn(batch):
-    # Filter out None elements from the batch
     batch = [item for item in batch if item is not None]
-    if not batch: # If batch becomes empty after filtering
+    if not batch:
         return None
-    # Use default collate for the remaining valid items
     return torch.utils.data.dataloader.default_collate(batch)
 
 
 def main():
-    args = get_args() # <-- Now get_args() is defined above
+    args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Set seeds for reproducibility
@@ -255,8 +252,8 @@ def main():
     # --- Experiment Setup ---
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
-    check_mkdir(exp_path) # Create experiment directory if it doesn't exist
-    setup_logging(exp_path) # Configure logging
+    check_mkdir(exp_path)
+    setup_logging(exp_path)
 
     logging.info(f"Starting training for experiment: '{exp_name}'")
     logging.info(f"Using device: {device}")
@@ -304,7 +301,6 @@ def main():
     # --- Dataset Loading ---
     base_dataset_path = DATASET_PATHS[args.dataset_name]
     
-    # Corrected path handling: pass the specific split directory to ImageFolder
     train_data_path = os.path.join(base_dataset_path, 'train') 
     val_data_path = os.path.join(base_dataset_path, 'val')   
 
@@ -321,8 +317,8 @@ def main():
 
     # --- Training Loop ---
     for epoch in range(start_epoch, args.epochs):
-        net.train() # Set model to training mode
-        loss_recorder = AvgMeter() # Reset loss tracker for the epoch
+        net.train() 
+        loss_recorder = AvgMeter() 
         
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=False)
         

@@ -4,6 +4,55 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 from torchvision import transforms
 import pywt
+import random
+
+# --- Cutout Augmentation ---
+class Cutout(object):
+    """
+    Randomly masks out one or more square regions in the image.
+    """
+    def __init__(self, num_holes=1, max_h_size=16, max_w_size=16, fill_value=0, always_apply=False):
+        self.num_holes = num_holes
+        self.max_h_size = max_h_size
+        self.max_w_size = max_w_size
+        self.fill_value = fill_color # Use 0 for black, or 128 for gray etc.
+        self.always_apply = always_apply
+
+    def __call__(self, sample):
+        img, label = sample['image'], sample['label']
+        
+        if not self.always_apply and np.random.rand() < 0.5: # Apply with 50% probability if not always_apply
+            return {'image': img, 'label': label}
+
+        img_np = np.array(img) # Convert PIL Image to numpy array for manipulation
+        h, w, _ = img_np.shape
+
+        for _ in range(self.num_holes):
+            # Randomly choose size for the hole
+            hole_h = random.randint(1, self.max_h_size)
+            hole_w = random.randint(1, self.max_w_size)
+
+            # Randomly choose top-left corner for the hole, ensuring it stays within image bounds
+            y1 = random.randint(0, h - hole_h)
+            x1 = random.randint(0, w - hole_w)
+            y2 = y1 + hole_h
+            x2 = x1 + hole_w
+
+            # Fill the cutout region in the image
+            img_np[y1:y2, x1:x2, :] = self.fill_value
+            
+            # For segmentation masks, we usually fill with 0 (background)
+            # If your mask is PIL Image, convert it first or handle fill directly
+            # Assuming label is PIL Image and will be converted to numpy later in ToTensor or elsewhere
+            # If label is already numpy:
+            # label_np = np.array(label)
+            # label_np[y1:y2, x1:x2] = self.mask_fill_value # Assuming mask_fill_value is available/set
+            
+            # For simplicity, we'll apply cutout only to the image here.
+            # If masks also need cutout, it must be applied to label_np as well with mask_fill_value.
+
+        img_out = Image.fromarray(img_np)
+        return {'image': img_out, 'label': label} # Return original label as cutout is only on image for now
 
 
 class RandomHorizontalFlip(object):
@@ -228,7 +277,7 @@ class ColorJitter(object):
         return {'image': img, 'label': label}
 
 class RandomAffine(object):
-    def __init__(self, degrees=10, translate=None, scale=None, shear=None, fill_color=(0,0,0), mask_fill_value=0):
+    def __init__(self, degrees=15, translate=(0.1, 0.1), scale=(0.85, 1.15), shear=10, fill_color=(0,0,0), mask_fill_value=0): # Increased params
         self.degrees = degrees
         self.translate = translate
         self.scale = scale
@@ -240,16 +289,14 @@ class RandomAffine(object):
         img, label = sample['image'], sample['label']
         
         # --- FIX FOR SCALE HANDLING ---
-        # Ensure scale is handled correctly: if None, use default. If a scalar, use it. If a tuple, use it.
         if self.scale is None:
-            scale_val = 1.0 # Default scale if not provided
+            scale_val = 1.0
         elif isinstance(self.scale, (tuple, list)):
             scale_val = np.random.uniform(self.scale[0], self.scale[1])
-        else: # Assume it's a scalar value (e.g., 0.1 for +/- 10%)
+        else: # Assume scalar
             scale_val = np.random.uniform(1.0 - self.scale, 1.0 + self.scale)
         # --- END FIX ---
 
-        # Generate random affine parameters
         angle = np.random.uniform(-self.degrees, self.degrees)
         
         tx = 0.0
@@ -258,24 +305,67 @@ class RandomAffine(object):
             tx = np.random.uniform(-self.translate[0], self.translate[0])
             ty = np.random.uniform(-self.translate[1], self.translate[1])
         
-        s = scale_val # Use the correctly determined scale value
+        s = scale_val
         
         sh = 0.0
         if self.shear:
             sh = np.random.uniform(-self.shear, self.shear)
 
-        # Apply random affine transformation to the image
         img = transforms.functional.affine(img, angle=angle, 
                                            translate=(tx, ty),
                                            scale=s,
                                            shear=sh,
-                                           fill=self.fill_color)
+                                           fill=self.fill_color) # Use 'fill'
         
-        # Apply the EXACT same affine transformation to the mask
         label = transforms.functional.affine(label, angle=angle, 
                                              translate=(tx, ty),
                                              scale=s,
                                              shear=sh,
-                                             fill=self.mask_fill_value) # Ensure mask gets correct background fill
+                                             fill=self.mask_fill_value) # Use 'fill'
 
         return {'image': img, 'label': label}
+
+# --- CUTOUT AUGMENTATION ADDED ---
+class Cutout(object):
+    """
+    Randomly masks out one or more square regions in the image.
+    """
+    def __init__(self, num_holes=1, max_h_size=64, max_w_size=64, fill_value=0, always_apply=False):
+        self.num_holes = num_holes
+        self.max_h_size = max_h_size # Max height of the cutout square
+        self.max_w_size = max_w_size # Max width of the cutout square
+        self.fill_value = fill_value # Fill value for the cutout region (0 for black)
+        self.always_apply = always_apply # Whether to apply augmentation always or randomly
+
+    def __call__(self, sample):
+        img, label = sample['image'], sample['label']
+        
+        # Apply augmentation randomly (50% chance) unless always_apply is True
+        if not self.always_apply and np.random.rand() < 0.5:
+            return {'image': img, 'label': label}
+
+        img_np = np.array(img) # Convert PIL Image to numpy array for manipulation
+        h, w, c = img_np.shape # Get image dimensions (h, w, channels)
+
+        for _ in range(self.num_holes):
+            # Randomly choose size for the hole (ensure it's not larger than image dimensions)
+            hole_h = random.randint(1, min(self.max_h_size, h))
+            hole_w = random.randint(1, min(self.max_w_size, w))
+
+            # Randomly choose top-left corner for the hole
+            # Ensure the entire hole fits within the image bounds
+            y1 = random.randint(0, h - hole_h)
+            x1 = random.randint(0, w - hole_w)
+            y2 = y1 + hole_h
+            x2 = x1 + hole_w
+
+            # Fill the cutout region in the image
+            # Use self.fill_value for all channels
+            img_np[y1:y2, x1:x2, :] = self.fill_value
+            
+            # Note: Cutout is applied only to the image here. If masks need it,
+            # you would need to apply it to the label_np array as well, likely with `self.mask_fill_value`.
+            # For segmentation masks, fill_value should typically be 0.
+
+        img_out = Image.fromarray(img_np)
+        return {'image': img_out, 'label': label} # Return original label
