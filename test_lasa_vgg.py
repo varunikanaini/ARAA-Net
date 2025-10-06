@@ -79,14 +79,24 @@ def benchmark_fps(model, device, input_h, input_w, num_warmup=20, num_inference=
     fps = num_inference / total_time
     return fps
 
+# benchmark_fps.py (Updated)
+
+# ... (previous imports) ...
+
 def main():
     parser = argparse.ArgumentParser(description='Benchmark LASA-Unet FPS, FLOPS, and Parameters')
-    parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to benchmark')
-    parser.add_argument('--input-h', type=int, default=896, help='Height of dummy input image (aligned with DASEG evaluation resize)') # Aligned default
-    parser.add_argument('--input-w', type=int, default=576, help='Width of dummy input image (aligned with DASEG evaluation resize)') # Aligned default
+    # --- MODIFIED ---
+    parser.add_argument('--backbone', type=str, default='vgg16',
+                        choices=['vgg16', 'resnet50', 'inception_v3', 'efficientnet_b0', 'efficientnet_b3'], # Added new choices
+                        help='Backbone architecture to benchmark')
+    # --- END MODIFIED ---
+    parser.add_argument('--input-h', type=int, default=896, help='Height of dummy input image (aligned with DASEG evaluation resize)')
+    parser.add_argument('--input-w', type=int, default=576, help='Width of dummy input image (aligned with DASEG evaluation resize)')
     parser.add_argument('--num-warmup', type=int, default=20, help='Number of warmup inferences')
     parser.add_argument('--num-inference', type=int, default=100, help='Number of inferences for actual benchmark')
-    parser.add_argument('--full-model', action='store_true', help='Benchmark the full model (including decoder). Default is to benchmark encoder + LASA only to avoid decoder overhead specific to input size.')
+    # Note: --full-model flag is still conceptual for LASA_Unet's multi-output nature.
+    # For Inception/EfficientNet, the feature extraction might require more careful handling
+    # to ensure correct shapes are passed to the decoder.
 
     try:
         args = parser.parse_args()
@@ -99,7 +109,6 @@ def main():
 
     device = torch.device("cuda")
 
-    # Set up logging for benchmark results
     benchmark_log_dir = os.path.join(CKPT_ROOT, 'benchmark_results')
     check_mkdir(benchmark_log_dir)
     setup_logging_benchmark(benchmark_log_dir, filename=f'{args.backbone}_benchmark.log')
@@ -107,8 +116,8 @@ def main():
     logging.info(f"--- Benchmarking LASA-Unet with {args.backbone} backbone and input size {args.input_h}x{args.input_w} ---")
     logging.info(f"Arguments: {args}")
 
-    # Instantiate the model
-    model = LASA_Unet(num_classes=2, backbone_name=args.backbone)
+    # Instantiate the model with the correct backbone name
+    model = LASA_Unet(num_classes=2, backbone_name=args.backbone, pretrained=True) # Ensure pretrained=True
 
     # --- Calculate Parameters ---
     total_trainable_params = count_parameters(model)
@@ -116,16 +125,16 @@ def main():
     logging.info(f"Total Trainable Parameters (Millions): {total_trainable_params / 1_000_000:.2f} M")
 
     # --- Calculate FLOPS ---
+    # NOTE: FLOPS calculation for InceptionV3 and EfficientNet with custom feature extraction
+    # might be inaccurate if the intermediate layers and their connections aren't perfectly
+    # mapped. `thop` might report errors or unexpected values.
     flops, params_thop = calculate_flops(model, args.input_h, args.input_w, device)
     if flops > 0:
         logging.info(f"Total FLOPS (approximate): {flops:,}")
         logging.info(f"Total FLOPS (Giga): {flops / 1e9:.2f} G")
-        # Note: thop's params count might differ slightly from our count_parameters if it includes non-trainable params,
-        # or if there are modules it doesn't fully process. We'll log both for reference.
         logging.info(f"Total Parameters (thop calculation): {params_thop:,}")
     else:
         logging.warning("FLOPS calculation failed. Skipping FLOPS reporting.")
-
 
     # --- Benchmark FPS ---
     fps = benchmark_fps(model, device, args.input_h, args.input_w, args.num_warmup, args.num_inference)

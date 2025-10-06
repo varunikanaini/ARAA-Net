@@ -122,7 +122,11 @@ def get_args():
                             'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB',
                             'DentalPanoramic', 'SixDiseasesChestXRay'
                         ], help='Name of the dataset')
-    parser.add_argument('--backbone', type=str, default='vgg16', choices=['vgg16', 'resnet50'], help='Backbone architecture to use')
+    # --- MODIFIED ---
+    parser.add_argument('--backbone', type=str, default='vgg16',
+                        choices=['vgg16', 'resnet50', 'inception_v3', 'efficientnet_b0', 'efficientnet_b3'], # Added new choices
+                        help='Backbone architecture to use')
+    # --- END MODIFIED ---
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch-size', type=int, default=6)
     parser.add_argument('--lr', type=float, default=0.001)
@@ -176,6 +180,7 @@ def get_args():
         parser.error(f"deep-supervision-weights must have 5 values for the 5 outputs. Got {len(args.deep_supervision_weights)}")
 
     return args
+
 
 def setup_logging(log_dir):
     log_file = os.path.join(log_dir, 'training.log')
@@ -240,7 +245,6 @@ def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Generalize exp_name generation
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     exp_path = os.path.join(CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
@@ -248,15 +252,22 @@ def main():
 
     logging.info(f"Starting operation for '{exp_name}' with arguments: {args}")
 
-    # Get base dataset path from config
     base_dataset_path = DATASET_PATHS[args.dataset_name]
 
-    # Instantiate the model
-    net = LASA_Unet(num_classes=2, backbone_name=args.backbone).to(device)
-
-    # Initialize Loss Functions
-    focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma, ignore_index=0).to(device) # Assuming 0 is background and ignored for loss calc
-    dice_loss_fn = DiceLoss(ignore_index=0).to(device) # Assuming 0 is background and ignored for loss calc
+    # --- MODIFIED ---
+    # Instantiate the model with the correct backbone name
+    # For InceptionV3/EfficientNet, pretrained=True is crucial for good feature extraction
+    pretrained_weights = True if args.backbone not in ['vgg16', 'resnet50'] else True # Default to true for all backbones here
+    net = LASA_Unet(num_classes=2, backbone_name=args.backbone, pretrained=pretrained_weights).to(device)
+    # --- END MODIFIED ---
+    
+    # ... (rest of the main function remains the same, e.g., loss functions, optimizer, data loaders) ...
+    # Ensure the model instantiation is correct with the passed args.backbone
+    
+    focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma, ignore_index=0).to(device)
+    dice_loss_fn = DiceLoss(ignore_index=0).to(device)
+    
+    # ... (rest of training loop logic) ...
 
     if args.test_only:
         logging.info("Running in TEST ONLY mode.")
@@ -267,12 +278,11 @@ def main():
 
         try:
             net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
-            logging.info(f"Loaded model from {best_checkpoint_path}")
+            logging.info(f"✅ Model loaded successfully from best checkpoint: {best_checkpoint_path}")
         except Exception as e:
             logging.error(f"Error loading model from checkpoint: {e}. Exiting.")
             sys.exit(1)
 
-        # Determine the correct path for the test split
         test_data_root = base_dataset_path
         if 'TSRS_RSNA' in args.dataset_name:
             test_data_root = os.path.join(base_dataset_path, 'test')
@@ -281,13 +291,14 @@ def main():
             logging.error(f"❌ ERROR: Test data path does not exist: {test_data_root}. Please check your DATASET_PATHS and dataset organization.")
             sys.exit(1)
 
-        test_set_for_eval = ImageFolder(test_data_root, args.dataset_name, args, split='test') # Use 'test' split for final evaluation
+        test_set_for_eval = ImageFolder(test_data_root, args.dataset_name, args, split='test')
         test_loader_for_eval = DataLoader(test_set_for_eval, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
         test_mIoU = evaluate_model(net, test_loader_for_eval, device, focal_loss_fn, dice_loss_fn,
                                    args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Testing")
         logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
         return
+
 
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -311,14 +322,12 @@ def main():
         except Exception as e:
             logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
 
-    # Prepare dataset paths
     train_data_root = base_dataset_path
     val_data_root = base_dataset_path
     if 'TSRS_RSNA' in args.dataset_name:
         train_data_root = os.path.join(base_dataset_path, 'train')
         val_data_root = os.path.join(base_dataset_path, 'val')
 
-    # Check if dataset paths exist
     if not os.path.exists(train_data_root):
         logging.error(f"❌ ERROR: Training data path does not exist: {train_data_root}.")
         sys.exit(1)
@@ -328,12 +337,11 @@ def main():
         
     train_set = ImageFolder(train_data_root, args.dataset_name, args, split='train')
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, pin_memory=True, collate_fn=custom_collate_fn)
-    test_set = ImageFolder(val_data_root, args.dataset_name, args, split='val') # Use 'val' for validation during training
+    test_set = ImageFolder(val_data_root, args.dataset_name, args, split='val')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
     logging.info(f"Found {len(train_set)} training images for dataset '{args.dataset_name}'.")
     logging.info(f"Found {len(test_set)} validation images for dataset '{args.dataset_name}'.")
-
 
     for epoch in range(start_epoch, args.epochs):
         net.train()
