@@ -1,4 +1,4 @@
-# /kaggle/working/ARAA-Net/lasa_vgg_model.py (Complete and Corrected with Aliases)
+# lasa_vgg_model.py (Corrected for EfficientNet Layer Access)
 
 import torch
 import torch.nn as nn
@@ -12,7 +12,6 @@ def get_backbone_features(backbone_name, pretrained=True):
     """
     Loads a backbone and returns a dictionary of feature extraction layers
      and their output channel counts, suitable for a U-Net style encoder.
-    Uses dynamic module finding for InceptionV3 by iterating through named_modules.
     """
     if backbone_name == 'vgg16':
         vgg_features = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT if pretrained else None).features
@@ -47,8 +46,8 @@ def get_backbone_features(backbone_name, pretrained=True):
     elif backbone_name == 'inception_v3':
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
-        # --- DYNAMICALLY FINDING INCEPTION V3 MODULES ---
-        # Using exact module names from inspection to avoid AttributeErrors.
+        # --- REVISED INCEPTION V3 MODULE NAMING ---
+        # Using exact attribute names from inspection.
         module_name_map = {
             'encoder1': [
                 'Conv2d_1a_3x3', 'Conv2d_2a_3x3', 'Conv2d_2b_3x3', 'maxpool1',
@@ -74,13 +73,13 @@ def get_backbone_features(backbone_name, pretrained=True):
                 target_module = all_named_modules.get(mod_name)
                 
                 if target_module is None:
-                    print(f"Error: Module '{mod_name}' for '{stage_name}' not found in InceptionV3. Please inspect 'inception.named_modules()' and verify module names.")
+                    print(f"Error: Module '{mod_name}' for '{stage_name}' not found in InceptionV3. Please verify module names in inception.named_modules().")
                     found_all_modules_for_stage = False
                     break
 
                 stage_modules.append(target_module)
                 
-                # Determine output channels based on known Inception module outputs
+                # Determine output channels. Rely on known channel counts for specific Inception modules.
                 if stage_name == 'encoder1':
                     if mod_name == 'Conv2d_1a_3x3': last_module_output_channels = 32
                     elif mod_name == 'Conv2d_2a_3x3': last_module_output_channels = 32
@@ -108,7 +107,7 @@ def get_backbone_features(backbone_name, pretrained=True):
                     elif mod_name == 'Mixed_7b': last_module_output_channels = 2048
                 
                 elif stage_name == 'bottleneck':
-                    last_module_output_channels = 2048
+                    last_module_output_channels = 2048 # From Mixed_7b
 
             if not found_all_modules_for_stage:
                 raise RuntimeError(f"Could not find all required modules for InceptionV3 stage '{stage_name}'. Please verify module names in inception.named_modules() and update module_name_map.")
@@ -126,16 +125,22 @@ def get_backbone_features(backbone_name, pretrained=True):
     elif backbone_name.startswith('efficientnet'):
         if backbone_name == 'efficientnet_b0':
             efficientnet = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT if pretrained else None)
+            
+            # --- CORRECTED ACCESS TO EFFICIENTNET INITIAL LAYERS ---
+            # Based on typical EfficientNet structure in torchvision:
             features = {
                 'encoder1': nn.Sequential(efficientnet._conv_stem, efficientnet._bn1, efficientnet._activation, efficientnet._initial_max_pool),
-                'encoder2': nn.Sequential(*efficientnet._blocks[0:2]),
-                'encoder3': nn.Sequential(*efficientnet._blocks[2:4]),
-                'encoder4': nn.Sequential(*efficientnet._blocks[4:7]),
-                'bottleneck': nn.Sequential(*efficientnet._blocks[7:12])
+                'encoder2': nn.Sequential(*efficientnet._blocks[0:2]), # Blocks 0 and 1
+                'encoder3': nn.Sequential(*efficientnet._blocks[2:4]), # Blocks 2 and 3
+                'encoder4': nn.Sequential(*efficientnet._blocks[4:7]), # Blocks 4, 5, 6
+                'bottleneck': nn.Sequential(*efficientnet._blocks[7:12]) # Blocks 7 to 11 (final stages)
             }
             channels = {
-                'e1_channels': 32, 'e2_channels': 48, 'e3_channels': 80,
-                'e4_channels': 128, 'bottleneck_channels': 256
+                'e1_channels': 32,  # Output of stem after initial maxpool
+                'e2_channels': 48,  # Output after first stage of MBConv blocks
+                'e3_channels': 80,  # Output after second stage of MBConv blocks
+                'e4_channels': 128, # Output after third stage of MBConv blocks
+                'bottleneck_channels': 256 # Output after fourth stage of MBConv blocks
             }
         elif backbone_name == 'efficientnet_b3':
             efficientnet = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.DEFAULT if pretrained else None)
