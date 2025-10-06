@@ -14,6 +14,8 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
+# Add this line at the top of your script with other imports
+from tqdm import tqdm
 from lasa_unet_model import LASA_Unet 
 from misc import check_mkdir, AvgMeter
 from config import CKPT_ROOT, DATASET_PATHS, DATA_ROOT
