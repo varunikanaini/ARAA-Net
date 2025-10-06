@@ -1,3 +1,4 @@
+# config.py
 import os
 
 # READ data from the original, read-only INPUT directory
@@ -17,9 +18,11 @@ DATASET_NAME = 'PLACEHOLDER_FOR_DYNAMIC_SELECTION'
 
 DATASET_PATHS = {
     # Original datasets (assuming Articular-Surface is also structured like Epiphysis)
+    # For TSRS_RSNA, we'll dynamically append train/val/test to the DATA_ROOT path
     'TSRS_RSNA-Epiphysis': os.path.join(DATA_ROOT, 'TSRS_RSNA-Epiphysis'),
     'TSRS_RSNA-Articular-Surface': os.path.join(DATA_ROOT, 'TSRS_RSNA-Articular-Surface'),
-    # New datasets
+
+    # Other datasets (assuming they are structured as DATA_ROOT/<dataset_name>/...)
     'JSRT': os.path.join(DATA_ROOT, 'jsrt-247-image-lung-segmentation-mask-dataset'),
     'COVID19_Radiography': os.path.join(DATA_ROOT, 'covid19-radiography-database'),
     'CVC-ClinicDB': os.path.join(DATA_ROOT, 'CVC-ClinicDB'),
