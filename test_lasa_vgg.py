@@ -67,11 +67,16 @@ def get_test_args():
     parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
     parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
 
+    # --- Control Flow ---
+    # Added --test-only argument here
+    parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
+
     try:
         args = parser.parse_args()
     except SystemExit:
         args = parser.parse_args([])
     
+    # Validation for deep supervision weights
     if len(args.deep_supervision_weights) != 5:
         parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
@@ -130,16 +135,9 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_s
     logging.info(f"  Dice (Mean Dice Coefficient): {mDice:.4f}")
     # ------------------------------------
     
-    if mode == "Validating": # Assuming validation mode is also called 'Validating' in train
-        net.train() 
+    if mode == "Validating": # If this function is also used for validation during training
+        net.train() # Set back to training mode
     return mIoU
-
-# Custom collate function to filter out None samples
-def custom_collate_fn(batch):
-    batch = [item for item in batch if item is not None] 
-    if not batch:
-        return None
-    return torch.utils.data.dataloader.default_collate(batch)
 
 def main():
     args = get_test_args()
@@ -147,10 +145,13 @@ def main():
     
     # Setup logging
     lasa_kernels_str = "_".join(map(str, args.lasa_kernels))
+    # Corrected exp_name generation to be more robust
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_Kernels{lasa_kernels_str}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
-    log_dir = os.path.join(CKPT_ROOT, exp_name)
-    check_mkdir(log_dir)
-    setup_logging_test(log_dir, filename=f'testing_{args.backbone}_{args.dataset_name}.log')
+    
+    # Correctly define exp_path
+    exp_path = os.path.join(CKPT_ROOT, exp_name) 
+    check_mkdir(exp_path)
+    setup_logging_test(log_dir=exp_path, filename=f'testing_{args.backbone}_{args.dataset_name}.log')
 
     logging.info(f"Starting testing for experiment: '{exp_name}'")
     logging.info(f"Arguments: {vars(args)}")
@@ -173,7 +174,6 @@ def main():
         sys.exit(1)
 
     try:
-        # Load state dict, specifying map_location to ensure it loads correctly on CPU or GPU
         net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
         logging.info(f"✅ Model loaded successfully from {best_checkpoint_path}")
     except Exception as e:
@@ -191,6 +191,8 @@ def main():
     logging.info(f"Loaded {len(test_set)} images for testing from dataset '{args.dataset_name}' split '{args.split}'.")
 
     # --- Run Evaluation ---
+    # The --test-only argument is implicitly handled by running this script directly.
+    # If you were using a combined train/test script, you'd check args.test_only here.
     test_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, 
                                args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Testing")
     
