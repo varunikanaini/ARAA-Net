@@ -14,7 +14,6 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Standalone Model and Utilities ---
-# Make sure this import path is correct based on your file structure
 from lasa_unet_model import LASA_Unet 
 from misc import check_mkdir, AvgMeter
 from config import CKPT_ROOT, DATASET_PATHS, DATA_ROOT
@@ -28,9 +27,7 @@ from train_unet import FocalLoss, DiceLoss
 from torch.utils.data import DataLoader 
 # ------------------------------------------------
 
-# test_unet.py (or test_lasa_vgg.py)
-# ... (other imports and code) ...
-
+# --- Argument Parsing ---
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
     
@@ -78,6 +75,13 @@ def get_test_args():
     # --- Add num_workers argument ---
     parser.add_argument('--num-workers', type=int, default=4, help='Number of data loading workers.')
     # ------------------------------
+    
+    # --- Add split argument ---
+    # This is crucial for specifying which split to load from the dataset
+    parser.add_argument('--split', type=str, default='test', 
+                        choices=['train', 'val', 'test'], 
+                        help='Dataset split to load (train, val, or test).')
+    # --------------------------
 
     try:
         args = parser.parse_args()
@@ -88,11 +92,6 @@ def get_test_args():
         parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     return args
-
-# ... (rest of your test_lasa_vgg.py file: setup_logging_test, evaluate_model, custom_collate_fn, main) ...
-
-# In your main function, the line for DataLoader will now correctly use args.num_workers
-# test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
 # --- Logging Setup ---
 def setup_logging_test(log_dir, filename='testing_results.log'):
@@ -165,7 +164,6 @@ def main():
     lasa_kernels_str = "_".join(map(str, args.lasa_kernels))
     exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_Kernels{lasa_kernels_str}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     
-    # Define exp_path correctly
     exp_path = os.path.join(CKPT_ROOT, exp_name) 
     check_mkdir(exp_path)
     setup_logging_test(log_dir=exp_path, filename=f'testing_{args.backbone}_{args.dataset_name}.log')
@@ -176,7 +174,6 @@ def main():
     base_dataset_path = DATASET_PATHS[args.dataset_name]
 
     # Instantiate the model
-    # Corrected: Pass lasa_kernels to the model and remove 'pretrained=True'
     net = LASA_Unet(num_classes=2, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
     
     # Instantiate loss functions
@@ -199,19 +196,21 @@ def main():
 
     # --- Prepare Test Dataset and DataLoader ---
     if 'TSRS_RSNA' in args.dataset_name:
+        # Use the 'test' split for testing
         test_data_path = os.path.join(base_dataset_path, 'test') 
     else:
+        # For other datasets, ImageFolder uses the 'split' arg to determine which subset to load.
+        # We pass the base dataset path, and ImageFolder will look for the split directory within it.
         test_data_path = base_dataset_path
     
     # Initialize test dataset and dataloader
-    test_set = ImageFolder(test_data_path, args.dataset_name, args, split='test') 
-    # Corrected: DataLoader is now imported, so this should work.
+    # Pass args.split to ImageFolder to ensure it loads the correct split
+    test_set = ImageFolder(test_data_path, args.dataset_name, args, split=args.split) # <-- Added args.split here
+    
     test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
     logging.info(f"Loaded {len(test_set)} images for testing from dataset '{args.dataset_name}' split '{args.split}'.")
 
     # --- Run Evaluation ---
-    # The '--test-only' argument is implicitly handled by running this script directly.
-    # If you were using a combined train/test script, you'd check args.test_only here.
     test_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, 
                                args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Testing")
     
@@ -219,7 +218,7 @@ def main():
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logging.info(f"\n\n--- FINAL TEST RESULTS ({timestamp}) ---")
     logging.info(f"Model: LASA-Unet with {args.backbone} backbone and LASA Kernels: {args.lasa_kernels}")
-    logging.info(f"Dataset: {args.dataset_name} (evaluated on 'test' split)")
+    logging.info(f"Dataset: {args.dataset_name} (evaluated on '{args.split}' split)")
     logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
     logging.info("---------------------------------")
     logging.info("✅ Testing completed.")
