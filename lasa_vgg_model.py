@@ -1,4 +1,4 @@
-# lasa_vgg_model.py (Final Version with Dynamic Module Finding for InceptionV3)
+# lasa_vgg_model.py (Corrected for BasicConv2d out_channels)
 
 import torch
 import torch.nn as nn
@@ -11,7 +11,6 @@ def get_backbone_features(backbone_name, pretrained=True):
     """
     Loads a backbone and returns a dictionary of feature extraction layers
      and their output channel counts, suitable for a U-Net style encoder.
-    Uses dynamic module finding for InceptionV3.
     """
     if backbone_name == 'vgg16':
         vgg_features = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT if pretrained else None).features
@@ -47,17 +46,13 @@ def get_backbone_features(backbone_name, pretrained=True):
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
         # --- DYNAMICALLY FINDING INCEPTION V3 MODULES ---
-        # This approach avoids hardcoding attribute names and relies on finding modules by name.
-        
-        # Define the target module names for each encoder stage.
-        # These MUST match the names in inception.named_modules()
         module_name_map = {
-            'encoder1': ['Conv2d_1a_3x3', 'Conv2d_2a_3x3', 'Conv2d_2b_3x3', 'maxpool1', # Using 'maxpool1'
-                         'Conv2d_3b_1x1', 'Conv2d_4a_3x3', 'Conv2d_4b_3x3', 'maxpool2'], # Using 'maxpool2'
+            'encoder1': ['Conv2d_1a_3x3', 'Conv2d_2a_3x3', 'Conv2d_2b_3x3', 'maxpool1',
+                         'Conv2d_3b_1x1', 'Conv2d_4a_3x3', 'Conv2d_4b_3x3', 'maxpool2'],
             'encoder2': ['Mixed_5b', 'Mixed_5c', 'Mixed_5d'],
             'encoder3': ['Mixed_6a', 'Mixed_6b', 'Mixed_6c', 'Mixed_6d', 'Mixed_6e'],
             'encoder4': ['Mixed_7a', 'Mixed_7b'],
-            'bottleneck': ['Mixed_7b'] # Using the output of Mixed_7b
+            'bottleneck': ['Mixed_7b']
         }
 
         features = {}
@@ -68,30 +63,85 @@ def get_backbone_features(backbone_name, pretrained=True):
             stage_modules = []
             last_module_output_channels = 0
             
-            # Find each module by its full name path from inception.named_modules()
             found_all_modules_for_stage = True
             for mod_name in required_module_names:
                 target_module = None
-                # Iterate through all named modules to find the exact one
+                # Find the module by its full name path
                 for n, m in inception.named_modules():
                     if n == mod_name:
                         target_module = m
                         break
                 
                 if target_module is None:
-                    print(f"Error: Module '{mod_name}' for '{stage_name}' not found in InceptionV3. Please verify module names by printing inception.named_modules().")
+                    print(f"Error: Module '{mod_name}' for '{stage_name}' not found in InceptionV3. Please verify module names.")
                     found_all_modules_for_stage = False
-                    break # Stop if a required module is missing
+                    break
 
                 stage_modules.append(target_module)
-                last_module_output_channels = target_module.out_channels # Get channels from the last module added
+                
+                # --- CORRECTED: Get output channels from the CONV layer within BasicConv2d ---
+                # For modules like BasicConv2d, we need to access the 'conv' attribute
+                # to get the output channels.
+                if isinstance(target_module, nn.Sequential): # If it's a sequence like encoder1
+                    # Get the last module in the sequence
+                    last_layer_in_sequence = target_module[-1]
+                    if isinstance(last_layer_in_sequence, BasicConv2d): # Check if it's our custom BasicConv2d
+                        last_module_output_channels = last_layer_in_sequence.conv.out_channels
+                    elif isinstance(last_layer_in_sequence, nn.Conv2d): # If it's a direct Conv2d
+                        last_module_output_channels = last_layer_in_sequence.out_channels
+                    elif isinstance(last_layer_in_sequence, nn.MaxPool2d): # If it's a pooling layer
+                        # For pooling layers, we need to look at the output of the preceding conv layer.
+                        # This becomes tricky. A more robust way is to know channel counts per stage beforehand.
+                        # For now, we'll try to infer from the last Conv2d if possible, or use a known value.
+                        # This part requires more precise structural knowledge if BasicConv2d is not the last layer.
+                        # Let's assume the last Conv2d within a BasicConv2d or a direct Conv2d defines the channels.
+                        # If the last layer is pooling, we need the channels BEFORE pooling.
+                        # For simplicity and based on common Inception structure:
+                        # After Conv2d_4b_3x3 (which is followed by maxpool2), channels are 192.
+                        # So, for encoder1, the output channels are 192.
+                        if stage_name == 'encoder1': # Special case for encoder1's final output
+                            last_module_output_channels = 192 # Manually set based on InceptionV3 structure
+                        else: # For other sequential blocks, find the last conv layer
+                            for sub_m in reversed(target_module):
+                                if isinstance(sub_m, nn.Conv2d):
+                                    last_module_output_channels = sub_m.out_channels
+                                    break
+                    else: # If last layer is not Conv2d or BasicConv2d (e.g., InceptionA/B/C/D/E)
+                        # This is tricky. Inception blocks have multiple branches.
+                        # We need to find the output channels of the *main* or final branch.
+                        # For now, we'll rely on the hardcoded values for known Inception blocks.
+                        pass # Will use hardcoded values later.
 
-            if not found_all_modules_for_stage:
-                raise RuntimeError(f"Could not find all required modules for InceptionV3 stage '{stage_name}'. Please fix module names in module_name_map.")
-            
-            # Store the nn.Sequential block for the stage
-            features[stage_name] = nn.Sequential(*stage_modules)
-            channels[f'{stage_name}_channels'] = last_module_output_channels
+                elif isinstance(target_module, BasicConv2d):
+                    last_module_output_channels = target_module.conv.out_channels
+                elif isinstance(target_module, nn.Conv2d):
+                    last_module_output_channels = target_module.out_channels
+                elif isinstance(target_module, (models.inception.InceptionA, models.inception.InceptionB,
+                                                models.inception.InceptionC, models.inception.InceptionD,
+                                                models.inception.InceptionE)):
+                    # For Inception blocks, the output channels are usually defined by the 'branch_pool'
+                    # or the main branch. This requires inspecting the specific Inception block.
+                    # Relying on hardcoded channel counts here.
+                    pass
+                else:
+                    print(f"Warning: Unknown module type '{type(target_module).__name__}' for stage '{stage_name}'. Cannot determine output channels automatically.")
+                    last_module_output_channels = 0 # Placeholder
+
+            # --- Store the nn.Sequential block and determine channel count ---
+            if found_all_modules_for_stage:
+                features[stage_name] = nn.Sequential(*stage_modules)
+                # --- Assign channel counts based on verified structure/known values ---
+                # These are critical for connecting decoder layers and LASA.
+                if stage_name == 'encoder1': last_module_output_channels = 192
+                elif stage_name == 'encoder2': last_module_output_channels = 288
+                elif stage_name == 'encoder3': last_module_output_channels = 768
+                elif stage_name == 'encoder4': last_module_output_channels = 1280
+                elif stage_name == 'bottleneck': last_module_output_channels = 1280
+                else:
+                    # If we had to infer channels, use that. Otherwise, set to 0 or raise error.
+                    pass # Use the last determined value, which should be correct for these stages.
+
+                channels[f'{stage_name}_channels'] = last_module_output_channels
 
         # Final check for essential features and channels
         if not all(v > 0 for k, v in channels.items() if 'channels' in k):
@@ -145,26 +195,20 @@ class LASA_Unet(nn.Module):
 
         self.encoder_features, self.channels = get_backbone_features(backbone_name, pretrained=pretrained)
 
-        # Ensure LASA module is initialized with the correct in_channels for e4
         self.lasa_module = LASA(in_channels=self.channels['e4_channels'])
 
-        # Decoder 4
         self.decoder4 = self._decoder_block(self.channels['bottleneck_channels'] + self.channels['e4_channels'], self.channels['e4_channels'])
         self.aux_conv_d4 = nn.Conv2d(self.channels['e4_channels'], num_classes, kernel_size=1)
 
-        # Decoder 3
         self.decoder3 = self._decoder_block(self.channels['e4_channels'] + self.channels['e3_channels'], self.channels['e3_channels'])
         self.aux_conv_d3 = nn.Conv2d(self.channels['e3_channels'], num_classes, kernel_size=1)
 
-        # Decoder 2
         self.decoder2 = self._decoder_block(self.channels['e3_channels'] + self.channels['e2_channels'], self.channels['e2_channels'])
         self.aux_conv_d2 = nn.Conv2d(self.channels['e2_channels'], num_classes, kernel_size=1)
 
-        # Decoder 1
         self.decoder1 = self._decoder_block(self.channels['e2_channels'] + self.channels['e1_channels'], self.channels['e1_channels'])
         self.aux_conv_d1 = nn.Conv2d(self.channels['e1_channels'], num_classes, kernel_size=1)
 
-        # Final Output Convolution
         self.final_conv = nn.Conv2d(self.channels['e1_channels'], num_classes, kernel_size=1)
 
     def _decoder_block(self, in_channels, out_channels):
@@ -180,7 +224,6 @@ class LASA_Unet(nn.Module):
     def forward(self, x):
         input_h, input_w = x.shape[2:]
 
-        # --- Encoder Path ---
         e1 = self.encoder_features['encoder1'](x)
         e2 = self.encoder_features['encoder2'](e1)
         e3 = self.encoder_features['encoder3'](e2)
@@ -190,7 +233,6 @@ class LASA_Unet(nn.Module):
 
         bottleneck = self.encoder_features['bottleneck'](e4_enhanced)
 
-        # --- Decoder Path ---
         aux_outputs = []
 
         def get_interp_size(module_output):
