@@ -258,7 +258,7 @@ def main():
     # Instantiate the model with the correct backbone name
     # For InceptionV3/EfficientNet, pretrained=True is crucial for good feature extraction
     pretrained_weights = True if args.backbone not in ['vgg16', 'resnet50'] else True # Default to true for all backbones here
-    net = LASA_Unet(num_classes=2, backbone_name=args.backbone, pretrained=pretrained_weights).to(device)
+    net = LASA_Unet(num_classes=2, backbone_name=args.backbone, pretrained=False).to(device)
     # --- END MODIFIED ---
     
     # ... (rest of the main function remains the same, e.g., loss functions, optimizer, data loaders) ...
