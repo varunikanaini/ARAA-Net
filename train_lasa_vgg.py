@@ -18,7 +18,7 @@ if project_path not in sys.path:
 
 # --- Import Standalone Model and Utilities ---
 # Assuming the file is now named lasa_unet_model.py
-from lasa_unet_model import LASA_Unet 
+from lasa_vgg_model import LASA_Unet 
 from config import DATA_ROOT, CKPT_ROOT, DATASET_PATHS 
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
