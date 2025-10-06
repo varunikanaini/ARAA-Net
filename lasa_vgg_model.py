@@ -54,7 +54,7 @@ class LASA_Unet(nn.Module):
 
         # --- NEW: InceptionV3 ---
         elif backbone_name == 'inception_v3':
-            inception = models.inception_v3(weights=Inception_V3_Weights.DEFAULT, aux_logits=False)
+            inception = models.inception_v3(weights=Inception_V3_Weights.DEFAULT, aux_logits=True)
             # Extract features from InceptionV3's blocks
             self.encoder1 = nn.Sequential(*list(inception.children())[:3]) # Output: 64 channels (conv1, bn1, relu, maxpool)
             self.encoder2 = nn.Sequential(*list(inception.children())[3:4]) # Mixed_3 (e.g., output channels ~256)
