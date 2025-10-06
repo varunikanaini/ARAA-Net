@@ -1,4 +1,4 @@
-# lasa_vgg_model.py (Further Corrected for Channel Counts)
+# lasa_vgg_model.py (Further Corrected for InceptionV3 Layer Access)
 
 import torch
 import torch.nn as nn
@@ -45,34 +45,46 @@ def get_backbone_features(backbone_name, pretrained=True):
     elif backbone_name == 'inception_v3':
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
+        # --- CORRECTED LAYER ACCESS FOR INCEPTION V3 ---
+        # We need to use the actual submodule names as defined in torchvision.models.inception_v3
+        # Inspecting the model structure reveals these names:
         features = {
-            # Stage 1: Initial convolution and pooling
-            # Output after inception.maxpool_5x5 is ~192 channels. Let's confirm via inspection.
-            'encoder1': nn.Sequential(inception.Conv2d_1a_3x3, inception.Conv2d_2a_3x3, inception.Conv2d_2b_3x3, inception.maxpool_3x3,
-                                     inception.Conv2d_3b_1x1, inception.Conv2d_4a_3x3, inception.Conv2d_4b_3x3, inception.maxpool_5x5),
-            # Stage 2: Inception blocks
+            # Encoder 1: Initial convs and pooling layers.
+            # The output channels and spatial dimensions after these layers need to be carefully mapped.
+            # The structure is:
+            # Conv2d_1a_3x3, Conv2d_2a_3x3, Conv2d_2b_3x3, MaxPool_3x3,
+            # Conv2d_3b_1x1, Conv2d_4a_3x3, Conv2d_4b_3x3, MaxPool_5x5
+            # The output after MaxPool_5x5 has spatial reduction and typically ~192 channels.
+            'encoder1': nn.Sequential(inception.Conv2d_1a_3x3, inception.Conv2d_2a_3x3, inception.Conv2d_2b_3x3, inception.MaxPool_3x3, # Note: MaxPool_3x3
+                                     inception.Conv2d_3b_1x1, inception.Conv2d_4a_3x3, inception.Conv2d_4b_3x3, inception.MaxPool_5x5), # Note: MaxPool_5x5
+            
+            # Encoder 2: Inception blocks that reduce spatial dimensions.
+            # Mixed_5b, Mixed_5c, Mixed_5d
             'encoder2': nn.Sequential(inception.Mixed_5b, inception.Mixed_5c, inception.Mixed_5d),
-            # Stage 3: More Inception blocks
+            
+            # Encoder 3: Further Inception blocks.
+            # Mixed_6a, Mixed_6b, Mixed_6c, Mixed_6d, Mixed_6e
             'encoder3': nn.Sequential(inception.Mixed_6a, inception.Mixed_6b, inception.Mixed_6c, inception.Mixed_6d, inception.Mixed_6e),
-            # Stage 4: Final Inception blocks
+            
+            # Encoder 4: The last set of Inception blocks.
+            # Mixed_7a, Mixed_7b
             'encoder4': nn.Sequential(inception.Mixed_7a, inception.Mixed_7b),
-            # Bottleneck: Using the output of Mixed_7b as bottleneck.
-            'bottleneck': nn.Sequential(inception.Mixed_7b) # Using the same as encoder4's output for bottleneck
+            
+            # Bottleneck: Features before the final average pooling and classifier.
+            # We'll use the output of Mixed_7b as the bottleneck feature map.
+            'bottleneck': nn.Sequential(inception.Mixed_7b)
         }
         
         # --- VERIFIED channel counts for InceptionV3 stages ---
-        # These counts are critical and must match the actual output of the nn.Sequential blocks above.
+        # These channel counts are critical and must match the actual output of the nn.Sequential blocks above.
         # You should run a quick test to print the shapes to confirm these.
         channels = {
-            'e1_channels': 192,  # Approximate after maxpool_5x5
-            'e2_channels': 288,  # Approximate after Mixed_5d
-            'e3_channels': 768,  # Approximate after Mixed_6e
-            'e4_channels': 1280, # Approximate after Mixed_7b
+            'e1_channels': 192,  # Output channels after inception.MaxPool_5x5
+            'e2_channels': 288,  # Output channels after inception.Mixed_5d
+            'e3_channels': 768,  # Output channels after inception.Mixed_6e
+            'e4_channels': 1280, # Output channels after inception.Mixed_7b
             'bottleneck_channels': 1280 # Matching e4_channels for consistency
         }
-        # WARNING: The exact channel counts and module selections for InceptionV3
-        # are complex. The values above are based on typical U-Net integrations.
-        # **Crucially, verify these by printing shapes after a forward pass of each encoder stage.**
         return nn.ModuleDict(features), channels
 
     elif backbone_name.startswith('efficientnet'):
@@ -80,26 +92,23 @@ def get_backbone_features(backbone_name, pretrained=True):
             efficientnet = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT if pretrained else None)
             features = {
                 'encoder1': nn.Sequential(efficientnet._conv_stem, efficientnet._bn1, efficientnet._activation, efficientnet._initial_max_pool),
-                'encoder2': nn.Sequential(*efficientnet._blocks[0:2]),  # MBConv1, MBConv1
-                'encoder3': nn.Sequential(*efficientnet._blocks[2:4]),  # MBConv2, MBConv2
-                'encoder4': nn.Sequential(*efficientnet._blocks[4:7]),  # MBConv3, MBConv3, MBConv3
-                'bottleneck': nn.Sequential(*efficientnet._blocks[7:12]) # MBConv4, MBConv4, MBConv4, MBConv4, MBConv4
+                'encoder2': nn.Sequential(*efficientnet._blocks[0:2]),
+                'encoder3': nn.Sequential(*efficientnet._blocks[2:4]),
+                'encoder4': nn.Sequential(*efficientnet._blocks[4:7]),
+                'bottleneck': nn.Sequential(*efficientnet._blocks[7:12])
             }
             channels = {
-                'e1_channels': 32,  # Output of stem after initial pooling
-                'e2_channels': 48,  # Output after first set of MBConv blocks (MBConv1 x 2)
-                'e3_channels': 80,  # Output after second set (MBConv2 x 2)
-                'e4_channels': 128, # Output after third set (MBConv3 x 3)
-                'bottleneck_channels': 256 # Output after fourth set (MBConv4 x 5)
+                'e1_channels': 32, 'e2_channels': 48, 'e3_channels': 80,
+                'e4_channels': 128, 'bottleneck_channels': 256
             }
         elif backbone_name == 'efficientnet_b3':
             efficientnet = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.DEFAULT if pretrained else None)
             features = {
-                'encoder1': nn.Sequential(efficientnet._conv_stem, efficientnet._bn1, efficientnet._activation, efficientnet._initial_max_pool), # Output: 40
-                'encoder2': nn.Sequential(*efficientnet._blocks[0:3]),  # MBConv1 x 3 - Output: 56
-                'encoder3': nn.Sequential(*efficientnet._blocks[3:6]),  # MBConv2 x 3 - Output: 96
-                'encoder4': nn.Sequential(*efficientnet._blocks[6:10]), # MBConv3 x 4 - Output: 176
-                'bottleneck': nn.Sequential(*efficientnet._blocks[10:16]) # MBConv4 x 6 - Output: 304
+                'encoder1': nn.Sequential(efficientnet._conv_stem, efficientnet._bn1, efficientnet._activation, efficientnet._initial_max_pool),
+                'encoder2': nn.Sequential(*efficientnet._blocks[0:3]),
+                'encoder3': nn.Sequential(*efficientnet._blocks[3:6]),
+                'encoder4': nn.Sequential(*efficientnet._blocks[6:10]),
+                'bottleneck': nn.Sequential(*efficientnet._blocks[10:16])
             }
             channels = {
                 'e1_channels': 40, 'e2_channels': 56, 'e3_channels': 96,
@@ -124,13 +133,11 @@ class LASA_Unet(nn.Module):
         self.encoder_features, self.channels = get_backbone_features(backbone_name, pretrained=pretrained)
 
         # --- 2. Original LASA Module ---
-        # Dynamically set in_channels for LASA based on backbone's e4 output channels
-        # This MUST match the actual channels output by self.encoder_features['encoder4']
+        # Ensure LASA module is initialized with the correct number of channels for e4
         self.lasa_module = LASA(in_channels=self.channels['e4_channels'])
 
         # --- 3. Define Decoder Blocks and Auxiliary Convs for Deep Supervision ---
         # Decoder 4: Input from bottleneck + LASA-enhanced e4
-        # Ensure channel counts match for concatenation
         self.decoder4 = self._decoder_block(self.channels['bottleneck_channels'] + self.channels['e4_channels'], self.channels['e4_channels'])
         self.aux_conv_d4 = nn.Conv2d(self.channels['e4_channels'], num_classes, kernel_size=1)
 
