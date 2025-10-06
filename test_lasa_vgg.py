@@ -1,4 +1,4 @@
-# benchmark_fps.py (CORRECTED CONTENT)
+# test_unet.py (or test_lasa_vgg.py)
 
 import torch
 import argparse
@@ -6,149 +6,202 @@ import time
 import os
 import sys
 import logging
-import thop # Import thop for FLOPS calculation
+import datetime
 
-# Ensure project_path is in sys.path
+# --- Setup Project Path ---
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-# Import LASA_Unet and other utilities
-from lasa_vgg_model import LASA_Unet
-from misc import check_mkdir
-from config import CKPT_ROOT
+# --- Import Standalone Model and Utilities ---
+# Make sure this import path is correct based on your file structure
+from lasa_unet_model import LASA_Unet 
+from misc import check_mkdir, AvgMeter
+from config import CKPT_ROOT, DATASET_PATHS, DATA_ROOT
+from datasets import ImageFolder
+from seg_utils import ConfusionMatrix
 
-def setup_logging_benchmark(log_dir, filename='benchmark_results.log'):
-    """Configures logging for the benchmarking script."""
-    log_file = os.path.join(log_dir, filename)
-    # Clear existing handlers to prevent duplicate logs if run multiple times
-    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
-                        handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
+# Import loss functions for consistent loss calculation if logging loss during test
+# These should match the loss functions used during training.
+from train_unet import FocalLoss, DiceLoss 
 
-def count_parameters(model):
-    """Counts total trainable parameters in a PyTorch model."""
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total_params
-
-def calculate_flops(model, input_h, input_w, device):
-    """Calculates FLOPS for the model using thop."""
-    model.to(device)
-    model.eval()
-    dummy_input = torch.randn(1, 3, input_h, input_w, dtype=torch.float32).to(device)
+# --- Argument Parsing ---
+def get_test_args():
+    parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
     
-    try:
-        # Using thop to calculate MACs (Multiply-Accumulate Operations)
-        # MACs are approximately 2 * FLOPS
-        macs, params = thop.profile(model, inputs=(dummy_input,), verbose=False)
-        flops = macs * 2 # Approximate FLOPS
-        return flops, params
-    except Exception as e:
-        logging.error(f"Error during FLOPS calculation with thop: {e}")
-        return 0, 0 # Return 0 if calculation fails
+    # --- Dataset Arguments ---
+    parser.add_argument('--dataset-name', type=str, default='TSRS_RSNA-Epiphysis', 
+                        choices=[
+                            'TSRS_RSNA-Epiphysis', 'TSRS_RSNA-Articular-Surface', 
+                            'JSRT', 'COVID19_Radiography', 'CVC-ClinicDB', 
+                            'DentalPanoramic', 'SixDiseasesChestXRay'
+                        ], help='Dataset used for testing')
+    
+    # --- Backbone Arguments ---
+    parser.add_argument('--backbone', type=str, default='vgg16', 
+                        choices=['vgg16', 'resnet50', 'inception_v3', 'efficientnet_b0', 'efficientnet_b3'], 
+                        help='Backbone architecture used for testing')
+    
+    # --- LASA Kernel Arguments ---
+    parser.add_argument('--lasa-kernels', nargs='+', type=int, default=[1, 3, 5, 7], 
+                        help='List of kernel sizes for LASA module (M=4 groups). Example: --lasa-kernels 1 3 5 7')
 
-def benchmark_fps(model, device, input_h, input_w, num_warmup=20, num_inference=100):
-    """Benchmarks model FPS on GPU."""
-    model.to(device)
-    model.eval() # Set model to evaluation mode
+    # --- Preprocessing / Input Arguments ---
+    parser.add_argument('--scale-h', type=int, default=896, help='Nominal height for resizing (internal logic overrides for DASEG alignment)')
+    parser.add_argument('--scale-w', type=int, default=576, help='Nominal width for resizing (internal logic overrides for DASEG alignment)')
+    
+    # --- Loss arguments (optional for testing, but good to keep for consistency) ---
+    parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha parameter for Focal Loss.')
+    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Gamma parameter for Focal Loss.')
+    parser.add_argument('--focal-loss-weight', type=float, default=1.0, help='Weight for Focal Loss component in combined loss.')
+    parser.add_argument('--dice-loss-weight', type=float, default=1.0, help='Weight for Dice Loss component in combined loss.')
+    parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=[0.2, 0.4, 0.6, 0.8, 1.0], 
+                        help='Weights for deep supervision losses.')
 
-    # Create a dummy input tensor
-    dummy_input = torch.randn(1, 3, input_h, input_w, dtype=torch.float32).to(device)
-
-    logging.info(f"Performing GPU warm-up ({num_warmup} inferences)...")
-    with torch.no_grad(): # No need to calculate gradients for benchmarking
-        for _ in range(num_warmup):
-            _ = model(dummy_input)
-
-    # Synchronize GPU to ensure all previous operations are complete before timing
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    logging.info(f"Starting benchmark ({num_inference} inferences)...")
-    start_time = time.time()
-    with torch.no_grad():
-        for _ in range(num_inference):
-            _ = model(dummy_input)
-
-    # Synchronize GPU again after all inference runs
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    end_time = time.time()
-
-    total_time = end_time - start_time
-    fps = num_inference / total_time
-    return fps
-
-# benchmark_fps.py (Updated)
-
-# ... (previous imports) ...
-
-def main():
-    parser = argparse.ArgumentParser(description='Benchmark LASA-Unet FPS, FLOPS, and Parameters')
-    # --- MODIFIED ---
-    parser.add_argument('--backbone', type=str, default='vgg16',
-                        choices=['vgg16', 'resnet50', 'inception_v3', 'efficientnet_b0', 'efficientnet_b3'], # Added new choices
-                        help='Backbone architecture to benchmark')
-    # --- END MODIFIED ---
-    parser.add_argument('--input-h', type=int, default=896, help='Height of dummy input image (aligned with DASEG evaluation resize)')
-    parser.add_argument('--input-w', type=int, default=576, help='Width of dummy input image (aligned with DASEG evaluation resize)')
-    parser.add_argument('--num-warmup', type=int, default=20, help='Number of warmup inferences')
-    parser.add_argument('--num-inference', type=int, default=100, help='Number of inferences for actual benchmark')
-    # Note: --full-model flag is still conceptual for LASA_Unet's multi-output nature.
-    # For Inception/EfficientNet, the feature extraction might require more careful handling
-    # to ensure correct shapes are passed to the decoder.
+    # --- Data Augmentation parameters (passed to ImageFolder, needed for constructor) ---
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=576, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--expansion-factor', type=float, default=1.5, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-h', type=int, default=32, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--min-bbox-w', type=int, default=32, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--wavelet-type', type=str, default='haar', help='Dummy arg for ImageFolder.')
+    parser.add_argument('--wavelet-level', type=int, default=1, help='Dummy arg for ImageFolder.')
+    parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
 
     try:
         args = parser.parse_args()
     except SystemExit:
         args = parser.parse_args([])
+    
+    if len(args.deep_supervision_weights) != 5:
+        parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
+    
+    return args
 
-    if not torch.cuda.is_available():
-        logging.error("❌ ERROR: A GPU is required for FPS and FLOPS benchmarking. Running on CPU is not representative.")
+# --- Logging Setup ---
+def setup_logging_test(log_dir, filename='testing_results.log'):
+    log_file = os.path.join(log_dir, filename)
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
+                        handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
+
+# --- Evaluation Function ---
+def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, deep_supervision_weights, focal_loss_weight, dice_loss_weight, mode="Testing"):
+    """
+    Evaluates the model on a given data_loader. Returns mIoU and average loss.
+    Also logs OA, mIoU, FWIoU, and Dice metrics to the console.
+    """
+    net.eval()
+    confmat = ConfusionMatrix(num_classes=2) 
+    loss_recorder = AvgMeter()
+    
+    with torch.no_grad():
+        for data in tqdm(data_loader, desc=f"{mode}", leave=False):
+            if data is None: 
+                logging.warning(f"Skipping empty {mode} batch due to corrupted/missing samples.")
+                continue
+            inputs, labels = data['image'].to(device), data['label'].to(device)
+            
+            outputs = net(inputs) 
+            final_pred = outputs[-1] 
+            
+            total_loss = 0
+            for i, pred_output in enumerate(outputs):
+                current_focal_loss = focal_loss_fn(pred_output, labels.long())
+                current_dice_loss = dice_loss_fn(pred_output, labels.long())
+                
+                combined_loss_per_head = (focal_loss_weight * current_focal_loss) + \
+                                         (dice_loss_weight * current_dice_loss)
+                
+                total_loss += deep_supervision_weights[i] * combined_loss_per_head
+            
+            loss_recorder.update(total_loss.item(), inputs.size(0))
+            confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
+            
+    # Compute metrics from confusion matrix
+    global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
+    mIoU = class_iou.mean().item()
+    
+    # --- Log all metrics to the console ---
+    logging.info(f"--- {mode} Summary ---")
+    logging.info(f"  Average Loss: {loss_recorder.avg:.4f}")
+    logging.info(f"  OA (Overall Accuracy): {global_acc.item():.4f}")
+    logging.info(f"  mIoU (Mean IoU): {mIoU:.4f}")
+    logging.info(f"  FWIoU (Frequency Weighted IoU): {fwiou.item():.4f}")
+    logging.info(f"  Dice (Mean Dice Coefficient): {mDice:.4f}")
+    # ------------------------------------
+    
+    if mode == "Validating": # Assuming validation mode is also called 'Validating' in train
+        net.train() 
+    return mIoU
+
+# Custom collate function to filter out None samples
+def custom_collate_fn(batch):
+    batch = [item for item in batch if item is not None] 
+    if not batch:
+        return None
+    return torch.utils.data.dataloader.default_collate(batch)
+
+def main():
+    args = get_test_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Setup logging
+    lasa_kernels_str = "_".join(map(str, args.lasa_kernels))
+    exp_name = f"{args.backbone}_LASA_Unet_FocalDice_DS_WaveletHE_Kernels{lasa_kernels_str}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    log_dir = os.path.join(CKPT_ROOT, exp_name)
+    check_mkdir(log_dir)
+    setup_logging_test(log_dir, filename=f'testing_{args.backbone}_{args.dataset_name}.log')
+
+    logging.info(f"Starting testing for experiment: '{exp_name}'")
+    logging.info(f"Arguments: {vars(args)}")
+
+    base_dataset_path = DATASET_PATHS[args.dataset_name]
+
+    # Instantiate the model
+    # Corrected: Pass lasa_kernels to the model and remove 'pretrained=True'
+    net = LASA_Unet(num_classes=2, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
+    
+    # Instantiate loss functions (needed for evaluating the total loss if logged)
+    focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
+    dice_loss_fn = DiceLoss().to(device)
+
+    # --- Load the BEST trained model ---
+    logging.info("Attempting to load the best checkpoint.")
+    best_checkpoint_path = os.path.join(exp_path, 'best_checkpoint.pth')
+    if not os.path.exists(best_checkpoint_path):
+        logging.error(f"❌ ERROR: 'best_checkpoint.pth' not found in '{exp_path}'. Please ensure training was completed and the checkpoint was saved.")
         sys.exit(1)
 
-    device = torch.device("cuda")
+    try:
+        # Load state dict, specifying map_location to ensure it loads correctly on CPU or GPU
+        net.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
+        logging.info(f"✅ Model loaded successfully from {best_checkpoint_path}")
+    except Exception as e:
+        logging.error(f"Error loading model from checkpoint: {e}. Exiting.")
+        sys.exit(1)
 
-    benchmark_log_dir = os.path.join(CKPT_ROOT, 'benchmark_results')
-    check_mkdir(benchmark_log_dir)
-    setup_logging_benchmark(benchmark_log_dir, filename=f'{args.backbone}_benchmark.log')
-
-    logging.info(f"--- Benchmarking LASA-Unet with {args.backbone} backbone and input size {args.input_h}x{args.input_w} ---")
-    logging.info(f"Arguments: {args}")
-
-    # Instantiate the model with the correct backbone name
-    model = LASA_Unet(num_classes=2, backbone_name=args.backbone, pretrained=True) # Ensure pretrained=True
-
-    # --- Calculate Parameters ---
-    total_trainable_params = count_parameters(model)
-    logging.info(f"Total Trainable Parameters (LASA-Unet, {args.backbone}): {total_trainable_params:,}")
-    logging.info(f"Total Trainable Parameters (Millions): {total_trainable_params / 1_000_000:.2f} M")
-
-    # --- Calculate FLOPS ---
-    # NOTE: FLOPS calculation for InceptionV3 and EfficientNet with custom feature extraction
-    # might be inaccurate if the intermediate layers and their connections aren't perfectly
-    # mapped. `thop` might report errors or unexpected values.
-    flops, params_thop = calculate_flops(model, args.input_h, args.input_w, device)
-    if flops > 0:
-        logging.info(f"Total FLOPS (approximate): {flops:,}")
-        logging.info(f"Total FLOPS (Giga): {flops / 1e9:.2f} G")
-        logging.info(f"Total Parameters (thop calculation): {params_thop:,}")
+    # --- Prepare Test Dataset and DataLoader ---
+    if 'TSRS_RSNA' in args.dataset_name:
+        test_data_path = os.path.join(base_dataset_path, 'test') 
     else:
-        logging.warning("FLOPS calculation failed. Skipping FLOPS reporting.")
+        test_data_path = base_dataset_path
+    
+    test_set = ImageFolder(test_data_path, args.dataset_name, args, split='test') 
+    test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
+    logging.info(f"Loaded {len(test_set)} images for testing from dataset '{args.dataset_name}' split '{args.split}'.")
 
-    # --- Benchmark FPS ---
-    fps = benchmark_fps(model, device, args.input_h, args.input_w, args.num_warmup, args.num_inference)
-
-    logging.info("\n--- Performance Benchmark Summary ---")
-    logging.info(f"Model: LASA-Unet with {args.backbone} backbone")
-    logging.info(f"Input Size: {args.input_h}x{args.input_w}")
-    logging.info(f"Achieved FPS: {fps:.2f}")
-    logging.info(f"Inference Time per Frame: {1000/fps:.2f} ms")
-    logging.info(f"Total Trainable Parameters: {total_trainable_params:,}")
-    if flops > 0:
-        logging.info(f"Approximate FLOPS: {flops / 1e9:.2f} G")
-    logging.info("-------------------------------------")
-    logging.info("✅ Benchmark completed.")
+    # --- Run Evaluation ---
+    test_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, 
+                               args.deep_supervision_weights, args.focal_loss_weight, args.dice_loss_weight, mode="Testing")
+    
+    # --- Log Final Results ---
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logging.info(f"\n\n--- FINAL TEST RESULTS ({timestamp}) ---")
+    logging.info(f"Model: LASA-Unet with {args.backbone} backbone and LASA Kernels: {args.lasa_kernels}")
+    logging.info(f"Dataset: {args.dataset_name} (evaluated on 'test' split)")
+    logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
+    logging.info("---------------------------------")
+    logging.info("✅ Testing completed.")
 
 if __name__ == '__main__':
     main()
