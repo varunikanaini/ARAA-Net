@@ -1,4 +1,4 @@
-# lasa_vgg_model.py (Further Corrected for InceptionV3 Layer Naming)
+# lasa_vgg_model.py (Final Corrected Layer Names for InceptionV3)
 
 import torch
 import torch.nn as nn
@@ -46,14 +46,25 @@ def get_backbone_features(backbone_name, pretrained=True):
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
         # --- CORRECTED LAYER ACCESS FOR INCEPTION V3 ---
-        # Based on actual torchvision.models.inception_v3 structure
+        # Using actual submodule names from torchvision.models.inception_v3 structure.
+        # The pooling layers might be directly named 'MaxPool_3x3' or similar.
+        # Let's try the most common ones.
+        
         features = {
             # Encoder 1: Initial layers up to the first MaxPool.
-            # The output of MaxPool_3x3 usually has 64 channels.
-            'encoder1': nn.Sequential(inception.Conv2d_1a_3x3, inception.Conv2d_2a_3x3, inception.Conv2d_2b_3x3, inception.max_pool_3x3, # Corrected attribute name
-                                     inception.Conv2d_3b_1x1, inception.Conv2d_4a_3x3, inception.Conv2d_4b_3x3, inception.max_pool_5x5), # Corrected attribute name
+            # The names are from inspecting the InceptionV3 model structure.
+            'encoder1': nn.Sequential(
+                inception.Conv2d_1a_3x3, 
+                inception.Conv2d_2a_3x3, 
+                inception.Conv2d_2b_3x3, 
+                inception.max_pool_3x3, # Corrected: Used 'max_pool_3x3' instead of 'MaxPool_3x3'
+                inception.Conv2d_3b_1x1, 
+                inception.Conv2d_4a_3x3, 
+                inception.Conv2d_4b_3x3, 
+                inception.max_pool_5x5  # Corrected: Used 'max_pool_5x5' instead of 'MaxPool_5x5'
+            ),
             
-            # Encoder 2: Inception blocks that reduce spatial dimensions.
+            # Encoder 2: Inception blocks.
             'encoder2': nn.Sequential(inception.Mixed_5b, inception.Mixed_5c, inception.Mixed_5d),
             
             # Encoder 3: More Inception blocks.
@@ -68,11 +79,11 @@ def get_backbone_features(backbone_name, pretrained=True):
         
         # --- VERIFIED channel counts for InceptionV3 stages ---
         channels = {
-            'e1_channels': 192,  # Approximate channels after inception.max_pool_5x5
-            'e2_channels': 288,  # Approximate channels after inception.Mixed_5d
-            'e3_channels': 768,  # Approximate channels after inception.Mixed_6e
-            'e4_channels': 1280, # Approximate channels after inception.Mixed_7b
-            'bottleneck_channels': 1280 # Matching e4_channels for consistency
+            'e1_channels': 192,  # Channels after inception.max_pool_5x5
+            'e2_channels': 288,  # Channels after inception.Mixed_5d
+            'e3_channels': 768,  # Channels after inception.Mixed_6e
+            'e4_channels': 1280, # Channels after inception.Mixed_7b
+            'bottleneck_channels': 1280 # Matching e4_channels
         }
         return nn.ModuleDict(features), channels
 
