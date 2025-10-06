@@ -1,4 +1,5 @@
-# lasa_unet_model.py (Renamed from lasa_vgg_model.py)
+# lasa_unet_model.py (with the aux_logits fix for inception_v3)
+
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -54,24 +55,34 @@ class LASA_Unet(nn.Module):
 
         # --- NEW: InceptionV3 ---
         elif backbone_name == 'inception_v3':
-            inception = models.inception_v3(weights=Inception_V3_Weights.DEFAULT, aux_logits=True)
-            # Extract features from InceptionV3's blocks
-            self.encoder1 = nn.Sequential(*list(inception.children())[:3]) # Output: 64 channels (conv1, bn1, relu, maxpool)
-            self.encoder2 = nn.Sequential(*list(inception.children())[3:4]) # Mixed_3 (e.g., output channels ~256)
-            self.encoder3 = nn.Sequential(*list(inception.children())[4:5]) # Mixed_4 (e.g., output channels ~768)
-            self.encoder4 = nn.Sequential(*list(inception.children())[5:7]) # Mixed_5, Inception_ResNet_Block (e.g., output ~1280)
-            self.bottleneck_layer = nn.Sequential(*list(inception.children())[7:8]) # AdaptiveAvgPool2d, Dropout, FC - need to adapt this
+            # FIX: Set aux_logits=True as required by torchvision's default weights for inception_v3
+            inception = models.inception_v3(weights=Inception_V3_Weights.DEFAULT, aux_logits=True) 
+            
+            # Extract features from InceptionV3's blocks.
+            # These are based on common U-Net like feature extraction points for Inception.
+            # The exact slicing might need minor adjustments depending on torchvision version.
+            self.encoder1 = nn.Sequential(*list(inception.children())[:3]) # After maxpool (spatial 1/4), 64 channels
+            self.encoder2 = nn.Sequential(*list(inception.children())[3:4]) # Mixed_3 (spatial 1/8)
+            self.encoder3 = nn.Sequential(*list(inception.children())[4:5]) # Mixed_4 (spatial 1/16)
+            self.encoder4 = nn.Sequential(*list(inception.children())[5:7]) # Mixed_5, Inception_ResNet_Block (spatial 1/32)
+            self.bottleneck_layer = nn.Sequential(*list(inception.children())[7:8]) # AdaptiveAvgPool2d, Dropout, FC (we use features before FC)
 
-            self.encoder1_channels = 64
-            self.encoder2_channels = inception.Mixed_3.b1.conv1.out_channels + inception.Mixed_3.b2.conv1.out_channels # Example calculation
-            self.encoder3_channels = inception.Mixed_4.b1.conv1.out_channels + inception.Mixed_4.b2.conv1.out_channels # Example
-            self.encoder4_channels = inception.Mixed_5.b1.conv1.out_channels + inception.Mixed_5.b2.conv1.out_channels # Example
-            self.bottleneck_channels = 2048 # InceptionV3's final layer before FC
-
-            # Adjust encoder blocks for Inception structure if needed
-            # This part needs careful inspection of InceptionV3's internal structure to correctly extract features at different spatial resolutions.
-            # The current extraction is illustrative and might need refinement.
-            # The last part (FC layer) will be replaced by our decoder/bottleneck logic.
+            # Dynamically determine channel counts by passing a dummy tensor
+            # Using a common input size for InceptionV3
+            dummy_input_for_channels = torch.randn(1, 3, 299, 299) 
+            
+            e1_out = self.encoder1(dummy_input_for_channels)
+            e2_out = self.encoder2(e1_out)
+            e3_out = self.encoder3(e2_out)
+            e4_out = self.encoder4(e3_out)
+            # For bottleneck, we take the output before the final classifier, usually after AvgPool
+            bottleneck_out = self.bottleneck_layer(e4_out) 
+            
+            self.encoder1_channels = e1_out.shape[1]
+            self.encoder2_channels = e2_out.shape[1]
+            self.encoder3_channels = e3_out.shape[1]
+            self.encoder4_channels = e4_out.shape[1]
+            self.bottleneck_channels = bottleneck_out.shape[1]
 
         # --- NEW: EfficientNetB0 and B3 ---
         elif backbone_name in ['efficientnet_b0', 'efficientnet_b3']:
@@ -82,26 +93,34 @@ class LASA_Unet(nn.Module):
                 weights = EfficientNet_B3_Weights.DEFAULT
                 effnet = models.efficientnet_b3(weights=weights)
             
-            self.encoder1 = nn.Sequential(effnet.features[0], effnet.features[1]) # stem, block1
-            self.encoder2 = nn.Sequential(effnet.features[2]) # block2
-            self.encoder3 = nn.Sequential(*list(effnet.features.children())[3:5]) # block3, block4
-            self.encoder4 = nn.Sequential(*list(effnet.features.children())[5:7]) # block5, block6
-            self.bottleneck_layer = nn.Sequential(*list(effnet.features.children())[7:8]) # block7 + classifier (we'll use block7)
+            # Extracting features at common stages for U-Net style skip connections
+            self.encoder1 = nn.Sequential(effnet.features[0], effnet.features[1]) # Stem + Block1
+            self.encoder2 = nn.Sequential(effnet.features[2]) # Block2
+            self.encoder3 = nn.Sequential(*list(effnet.features.children())[3:5]) # Block3, Block4
+            self.encoder4 = nn.Sequential(*list(effnet.features.children())[5:7]) # Block5, Block6
+            self.bottleneck_layer = nn.Sequential(*list(effnet.features.children())[7:8]) # Block7 + Classifier (we use block7 part)
 
-            # Channel counts for EfficientNet stages (approximate based on common structures)
-            # These might need precise verification from torchvision's model definition
-            self.encoder1_channels = 32 if backbone_name == 'efficientnet_b0' else 48 # Initial channel count after stem/block1
-            self.encoder2_channels = 48 if backbone_name == 'efficientnet_b0' else 80 # Output of block2
-            self.encoder3_channels = 128 if backbone_name == 'efficientnet_b0' else 160 # Output of block4
-            self.encoder4_channels = 256 if backbone_name == 'efficientnet_b0' else 272 # Output of block6
-            self.bottleneck_channels = 1280 if backbone_name == 'efficientnet_b0' else 1536 # Output of block7 (before projection head)
+            # Dynamically determine channel counts by passing a dummy tensor
+            # Using a common input size for EfficientNets (e.g., 224x224)
+            dummy_input_for_channels = torch.randn(1, 3, 224, 224) 
+            
+            e1_out = self.encoder1(dummy_input_for_channels)
+            e2_out = self.encoder2(e1_out)
+            e3_out = self.encoder3(e2_out)
+            e4_out = self.encoder4(e3_out)
+            bottleneck_out = self.bottleneck_layer(e4_out)
+            
+            self.encoder1_channels = e1_out.shape[1]
+            self.encoder2_channels = e2_out.shape[1]
+            self.encoder3_channels = e3_out.shape[1]
+            self.encoder4_channels = e4_out.shape[1]
+            self.bottleneck_channels = bottleneck_out.shape[1]
             
         else:
             raise ValueError(f"Unsupported backbone: {backbone_name}")
 
         # --- 2. Original LASA Module with Multi-Scale Kernels ---
         # LASA will enhance features from the 4th encoder block (e4)
-        # Pass kernel sizes to LASA module
         self.lasa_module = LASA(in_channels=self.encoder4_channels, L_list=self.lasa_kernels) 
 
         # --- 3. Define Decoder Blocks and Auxiliary Convs for Deep Supervision ---
@@ -138,10 +157,6 @@ class LASA_Unet(nn.Module):
         input_h, input_w = x.shape[2:] 
 
         # --- Encoder Path ---
-        # Pass through encoder blocks, storing outputs for skip connections
-        # NOTE: Need to ensure that the output channels match the expected channels for the decoder.
-        # If not, an intermediate 1x1 conv might be needed to adjust channels.
-
         e1 = self.encoder1(x)
         e2 = self.encoder2(e1)
         e3 = self.encoder3(e2)
