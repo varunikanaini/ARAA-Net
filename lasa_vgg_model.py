@@ -1,8 +1,9 @@
-# lasa_vgg_model.py (Corrected for BasicConv2d out_channels)
+# lasa_vgg_model.py (Corrected to import BasicConv2d and handle it)
 
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import torchvision.models.inception # Import inception module to access BasicConv2d
 import torch.nn.functional as F
 from lasa import LASA
 
@@ -58,7 +59,6 @@ def get_backbone_features(backbone_name, pretrained=True):
         features = {}
         channels = {}
         
-        # Iterate through the stages and their required module names
         for stage_name, required_module_names in module_name_map.items():
             stage_modules = []
             last_module_output_channels = 0
@@ -66,7 +66,6 @@ def get_backbone_features(backbone_name, pretrained=True):
             found_all_modules_for_stage = True
             for mod_name in required_module_names:
                 target_module = None
-                # Find the module by its full name path
                 for n, m in inception.named_modules():
                     if n == mod_name:
                         target_module = m
@@ -79,69 +78,71 @@ def get_backbone_features(backbone_name, pretrained=True):
 
                 stage_modules.append(target_module)
                 
-                # --- CORRECTED: Get output channels from the CONV layer within BasicConv2d ---
-                # For modules like BasicConv2d, we need to access the 'conv' attribute
-                # to get the output channels.
-                if isinstance(target_module, nn.Sequential): # If it's a sequence like encoder1
-                    # Get the last module in the sequence
-                    last_layer_in_sequence = target_module[-1]
-                    if isinstance(last_layer_in_sequence, BasicConv2d): # Check if it's our custom BasicConv2d
-                        last_module_output_channels = last_layer_in_sequence.conv.out_channels
-                    elif isinstance(last_layer_in_sequence, nn.Conv2d): # If it's a direct Conv2d
-                        last_module_output_channels = last_layer_in_sequence.out_channels
-                    elif isinstance(last_layer_in_sequence, nn.MaxPool2d): # If it's a pooling layer
-                        # For pooling layers, we need to look at the output of the preceding conv layer.
-                        # This becomes tricky. A more robust way is to know channel counts per stage beforehand.
-                        # For now, we'll try to infer from the last Conv2d if possible, or use a known value.
-                        # This part requires more precise structural knowledge if BasicConv2d is not the last layer.
-                        # Let's assume the last Conv2d within a BasicConv2d or a direct Conv2d defines the channels.
-                        # If the last layer is pooling, we need the channels BEFORE pooling.
-                        # For simplicity and based on common Inception structure:
-                        # After Conv2d_4b_3x3 (which is followed by maxpool2), channels are 192.
-                        # So, for encoder1, the output channels are 192.
-                        if stage_name == 'encoder1': # Special case for encoder1's final output
-                            last_module_output_channels = 192 # Manually set based on InceptionV3 structure
-                        else: # For other sequential blocks, find the last conv layer
-                            for sub_m in reversed(target_module):
-                                if isinstance(sub_m, nn.Conv2d):
-                                    last_module_output_channels = sub_m.out_channels
-                                    break
-                    else: # If last layer is not Conv2d or BasicConv2d (e.g., InceptionA/B/C/D/E)
-                        # This is tricky. Inception blocks have multiple branches.
-                        # We need to find the output channels of the *main* or final branch.
-                        # For now, we'll rely on the hardcoded values for known Inception blocks.
-                        pass # Will use hardcoded values later.
+                # --- CORRECTED: Get output channels from the CONV layer within BasicConv2d or the module itself ---
+                if isinstance(target_module, nn.Sequential):
+                    # For Sequential blocks, we need to find the output channels of the LAST module in THAT sequence.
+                    # This can be complex if it's not a simple Conv2d or BasicConv2d.
+                    # For Inception blocks (Mixed_XX), the output channels are known or can be accessed via their structure.
+                    # If it's a BasicConv2d, we need to access the 'conv' attribute.
+                    # For the final layer of encoder1, we need to know the channels after maxpool2.
+                    
+                    # This is still heuristic without a direct way to probe output channels.
+                    # We will rely on the hardcoded channel counts which we assume are correct.
+                    # If there's an error later, we might need to revisit this.
+                    if stage_name == 'encoder1':
+                        last_module_output_channels = 192 # Determined by Conv2d_4b_3x3 output
+                    elif stage_name == 'encoder2': last_module_output_channels = 288
+                    elif stage_name == 'encoder3': last_module_output_channels = 768
+                    elif stage_name == 'encoder4': last_module_output_channels = 1280
+                    elif stage_name == 'bottleneck': last_module_output_channels = 1280
+                    else: # Fallback for any other sequential blocks
+                         # Try to find the last conv layer in the sequential block
+                        for sub_m in reversed(target_module):
+                            if isinstance(sub_m, nn.Conv2d):
+                                last_module_output_channels = sub_m.out_channels
+                                break
+                            elif hasattr(sub_m, 'conv') and isinstance(sub_m.conv, nn.Conv2d): # If it's a BasicConv2d
+                                last_module_output_channels = sub_m.conv.out_channels
+                                break
+                        if last_module_output_channels == 0: # If no conv layer found
+                            print(f"Warning: Could not determine channels for sequential block '{stage_name}'.")
 
-                elif isinstance(target_module, BasicConv2d):
+
+                elif isinstance(target_module, models.inception.BasicConv2d): # Check if it's the BasicConv2d wrapper
                     last_module_output_channels = target_module.conv.out_channels
                 elif isinstance(target_module, nn.Conv2d):
                     last_module_output_channels = target_module.out_channels
                 elif isinstance(target_module, (models.inception.InceptionA, models.inception.InceptionB,
                                                 models.inception.InceptionC, models.inception.InceptionD,
                                                 models.inception.InceptionE)):
-                    # For Inception blocks, the output channels are usually defined by the 'branch_pool'
-                    # or the main branch. This requires inspecting the specific Inception block.
-                    # Relying on hardcoded channel counts here.
+                    # For Inception blocks, the output channels are known and consistent for a given block type.
+                    # The channel counts are already handled by the hardcoded values.
                     pass
                 else:
-                    print(f"Warning: Unknown module type '{type(target_module).__name__}' for stage '{stage_name}'. Cannot determine output channels automatically.")
-                    last_module_output_channels = 0 # Placeholder
+                    # If it's a pooling layer or something else that doesn't have 'out_channels'
+                    # we need to rely on the PREVIOUS module's output channels.
+                    # This requires careful ordering of stage_modules and tracking channels.
+                    # For now, relying on the hardcoded values as they are based on the structure.
+                    pass
 
-            # --- Store the nn.Sequential block and determine channel count ---
-            if found_all_modules_for_stage:
-                features[stage_name] = nn.Sequential(*stage_modules)
-                # --- Assign channel counts based on verified structure/known values ---
-                # These are critical for connecting decoder layers and LASA.
-                if stage_name == 'encoder1': last_module_output_channels = 192
-                elif stage_name == 'encoder2': last_module_output_channels = 288
-                elif stage_name == 'encoder3': last_module_output_channels = 768
-                elif stage_name == 'encoder4': last_module_output_channels = 1280
-                elif stage_name == 'bottleneck': last_module_output_channels = 1280
-                else:
-                    # If we had to infer channels, use that. Otherwise, set to 0 or raise error.
-                    pass # Use the last determined value, which should be correct for these stages.
-
-                channels[f'{stage_name}_channels'] = last_module_output_channels
+            if not found_all_modules_for_stage:
+                raise RuntimeError(f"Could not find all required modules for InceptionV3 stage '{stage_name}'. Please fix module names in module_name_map.")
+            
+            features[stage_name] = nn.Sequential(*stage_modules)
+            # --- Assign channel counts based on verified structure/known values ---
+            # This is crucial. If these values are wrong, the LASA module or decoder connections will fail.
+            if stage_name == 'encoder1': last_module_output_channels = 192
+            elif stage_name == 'encoder2': last_module_output_channels = 288
+            elif stage_name == 'encoder3': last_module_output_channels = 768
+            elif stage_name == 'encoder4': last_module_output_channels = 1280
+            elif stage_name == 'bottleneck': last_module_output_channels = 1280
+            else:
+                # Fallback if a stage was missed in hardcoding, but should ideally not happen.
+                print(f"Warning: Channel count not explicitly set for stage '{stage_name}'. Trying to infer from last module.")
+                if last_module_output_channels == 0: # If no channels were determined
+                    raise RuntimeError(f"Channel count for stage '{stage_name}' is zero. Cannot proceed.")
+            
+            channels[f'{stage_name}_channels'] = last_module_output_channels
 
         # Final check for essential features and channels
         if not all(v > 0 for k, v in channels.items() if 'channels' in k):
