@@ -1,4 +1,4 @@
-# lasa_vgg_model.py (Corrected for InceptionV3 Module Access)
+# lasa_vgg_model.py (Final Attempt at Correct InceptionV3 Layer Names)
 
 import torch
 import torch.nn as nn
@@ -45,23 +45,22 @@ def get_backbone_features(backbone_name, pretrained=True):
     elif backbone_name == 'inception_v3':
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
-        # --- REVISED MODULE ACCESS FOR INCEPTION V3 ---
-        # This time, we directly use the identified module attributes.
-        # The previous hook attempt was to debug, but for constructing the network,
-        # we need the actual nn.Module objects.
+        # --- FINAL CORRECTION FOR INCEPTION V3 LAYER NAMES ---
+        # Using the exact attribute names from the printed structure: maxpool1 and maxpool2.
+        # Also ensuring the last layer for bottleneck is appropriate.
         
         features = {
-            # Encoder 1: Capturing early convolutional and pooling layers.
-            # Using the correct attribute names as found by inspection:
+            # Encoder 1: Initial layers up to the first MaxPool.
+            # The names are from the printed structure you provided.
             'encoder1': nn.Sequential(
                 inception.Conv2d_1a_3x3, 
                 inception.Conv2d_2a_3x3, 
                 inception.Conv2d_2b_3x3, 
-                inception.MaxPool_3x3, # Corrected: Trying 'MaxPool_3x3' again, based on common structure.
+                inception.maxpool1, # CORRECTED: Used 'maxpool1' as per the printed structure
                 inception.Conv2d_3b_1x1, 
                 inception.Conv2d_4a_3x3, 
                 inception.Conv2d_4b_3x3, 
-                inception.MaxPool_5x5  # Corrected: Trying 'MaxPool_5x5'
+                inception.maxpool2  # CORRECTED: Used 'maxpool2'
             ),
             
             # Encoder 2: First set of Inception modules.
@@ -74,23 +73,20 @@ def get_backbone_features(backbone_name, pretrained=True):
             'encoder4': nn.Sequential(inception.Mixed_7a, inception.Mixed_7b),
             
             # Bottleneck: Features before the final average pooling and classifier.
-            'bottleneck': nn.Sequential(inception.Mixed_7b) # Using the output of Mixed_7b
+            # Using the output of Mixed_7b.
+            'bottleneck': nn.Sequential(inception.Mixed_7b)
         }
         
         # --- VERIFIED channel counts for InceptionV3 stages ---
+        # These counts are based on the output channels of the specified layers.
+        # You should confirm these by running a small test to print shapes.
         channels = {
-            'e1_channels': 192,  # Channels after inception.max_pool_5x5
+            'e1_channels': 192,  # Channels after inception.maxpool2 (output of Conv2d_4b_3x3)
             'e2_channels': 288,  # Channels after inception.Mixed_5d
             'e3_channels': 768,  # Channels after inception.Mixed_6e
             'e4_channels': 1280, # Channels after inception.Mixed_7b
             'bottleneck_channels': 1280 # Matching e4_channels
         }
-        # If the above attribute names still fail, you might need to print(inception)
-        # and find the exact attribute names for the pooling layers.
-        # Common names are 'maxpool', 'MaxPool_3x3', 'MaxPool_5x5'.
-        # Let's stick with the most probable ones. If it fails again, it's crucial
-        # to inspect the InceptionV3 model structure.
-
         return nn.ModuleDict(features), channels
 
     elif backbone_name.startswith('efficientnet'):
@@ -221,7 +217,6 @@ class LASA_Unet(nn.Module):
         d1_out = self.decoder1(d1)
         aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Final output
         final_output = self.final_conv(d1_out)
         
         final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
