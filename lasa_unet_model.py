@@ -54,7 +54,7 @@ class LASA_Unet(nn.Module):
 
         # --- NEW: InceptionV3 ---
         elif backbone_name == 'inception_v3':
-            inception = models.inception_v3(weights=Inception_V3_Weights.DEFAULT, aux_logits=False)
+            inception = models.inception_v3(weights=Inception_V3_Weights.DEFAULT, aux_logits=True)
             # Extract features from InceptionV3's blocks.
             # These are based on common U-Net like feature extraction points for Inception.
             # You may need to adjust these based on the exact spatial resolutions and channel counts from your torchvision version.
