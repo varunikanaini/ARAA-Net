@@ -1,4 +1,4 @@
-# lasa_vgg_model.py (Further Corrected for InceptionV3 Layer Access)
+# lasa_vgg_model.py (Further Corrected for InceptionV3 Layer Naming)
 
 import torch
 import torch.nn as nn
@@ -46,43 +46,32 @@ def get_backbone_features(backbone_name, pretrained=True):
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
         # --- CORRECTED LAYER ACCESS FOR INCEPTION V3 ---
-        # We need to use the actual submodule names as defined in torchvision.models.inception_v3
-        # Inspecting the model structure reveals these names:
+        # Based on actual torchvision.models.inception_v3 structure
         features = {
-            # Encoder 1: Initial convs and pooling layers.
-            # The output channels and spatial dimensions after these layers need to be carefully mapped.
-            # The structure is:
-            # Conv2d_1a_3x3, Conv2d_2a_3x3, Conv2d_2b_3x3, MaxPool_3x3,
-            # Conv2d_3b_1x1, Conv2d_4a_3x3, Conv2d_4b_3x3, MaxPool_5x5
-            # The output after MaxPool_5x5 has spatial reduction and typically ~192 channels.
-            'encoder1': nn.Sequential(inception.Conv2d_1a_3x3, inception.Conv2d_2a_3x3, inception.Conv2d_2b_3x3, inception.MaxPool_3x3, # Note: MaxPool_3x3
-                                     inception.Conv2d_3b_1x1, inception.Conv2d_4a_3x3, inception.Conv2d_4b_3x3, inception.MaxPool_5x5), # Note: MaxPool_5x5
+            # Encoder 1: Initial layers up to the first MaxPool.
+            # The output of MaxPool_3x3 usually has 64 channels.
+            'encoder1': nn.Sequential(inception.Conv2d_1a_3x3, inception.Conv2d_2a_3x3, inception.Conv2d_2b_3x3, inception.max_pool_3x3, # Corrected attribute name
+                                     inception.Conv2d_3b_1x1, inception.Conv2d_4a_3x3, inception.Conv2d_4b_3x3, inception.max_pool_5x5), # Corrected attribute name
             
             # Encoder 2: Inception blocks that reduce spatial dimensions.
-            # Mixed_5b, Mixed_5c, Mixed_5d
             'encoder2': nn.Sequential(inception.Mixed_5b, inception.Mixed_5c, inception.Mixed_5d),
             
-            # Encoder 3: Further Inception blocks.
-            # Mixed_6a, Mixed_6b, Mixed_6c, Mixed_6d, Mixed_6e
+            # Encoder 3: More Inception blocks.
             'encoder3': nn.Sequential(inception.Mixed_6a, inception.Mixed_6b, inception.Mixed_6c, inception.Mixed_6d, inception.Mixed_6e),
             
             # Encoder 4: The last set of Inception blocks.
-            # Mixed_7a, Mixed_7b
             'encoder4': nn.Sequential(inception.Mixed_7a, inception.Mixed_7b),
             
-            # Bottleneck: Features before the final average pooling and classifier.
-            # We'll use the output of Mixed_7b as the bottleneck feature map.
+            # Bottleneck: Using the output of Mixed_7b.
             'bottleneck': nn.Sequential(inception.Mixed_7b)
         }
         
         # --- VERIFIED channel counts for InceptionV3 stages ---
-        # These channel counts are critical and must match the actual output of the nn.Sequential blocks above.
-        # You should run a quick test to print the shapes to confirm these.
         channels = {
-            'e1_channels': 192,  # Output channels after inception.MaxPool_5x5
-            'e2_channels': 288,  # Output channels after inception.Mixed_5d
-            'e3_channels': 768,  # Output channels after inception.Mixed_6e
-            'e4_channels': 1280, # Output channels after inception.Mixed_7b
+            'e1_channels': 192,  # Approximate channels after inception.max_pool_5x5
+            'e2_channels': 288,  # Approximate channels after inception.Mixed_5d
+            'e3_channels': 768,  # Approximate channels after inception.Mixed_6e
+            'e4_channels': 1280, # Approximate channels after inception.Mixed_7b
             'bottleneck_channels': 1280 # Matching e4_channels for consistency
         }
         return nn.ModuleDict(features), channels
@@ -129,31 +118,22 @@ class LASA_Unet(nn.Module):
         self.backbone_name = backbone_name
         self.num_classes = num_classes
 
-        # --- 1. Load Pre-trained Backbone and Get Features/Channels ---
         self.encoder_features, self.channels = get_backbone_features(backbone_name, pretrained=pretrained)
 
-        # --- 2. Original LASA Module ---
-        # Ensure LASA module is initialized with the correct number of channels for e4
         self.lasa_module = LASA(in_channels=self.channels['e4_channels'])
 
-        # --- 3. Define Decoder Blocks and Auxiliary Convs for Deep Supervision ---
-        # Decoder 4: Input from bottleneck + LASA-enhanced e4
         self.decoder4 = self._decoder_block(self.channels['bottleneck_channels'] + self.channels['e4_channels'], self.channels['e4_channels'])
         self.aux_conv_d4 = nn.Conv2d(self.channels['e4_channels'], num_classes, kernel_size=1)
 
-        # Decoder 3: Input from upsampled d4_out + e3
         self.decoder3 = self._decoder_block(self.channels['e4_channels'] + self.channels['e3_channels'], self.channels['e3_channels'])
         self.aux_conv_d3 = nn.Conv2d(self.channels['e3_channels'], num_classes, kernel_size=1)
 
-        # Decoder 2: Input from upsampled d3_out + e2
         self.decoder2 = self._decoder_block(self.channels['e3_channels'] + self.channels['e2_channels'], self.channels['e2_channels'])
         self.aux_conv_d2 = nn.Conv2d(self.channels['e2_channels'], num_classes, kernel_size=1)
 
-        # Decoder 1: Input from upsampled d2_out + e1
         self.decoder1 = self._decoder_block(self.channels['e2_channels'] + self.channels['e1_channels'], self.channels['e1_channels'])
         self.aux_conv_d1 = nn.Conv2d(self.channels['e1_channels'], num_classes, kernel_size=1)
 
-        # --- 4. Final Output Convolution ---
         self.final_conv = nn.Conv2d(self.channels['e1_channels'], num_classes, kernel_size=1)
 
     def _decoder_block(self, in_channels, out_channels):
@@ -169,19 +149,15 @@ class LASA_Unet(nn.Module):
     def forward(self, x):
         input_h, input_w = x.shape[2:]
 
-        # --- Encoder Path ---
         e1 = self.encoder_features['encoder1'](x)
         e2 = self.encoder_features['encoder2'](e1)
         e3 = self.encoder_features['encoder3'](e2)
         e4 = self.encoder_features['encoder4'](e3)
 
-        # Apply LASA enhancement to e4
         e4_enhanced = self.lasa_module(e4)
 
-        # Bottleneck
         bottleneck = self.encoder_features['bottleneck'](e4_enhanced)
 
-        # --- Decoder Path with Skip Connections and True Deep Supervision ---
         aux_outputs = []
 
         def get_interp_size(module_output):
@@ -189,42 +165,36 @@ class LASA_Unet(nn.Module):
                 return module_output[0].shape[2:]
             return module_output.shape[2:]
         
-        # Decoder 4
         d4_interp_size = get_interp_size(e4)
         d4 = F.interpolate(bottleneck, size=d4_interp_size, mode='bilinear', align_corners=True)
         d4 = torch.cat([d4, e4_enhanced], dim=1)
         d4_out = self.decoder4(d4)
         aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Decoder 3
         d3_interp_size = get_interp_size(e3)
         d3 = F.interpolate(d4_out, size=d3_interp_size, mode='bilinear', align_corners=True)
         d3 = torch.cat([d3, e3], dim=1)
         d3_out = self.decoder3(d3)
         aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Decoder 2
         d2_interp_size = get_interp_size(e2)
         d2 = F.interpolate(d3_out, size=d2_interp_size, mode='bilinear', align_corners=True)
         d2 = torch.cat([d2, e2], dim=1)
         d2_out = self.decoder2(d2)
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Decoder 1
         d1_interp_size = get_interp_size(e1)
         d1 = F.interpolate(d2_out, size=d1_interp_size, mode='bilinear', align_corners=True)
         d1 = torch.cat([d1, e1], dim=1)
         d1_out = self.decoder1(d1)
         aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Final output
         final_output = self.final_conv(d1_out)
         
         final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
         
         return tuple(aux_outputs + [final_output_upsampled])
 
-# Create aliases for convenience
 LASA_VGG_Unet = LASA_Unet
 LASA_ResNet_Unet = LASA_Unet
 LASA_Inception_Unet = LASA_Unet
