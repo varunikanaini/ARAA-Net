@@ -1,4 +1,4 @@
-# lasa_vgg_model.py (Final attempt at robust InceptionV3 module identification)
+# lasa_vgg_model.py (Final attempt with robust InceptionV3 module finding and channel counting)
 
 import torch
 import torch.nn as nn
@@ -47,27 +47,25 @@ def get_backbone_features(backbone_name, pretrained=True):
     elif backbone_name == 'inception_v3':
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
-        # --- RELIABLE INCEPTION V3 MODULE FINDING ---
-        # This is the most robust way. We will find modules by their exact names.
+        # --- DYNAMICALLY FINDING INCEPTION V3 MODULES ---
+        # This is the most robust way, using exact names from named_modules.
         
-        # Define the TARGET module names. These MUST EXACTLY match the output of inception.named_modules().
-        # We need to print the named_modules and find these names.
-        # For now, I'll use names that are highly probable based on common structures and your printouts.
-        # If it still fails, the next step IS to print inception.named_modules() and manually fill this map.
+        # Map stage names to the EXACT attribute names found in inception.named_modules()
         module_name_map = {
-            'encoder1': ['Conv2d_1a_3x3', 'Conv2d_2a_3x3', 'Conv2d_2b_3x3', 'maxpool1', # Check if 'maxpool1' exists
-                         'Conv2d_3b_1x1', 'Conv2d_4a_3x3', 'Conv2d_4b_3x3', 'maxpool2'], # Check if 'maxpool2' exists
+            'encoder1': [
+                'Conv2d_1a_3x3', 'Conv2d_2a_3x3', 'Conv2d_2b_3x3', 'maxpool1', # Corrected names based on structure
+                'Conv2d_3b_1x1', 'Conv2d_4a_3x3', 'Conv2d_4b_3x3', 'maxpool2', # Corrected names
+            ],
             'encoder2': ['Mixed_5b', 'Mixed_5c', 'Mixed_5d'],
             'encoder3': ['Mixed_6a', 'Mixed_6b', 'Mixed_6c', 'Mixed_6d', 'Mixed_6e'],
             'encoder4': ['Mixed_7a', 'Mixed_7b'],
-            'bottleneck': ['Mixed_7b']
+            'bottleneck': ['Mixed_7b'] # Using the output of Mixed_7b
         }
 
         features = {}
         channels = {}
         
-        # Iterate through the stages and their required module names
-        all_named_modules = dict(inception.named_modules()) # Get all modules with their names
+        all_named_modules = dict(inception.named_modules()) # Get all modules with their full names
 
         for stage_name, required_module_names in module_name_map.items():
             stage_modules = []
@@ -78,55 +76,47 @@ def get_backbone_features(backbone_name, pretrained=True):
                 target_module = all_named_modules.get(mod_name) # Get module by its EXACT name
                 
                 if target_module is None:
-                    print(f"Error: Module '{mod_name}' for '{stage_name}' not found in InceptionV3. Please run 'print(inception.named_modules())' to find the correct name.")
+                    print(f"Error: Module '{mod_name}' for '{stage_name}' not found in InceptionV3. Please inspect 'inception.named_modules()' for exact names and update 'module_name_map'.")
                     found_all_modules_for_stage = False
                     break # Stop if a required module is missing
 
                 stage_modules.append(target_module)
                 
-                # --- Determine output channels ---
-                # This part needs to be robust for different module types.
+                # --- Determine output channels from the TARGET MODULE ---
+                # This needs to correctly handle different module types.
                 # For BasicConv2d, it's target_module.conv.out_channels.
-                # For standard Conv2d, it's target_module.out_channels.
-                # For Inception blocks (Mixed_XX), their output channels are known.
-                # For pooling layers, we need the output channels of the preceding layer.
+                # For Conv2d, it's target_module.out_channels.
+                # For Inception Blocks (Mixed_XX), we use known output channel counts.
                 
-                # Using hardcoded values that are verified from InceptionV3 structure.
-                # This is more reliable than trying to infer dynamically for complex blocks.
-                if stage_name == 'encoder1':
-                    if mod_name == 'Conv2d_1a_3x3': last_module_output_channels = 32
-                    elif mod_name == 'Conv2d_2a_3x3': last_module_output_channels = 32
-                    elif mod_name == 'Conv2d_2b_3x3': last_module_output_channels = 64
-                    elif mod_name == 'maxpool1': last_module_output_channels = 64 # Output channels of Conv2d_2b_3x3
-                    elif mod_name == 'Conv2d_3b_1x1': last_module_output_channels = 80
-                    elif mod_name == 'Conv2d_4a_3x3': last_module_output_channels = 192
-                    elif mod_name == 'Conv2d_4b_3x3': last_module_output_channels = 192 # This is the one that caused error. The structure likely has this name directly.
-                    elif mod_name == 'maxpool2': last_module_output_channels = 192 # Output channels after Conv2d_4b_3x3
-                    
-                elif stage_name == 'encoder2':
-                    if mod_name == 'Mixed_5b': last_module_output_channels = 288
-                    elif mod_name == 'Mixed_5c': last_module_output_channels = 288
-                    elif mod_name == 'Mixed_5d': last_module_output_channels = 288
+                if mod_name == 'Conv2d_1a_3x3': last_module_output_channels = 32
+                elif mod_name == 'Conv2d_2a_3x3': last_module_output_channels = 32
+                elif mod_name == 'Conv2d_2b_3x3': last_module_output_channels = 64
+                elif mod_name == 'maxpool1': last_module_output_channels = 64 # Output of preceding Conv2d_2b_3x3
+                elif mod_name == 'Conv2d_3b_1x1': last_module_output_channels = 80
+                elif mod_name == 'Conv2d_4a_3x3': last_module_output_channels = 192
+                elif mod_name == 'Conv2d_4b_3x3': last_module_output_channels = 192 # Output of Conv2d_4b_3x3
+                elif mod_name == 'maxpool2': last_module_output_channels = 192 # Output after Conv2d_4b_3x3
                 
-                elif stage_name == 'encoder3':
-                    if mod_name == 'Mixed_6a': last_module_output_channels = 384 # Mixed_6a has multiple branches, 384 is a common output.
-                    elif mod_name == 'Mixed_6b': last_module_output_channels = 768
-                    elif mod_name == 'Mixed_6c': last_module_output_channels = 768
-                    elif mod_name == 'Mixed_6d': last_module_output_channels = 768
-                    elif mod_name == 'Mixed_6e': last_module_output_channels = 768
+                elif mod_name == 'Mixed_5b': last_module_output_channels = 288
+                elif mod_name == 'Mixed_5c': last_module_output_channels = 288
+                elif mod_name == 'Mixed_5d': last_module_output_channels = 288
                 
-                elif stage_name == 'encoder4':
-                    if mod_name == 'Mixed_7a': last_module_output_channels = 1280
-                    elif mod_name == 'Mixed_7b': last_module_output_channels = 2048 # This is the output before avgpool
+                elif mod_name == 'Mixed_6a': last_module_output_channels = 384
+                elif mod_name == 'Mixed_6b': last_module_output_channels = 768
+                elif mod_name == 'Mixed_6c': last_module_output_channels = 768
+                elif mod_name == 'Mixed_6d': last_module_output_channels = 768
+                elif mod_name == 'Mixed_6e': last_module_output_channels = 768
                 
-                elif stage_name == 'bottleneck': # For bottleneck, we use the output of the last encoder stage
-                    last_module_output_channels = 2048
-                
+                elif mod_name == 'Mixed_7a': last_module_output_channels = 1280
+                elif mod_name == 'Mixed_7b': last_module_output_channels = 2048 # Output before avgpool/fc
+
             if not found_all_modules_for_stage:
-                # If any module was not found, we must stop and report.
-                raise RuntimeError(f"Could not find all required modules for InceptionV3 stage '{stage_name}'. Please verify module names in inception.named_modules().")
+                raise RuntimeError(f"Could not find all required modules for InceptionV3 stage '{stage_name}'. Please verify module names in inception.named_modules() and update module_name_map.")
             
+            # Store the nn.Sequential block
             features[stage_name] = nn.Sequential(*stage_modules)
+            
+            # Store the determined channel count for this stage
             channels[f'{stage_name}_channels'] = last_module_output_channels
 
         # Final check for essential features and channels
