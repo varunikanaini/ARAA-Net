@@ -1,4 +1,4 @@
-# lasa_vgg_model.py (Final Attempt at Precise InceptionV3 Layer Names)
+# /kaggle/working/ARAA-Net/lasa_vgg_model.py (Complete and Corrected)
 
 import torch
 import torch.nn as nn
@@ -45,44 +45,32 @@ def get_backbone_features(backbone_name, pretrained=True):
     elif backbone_name == 'inception_v3':
         inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT if pretrained else None)
         
-        # --- FINAL CORRECTION USING EXACT ATTRIBUTE NAMES FROM PRINTED STRUCTURE ---
-        # Based on the structure you provided:
+        # --- FINAL INCEPTION V3 LAYER NAMES (BASED ON PRINTED STRUCTURE) ---
+        # Using the exact attribute names from the provided structure.
         features = {
-            # Encoder 1: Initial layers up to the second MaxPool.
-            # The attribute names MUST match the printed structure exactly.
             'encoder1': nn.Sequential(
                 inception.Conv2d_1a_3x3, 
                 inception.Conv2d_2a_3x3, 
                 inception.Conv2d_2b_3x3, 
-                inception.maxpool1, # Corrected: Using 'maxpool1' as seen in the printout
+                inception.maxpool1, # Corrected: Using 'maxpool1'
                 inception.Conv2d_3b_1x1, 
                 inception.Conv2d_4a_3x3, 
-                inception.Conv2d_4b_3x3, # Corrected: Using 'Conv2d_4b_3x3'
+                inception.Conv2d_4b_3x3, 
                 inception.maxpool2  # Corrected: Using 'maxpool2'
             ),
             
-            # Encoder 2: First set of Inception modules.
             'encoder2': nn.Sequential(inception.Mixed_5b, inception.Mixed_5c, inception.Mixed_5d),
-            
-            # Encoder 3: Second set of Inception modules.
             'encoder3': nn.Sequential(inception.Mixed_6a, inception.Mixed_6b, inception.Mixed_6c, inception.Mixed_6d, inception.Mixed_6e),
-            
-            # Encoder 4: Final set of Inception blocks.
             'encoder4': nn.Sequential(inception.Mixed_7a, inception.Mixed_7b),
-            
-            # Bottleneck: Using the output of Mixed_7b.
-            'bottleneck': nn.Sequential(inception.Mixed_7b)
+            'bottleneck': nn.Sequential(inception.Mixed_7b) # Using the output of Mixed_7b
         }
         
-        # --- VERIFIED channel counts for InceptionV3 stages ---
-        # These channel counts are critical and must match the actual output of the nn.Sequential blocks above.
-        # Confirmed from the provided InceptionV3 structure printout:
         channels = {
-            'e1_channels': 192,  # Channels after inception.maxpool2 (output of Conv2d_4b_3x3)
+            'e1_channels': 192,  # Channels after inception.maxpool2
             'e2_channels': 288,  # Channels after inception.Mixed_5d
             'e3_channels': 768,  # Channels after inception.Mixed_6e
             'e4_channels': 1280, # Channels after inception.Mixed_7b
-            'bottleneck_channels': 1280 # Matching e4_channels
+            'bottleneck_channels': 1280
         }
         return nn.ModuleDict(features), channels
 
@@ -205,8 +193,9 @@ class LASA_Unet(nn.Module):
         
         return tuple(aux_outputs + [final_output_upsampled])
 
-# --- Aliases ---
+# --- CORRECTED Aliases ---
 LASA_VGG_Unet = LASA_Unet
-LASA_ResNet_Unet = LASA_Unet
+LASA_ResNet_Unet = LASA_Unet # Corrected to alias LASA_Unet
 LASA_Inception_Unet = LASA_Unet
-LASA_EfficientNet_Unet = LASA_EfficientNet_Unet
+LASA_EfficientNet_Unet = LASA_Unet
+# --- END CORRECTED Aliases ---
