@@ -28,7 +28,9 @@ from train_unet import FocalLoss, DiceLoss
 from torch.utils.data import DataLoader 
 # ------------------------------------------------
 
-# --- Argument Parsing ---
+# test_unet.py (or test_lasa_vgg.py)
+# ... (other imports and code) ...
+
 def get_test_args():
     parser = argparse.ArgumentParser(description='Test LASA-Unet Model')
     
@@ -71,7 +73,11 @@ def get_test_args():
     parser.add_argument('--wavelet-detail-scale', type=float, default=1.5, help='Dummy arg for ImageFolder.')
 
     # --- Control Flow ---
-    parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.') # This is kept for consistency, though the script IS the test script.
+    parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
+
+    # --- Add num_workers argument ---
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of data loading workers.')
+    # ------------------------------
 
     try:
         args = parser.parse_args()
@@ -82,6 +88,11 @@ def get_test_args():
         parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     return args
+
+# ... (rest of your test_lasa_vgg.py file: setup_logging_test, evaluate_model, custom_collate_fn, main) ...
+
+# In your main function, the line for DataLoader will now correctly use args.num_workers
+# test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
 
 # --- Logging Setup ---
 def setup_logging_test(log_dir, filename='testing_results.log'):
