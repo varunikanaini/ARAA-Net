@@ -1,4 +1,4 @@
-# config.py (Modified for better backbone resolution handling)
+# config.py
 import os
 
 # --- Base Directories ---
@@ -9,7 +9,6 @@ os.makedirs(DATA_ROOT, exist_ok=True)
 os.makedirs(CKPT_ROOT, exist_ok=True)
 
 # --- Dataset Configurations ---
-# ... (Your existing DATASET_CONFIG remains the same) ...
 DATASET_CONFIG = {
     'TSRS_RSNA-Epiphysis': {
         'path': os.path.join(DATA_ROOT, 'TSRS_RSNA-Epiphysis'),
@@ -78,16 +77,14 @@ DATASET_CONFIG = {
 }
 
 # --- Backbone Definitions ---
-# Define typical input resolutions for each backbone
 BACKBONE_INPUT_RESOLUTIONS = {
     'vgg16': (224, 224),
     'resnet50': (224, 224),
     'inception_v3': (299, 299),
     'efficientnet_b0': (224, 224),
-    'efficientnet_b3': (300, 300), # Common size for B3
+    'efficientnet_b3': (300, 300), 
 }
 
-# Define channel info (keep this)
 BACKBONE_CHANNELS = {
     'vgg16': {'e1': 64, 'e2': 128, 'e3': 256, 'e4': 512, 'bottleneck': 512},
     'resnet50': {'e1': 64, 'e2': 256, 'e3': 512, 'e4': 1024, 'bottleneck': 2048},
@@ -98,36 +95,28 @@ BACKBONE_CHANNELS = {
 
 # --- Default Training Parameters ---
 DEFAULT_ARGS = {
-    # Dataset specific defaults
     'dataset_name': 'TSRS_RSNA-Epiphysis',
-    'num_workers': 4,
-
-    # Model specifics
+    'num_workers': 2, # Reduced workers for Kaggle environments
     'backbone': 'vgg16',
     'lasa_kernels': [1, 3, 5, 7],
 
-    # Training parameters
     'epochs': 50,
     'batch_size': 4,
     'lr': 0.0005,
     'weight_decay': 0.0001,
     'patience': 15,
 
-    # Image preprocessing parameters - MAKE THESE BACKBONE-DEPENDENT
-    # We'll handle this lookup in get_args() now
-    # 'scale_h': 896, # OLD GLOBAL DEFAULT
-    # 'scale_w': 576, # OLD GLOBAL DEFAULT
+    # Defaults for scaling/resolution will be backbone-dependent
+    # 'scale_h': 224, 
+    # 'scale_w': 224,
 
-    # Deep Supervision weights
     'deep_supervision_weights': [0.2, 0.4, 0.6, 0.8, 1.0],
 
-    # Loss function parameters
     'focal_alpha': 0.5,
     'focal_gamma': 2.0,
     'focal_loss_weight': 1.0,
     'dice_loss_weight': 1.0,
 
-    # Data augmentation parameters
     'min_lesion_area_pixels': 576,
     'expansion_factor': 1.5,
     'min_bbox_h': 32,
@@ -136,26 +125,26 @@ DEFAULT_ARGS = {
     'wavelet_level': 1,
     'wavelet_detail_scale': 1.5,
 
-    # Scheduler parameters
+    'lr_scheduler_type': 'CosineAnnealingWarmRestarts', # Changed default to the preferred scheduler
     'scheduler_patience': 5,
     'scheduler_factor': 0.5,
     'scheduler_min_lr': 1e-6,
+    'scheduler_T0': 10, 
+    'scheduler_T_mult': 2, # Use integer default
+
+    'test_only': False,
+    'resume': False,
     
-    # LR Scheduler type
-    'lr_scheduler_type': 'ReduceLROnPlateau', # Default scheduler
-    'scheduler_T0': 10, # For CosineAnnealingWarmRestarts
-    'scheduler_T_mult': 2, # For CosineAnnealingWarmRestarts
+    'fine_tune_epochs': 0, # Default to no fine-tuning, will be controlled by CLI arg
 }
 
-# --- Helper function to get dataset config ---
 def get_dataset_info(dataset_name):
     if dataset_name not in DATASET_CONFIG:
         raise ValueError(f"Dataset '{dataset_name}' not found in configuration. Available: {list(DATASET_CONFIG.keys())}")
     return DATASET_CONFIG[dataset_name]
 
-# --- Helper function to get backbone input resolution ---
 def get_backbone_resolution(backbone_name):
     if backbone_name not in BACKBONE_INPUT_RESOLUTIONS:
         print(f"Warning: Resolution for backbone '{backbone_name}' not found in BACKBONE_INPUT_RESOLUTIONS. Using default 224x224.")
-        return (224, 224) # Fallback resolution
+        return (224, 224) 
     return BACKBONE_INPUT_RESOLUTIONS[backbone_name]
