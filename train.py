@@ -294,7 +294,7 @@ def main():
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                          patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
     elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=args.scheduler_min_lr)
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
     else:
         # This case should ideally be caught by argparse choices, but good for robustness.
         logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
