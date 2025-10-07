@@ -188,7 +188,8 @@ def get_args():
     parser.add_argument('--scheduler-factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-min-lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
     parser.add_argument('--scheduler-T0', type=int, default=config.DEFAULT_ARGS.get('scheduler_T0', 10), help='T_0 for CosineAnnealingWarmRestarts.')
-    parser.add_argument('--scheduler-T-mult', type=int, default=config.DEFAULT_ARGS.get('scheduler_T_mult', 2), help='T_mult for CosineAnnealingWarmRestarts (must be integer).')
+    parser.add_argument('--scheduler-T-mult', type=int, default=config.DEFAULT_ARGS.get('scheduler_T_mult', 2), 
+                        help='T_mult for CosineAnnealingWarmRestarts (must be integer).')
 
     # --- Control Flow ---
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
@@ -336,12 +337,13 @@ def main():
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                          patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
     elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
+        # Ensure T_mult is treated as an integer
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
     else:
+        # Fallback logic (should be handled by argparse choices, but good for safety)
         logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                          patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
-
     # --- Resuming Training ---
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
