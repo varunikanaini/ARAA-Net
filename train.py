@@ -87,12 +87,14 @@ class DiceLoss(nn.Module):
         elif self.reduction == 'sum': return loss * inputs.shape[0] 
         else: return loss 
 
+# train.py (Modified get_args function)
+
+# ... (all other imports and initializations remain the same) ...
+
 # --- Argument Parsing ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Multi-Dataset and Multi-Backbone Support')
     
-    # --- Explicitly add arguments, using config.DEFAULT_ARGS for their default values ---
-
     # --- Dataset Selection ---
     dataset_choices = list(config.DATASET_CONFIG.keys())
     parser.add_argument('--dataset-name', type=str, default=config.DEFAULT_ARGS['dataset_name'],
@@ -113,8 +115,11 @@ def get_args():
                         help='Patience for early stopping based on validation mIoU.')
 
     # --- Image Preprocessing ---
-    parser.add_argument('--scale-h', type=int, default=config.DEFAULT_ARGS['scale_h'], help='Nominal height for resizing')
-    parser.add_argument('--scale-w', type=int, default=config.DEFAULT_ARGS['scale_w'], help='Nominal width for resizing')
+    # Dynamically set scale_h and scale_w based on the SELECTED backbone
+    # We'll use a temporary default that will be overridden after parsing
+    # This is a bit of a trick to get argparse to accept defaults, then we override.
+    parser.add_argument('--scale-h', type=int, default=224, help='Height for resizing (adjusted based on backbone)')
+    parser.add_argument('--scale-w', type=int, default=224, help='Width for resizing (adjusted based on backbone)')
     
     # --- LASA Module Arguments ---
     parser.add_argument('--lasa-kernels', type=int, default=config.DEFAULT_ARGS.get('lasa_kernels'), nargs='+',
@@ -140,9 +145,14 @@ def get_args():
     parser.add_argument('--wavelet-detail-scale', type=float, default=config.DEFAULT_ARGS['wavelet_detail_scale'], help='Scaling factor for DWT detail coefficients.')
 
     # --- Scheduler Parameters ---
+    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['lr_scheduler_type'], choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
     parser.add_argument('--scheduler-patience', type=int, default=config.DEFAULT_ARGS['scheduler_patience'], help='Patience for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-min-lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
+    # Add T0 and T_mult for CosineAnnealingWarmRestarts
+    parser.add_argument('--scheduler-T0', type=int, default=config.DEFAULT_ARGS.get('scheduler_T0', 10), help='T_0 for CosineAnnealingWarmRestarts.')
+    parser.add_argument('--scheduler-T-mult', type=float, default=config.DEFAULT_ARGS.get('scheduler_T_mult', 2.0), help='T_mult for CosineAnnealingWarmRestarts.')
+
 
     # --- Control Flow ---
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
@@ -155,7 +165,7 @@ def get_args():
     try:
         args = parser.parse_args()
     except SystemExit:
-        args = parser.parse_args([]) 
+        args = parser.parse_args([]) # Fallback for notebooks
     
     # --- Post-parsing validation and adjustments ---
     if len(args.deep_supervision_weights) != 5:
@@ -163,29 +173,33 @@ def get_args():
     
     # Get dataset specific config and update args
     try:
-        # Fetch the specific dataset configuration
         dataset_info = config.DATASET_CONFIG[args.dataset_name] 
-        
-        # Assign derived information to args
         args.dataset_path = dataset_info['path']
         args.dataset_structure = dataset_info['structure']
         args.num_classes = dataset_info['num_classes']
-        args.image_ext = dataset_info.get('image_ext', IMAGE_EXTENSIONS) # Use from dataset config or global default
-        args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)   # Use from dataset config or global default
+        args.image_ext = dataset_info.get('image_ext', IMAGE_EXTENSIONS)
+        args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)
         args.dataset_subfolders = dataset_info.get('subfolders')
         
-        # Also assign the full DATASET_CONFIG to args so ImageFolder can access it
-        # THIS IS THE KEY FIX FOR THE ATTRIBUTEERROR
+        # --- CRITICAL FIX: Assign DATASET_CONFIG to args ---
+        # This makes config.DATASET_CONFIG accessible within ImageFolder via args.DATASET_CONFIG
         args.DATASET_CONFIG = config.DATASET_CONFIG 
 
-    except KeyError: # If dataset_name is not found in config.DATASET_CONFIG
+    except KeyError: 
         parser.error(f"Dataset '{args.dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
-    except Exception as e: # Catch other potential errors during config access
+    except Exception as e: 
         parser.error(f"Error accessing dataset configuration for '{args.dataset_name}': {e}")
 
     # Validate selected backbone against available ones from config
     if args.backbone not in config.BACKBONE_CHANNELS:
         parser.error(f"The specified backbone '{args.backbone}' is not supported. Supported backbones are: {list(config.BACKBONE_CHANNELS.keys())}")
+
+    # --- Dynamically set scale_h and scale_w based on the selected backbone ---
+    # This is crucial for matching pre-trained model expectations.
+    backbone_h, backbone_w = config.get_backbone_resolution(args.backbone)
+    args.scale_h = backbone_h
+    args.scale_w = backbone_w
+    logging.info(f"Set input resolution to {args.scale_h}x{args.scale_w} based on backbone '{args.backbone}'.")
 
     return args
 
@@ -239,7 +253,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
         net.train()
     return mIoU
 
-# --- Custom Collate Function ---
+
 def custom_collate_fn(batch):
     batch = [item for item in batch if item is not None] 
     if not batch:
@@ -262,7 +276,7 @@ def main():
     ]
     exp_name = "_".join(exp_name_parts)
     
-    exp_path = os.path.join(config.CKPT_ROOT, exp_name)
+    exp_path = os.path.join(config.CKPT_ROOT, exp_name) 
     check_mkdir(exp_path)
     setup_logging(exp_path) 
 
@@ -279,8 +293,15 @@ def main():
 
     # --- Optimizer and Scheduler ---
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
-                                                     patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
+    
+    # --- LR Scheduler Setup ---
+    if args.lr_scheduler_type == 'ReduceLROnPlateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
+                                                         patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
+    elif args.lr_scheduler_type == 'CosineAnnealingWarmRestarts':
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=args.scheduler_min_lr)
+    else:
+        raise ValueError(f"Unsupported LR scheduler type: {args.lr_scheduler_type}")
 
     # --- Resuming Training ---
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
@@ -404,7 +425,14 @@ def main():
         current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating")
 
         # --- Scheduler Step ---
-        scheduler.step(current_mIoU)
+        # Adjust scheduler step based on type
+        if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(current_mIoU)
+        elif isinstance(scheduler, optim.lr_scheduler.CosineAnnealingWarmRestarts):
+            scheduler.step() # Cosine annealing doesn't take metric
+        else:
+            # Fallback if scheduler type is unknown or not handled
+            pass 
 
         # --- Checkpointing ---
         if current_mIoU > best_mIoU:
@@ -435,3 +463,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
