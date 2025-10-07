@@ -9,7 +9,7 @@ import random
 import cv2 # Using OpenCV for potentially better image reading
 
 import custom_transforms as tr 
-
+import config
 # --- IMPORT IMAGE_EXTENSIONS and MASK_EXTENSIONS ---
 # These are defined globally in datasets.py and used as fallbacks in train.py
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
