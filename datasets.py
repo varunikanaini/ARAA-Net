@@ -1,4 +1,4 @@
-# datasets.py (Modified ImageFolder init to use args.dataset_name directly for config lookup)
+# datasets.py
 
 import os
 import torch.utils.data as data
@@ -6,23 +6,30 @@ from PIL import Image, UnidentifiedImageError
 import numpy as np
 from torchvision import transforms
 import random
-import cv2 # Using OpenCV for more robust image reading
+import cv2 # Using OpenCV for potentially better image reading
 
 import custom_transforms as tr 
-import config
+
 # --- IMPORT IMAGE_EXTENSIONS and MASK_EXTENSIONS ---
 # These are defined globally in datasets.py and used as fallbacks in train.py
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
 MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 
 def make_dataset(data_info, split):
+    """
+    Creates a list of (image_path, mask_path) tuples based on dataset configuration.
+    Args:
+        data_info (dict): Dictionary containing path, structure, and other info for the dataset.
+        split (str): 'train', 'val', or 'test'.
+    Returns:
+        list: A list of (image_path, mask_path) tuples.
+    """
     dataset_items = []
     base_path = data_info['path']
     structure = data_info['structure']
     img_ext = data_info.get('image_ext', IMAGE_EXTENSIONS)
     mask_ext = data_info.get('mask_ext', MASK_EXTENSIONS)
 
-    # ... (rest of make_dataset remains the same) ...
     print(f"Looking for dataset '{structure}' split '{split}' in '{base_path}'")
 
     if structure == 'TSRS_RSNA':
@@ -103,7 +110,7 @@ def make_dataset(data_info, split):
                 if f.lower().endswith(img_ext):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(cls_image_path, f)
-                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png') # COVID masks are PNG
+                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png') 
                     if os.path.exists(mask_full_path):
                         dataset_items.append((img_full_path, mask_full_path))
                     else:
@@ -124,7 +131,7 @@ def make_dataset(data_info, split):
                 if f.lower().endswith(img_ext):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(cls_image_path, f)
-                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png') # Assuming PNG masks
+                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png') 
                     if os.path.exists(mask_full_path):
                         dataset_items.append((img_full_path, mask_full_path))
                     else:
@@ -145,14 +152,11 @@ class ImageFolder(data.Dataset):
         self.split = split
         self.args = args
         
-        # --- Fetch dataset info from config ---
-        # Ensure DATASET_CONFIG is accessible via config module
         try:
             dataset_info = config.DATASET_CONFIG[dataset_name] 
         except KeyError:
-            raise ValueError(f"Dataset '{dataset_name}' not found in config.DATASET_CONFIG. Available: {list(config.DATASET_CONFIG.keys())}")
+            raise ValueError(f"Dataset '{dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
 
-        # Get data items using the retrieved dataset_info
         self.imgs = make_dataset(dataset_info, split) 
 
         if not self.imgs:
@@ -160,11 +164,12 @@ class ImageFolder(data.Dataset):
         else:
             print(f"Found {len(self.imgs)} samples for {dataset_name} split '{self.split}'.")
 
-        # Get parameters from args (which are already populated with defaults from config)
+        # Get parameters from args
         min_lesion_area = args.min_lesion_area_pixels
         expansion_factor = args.expansion_factor
         min_bbox_h = args.min_bbox_h
         min_bbox_w = args.min_bbox_w
+        
         scale_h = args.scale_h
         scale_w = args.scale_w
         
@@ -172,16 +177,28 @@ class ImageFolder(data.Dataset):
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=scale_w, h=scale_h),
+                # Conditional application of CenterAmplification if min_lesion_area_pixels is set > 0
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)) if min_lesion_area > 0 else lambda x: x,
-                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
-                tr.HistogramEqualization(),
+                
+                # <<< MODIFIED AUGMENTATIONS START >>>
+                # Removed WaveletContrastEnhancement and HistogramEqualization for less aggressive training
+                # tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
+                # tr.HistogramEqualization(),
+                
+                # Reduced RandomAffine parameters
+                tr.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05), shear=5, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
+                
+                # Reduced RandomGaussianBlur radius
+                tr.RandomGaussianBlur(radius_range=(0.1, 1.0)) if hasattr(tr, 'RandomGaussianBlur') else lambda x: x,
+                
+                # Keep other augmentations
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((scale_h, scale_w)), 
-                tr.RandomGaussianBlur(),
-                tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05) if hasattr(tr, 'ColorJitter') else lambda x: x, # Check if ColorJitter is defined
-                tr.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.9, 1.1), shear=5, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x, # Check if RandomAffine is defined
+                tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05) if hasattr(tr, 'ColorJitter') else lambda x: x,
+                # <<< MODIFIED AUGMENTATIONS END >>>
+
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
