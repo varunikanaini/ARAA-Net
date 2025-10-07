@@ -1,4 +1,4 @@
-# train.py (Corrected with global freeze_backbone and unfreeze_backbone functions)
+# train.py (Corrected get_args function for all issues)
 
 import sys
 import os
@@ -88,7 +88,6 @@ class DiceLoss(nn.Module):
         else: return loss 
 
 # --- Backbone Freezing/Unfreezing Helper Functions ---
-# DEFINED AT TOP LEVEL FOR GLOBAL ACCESS
 def freeze_backbone(model, backbone_name):
     """Freezes parameters of the backbone encoder."""
     frozen_layers = []
@@ -155,6 +154,7 @@ def get_args():
                         help='Patience for early stopping based on validation mIoU.')
 
     # --- Image Preprocessing ---
+    # Defaults will be dynamically set based on backbone AFTER parsing
     parser.add_argument('--scale-h', type=int, help='Height for resizing (adjusted based on backbone)')
     parser.add_argument('--scale-w', type=int, help='Width for resizing (adjusted based on backbone)')
     
@@ -220,7 +220,7 @@ def get_args():
         args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)
         args.dataset_subfolders = dataset_info.get('subfolders')
         
-        args.DATASET_CONFIG = config.DATASET_CONFIG # Make config available to ImageFolder
+        args.DATASET_CONFIG = config.DATASET_CONFIG 
 
     except KeyError: 
         parser.error(f"Dataset '{args.dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
@@ -288,7 +288,6 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
     if mode == "Validating": 
         net.train()
     return mIoU
-
 
 def custom_collate_fn(batch):
     batch = [item for item in batch if item is not None] 
@@ -447,8 +446,8 @@ def main():
             logging.info(f"--- Transitioning to Phase 2: Unfreezing backbone at Epoch {epoch} ---")
             unfreeze_backbone(net, args.backbone)
             
-            # Re-initialize optimizer and scheduler for Phase 2 with a potentially lower LR
-            new_lr = args.lr / 5.0 
+            # Re-initialize optimizer and scheduler for Phase 2
+            new_lr = args.lr / 5.0 # Reduce LR for fine-tuning
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             
@@ -456,9 +455,9 @@ def main():
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                                  patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
             elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
-                # T_0 should be relative to the remaining epochs or the cycle length.
-                # If fine-tuning epochs are specified, we might want to adjust T_0.
-                # For now, keeping original T_0 and T_mult.
+                # For CosineAnnealingWarmRestarts, T_0 is usually set relative to the number of epochs.
+                # If fine-tuning epochs are a fraction of total, adjust T_0 accordingly or keep it fixed.
+                # Keeping original T_0 and T_mult as per previous setup.
                 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
             else:
                 logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
