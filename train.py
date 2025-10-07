@@ -182,7 +182,8 @@ def get_args():
 
     # --- Scheduler Parameters ---
     # Use 'scheduler-type' as the argument name, as defined in config.DEFAULT_ARGS
-    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['scheduler_type'], choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
+    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['scheduler_type'], # Corrected to match config key
+                        choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
     parser.add_argument('--scheduler-patience', type=int, default=config.DEFAULT_ARGS['scheduler_patience'], help='Patience for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-min-lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
