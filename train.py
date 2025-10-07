@@ -105,19 +105,13 @@ class DiceLoss(nn.Module):
         else: # 'none' or other values
             return loss 
 
+# train.py (Modified get_args function)
+
 # --- Argument Parsing ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Multi-Dataset and Multi-Backbone Support')
     
-    # --- Dynamic Config Loading ---
-    # Load default args from config.py
-    # We'll parse specific args and then update these defaults
-    for key, value in DEFAULT_ARGS.items():
-        # Use type=type(value) to infer type from default value, handle lists/nargs appropriately
-        if isinstance(value, list):
-            parser.add_argument(f'--{key}', type=type(value[0]) if value else str, default=value, nargs='+', help=f'List of {key} (default: {value})')
-        else:
-            parser.add_argument(f'--{key}', type=type(value), default=value, help=f'{key} (default: {value})')
+    # --- Explicitly add arguments, using DEFAULT_ARGS for their default values ---
 
     # --- Dataset Selection ---
     parser.add_argument('--dataset-name', type=str, default=DEFAULT_ARGS['dataset_name'],
@@ -126,6 +120,8 @@ def get_args():
                         choices=['train', 'val', 'test'], help='Dataset split to load')
 
     # --- Backbone Selection ---
+    # This is the problematic one. We want it to be explicitly defined here.
+    # The 'choices' should ideally come from config.BACKBONE_CHANNELS.keys()
     parser.add_argument('--backbone', type=str, default=DEFAULT_ARGS['backbone'],
                         choices=BACKBONE_CHANNELS.keys(), help='Backbone architecture to use')
 
@@ -142,22 +138,37 @@ def get_args():
     parser.add_argument('--scale-w', type=int, default=DEFAULT_ARGS['scale_w'], help='Nominal width for resizing')
     
     # --- LASA Module Arguments ---
-    # This is already handled by DEFAULT_ARGS if it exists in config.py, but can be explicitly set.
-    # parser.add_argument('--lasa-kernels', nargs='+', type=int, default=DEFAULT_ARGS['lasa_kernels'], help='Kernel sizes for LASA module')
+    # If lasa_kernels is a key in DEFAULT_ARGS, add it here explicitly.
+    # Assuming it's handled by the loop or needs to be added if not in DEFAULT_ARGS.
+    # If it IS in DEFAULT_ARGS:
+    parser.add_argument('--lasa-kernels', type=int, default=DEFAULT_ARGS.get('lasa_kernels'), nargs='+',
+                        help='Kernel sizes for LASA module')
+
 
     # --- Deep Supervision Weights ---
-    # Handled by default args, but ensure length validation
-    # parser.add_argument('--deep-supervision-weights', nargs='+', type=float, default=DEFAULT_ARGS['deep_supervision_weights'])
+    # If it's in DEFAULT_ARGS, add it explicitly.
+    parser.add_argument('--deep-supervision-weights', type=float, default=DEFAULT_ARGS.get('deep_supervision_weights'), nargs='+',
+                        help='Weights for deep supervision outputs')
 
     # --- Loss Function Parameters ---
-    # alpha, gamma, weights for focal and dice loss
-    # Handled by default args.
+    parser.add_argument('--focal-alpha', type=float, default=DEFAULT_ARGS['focal_alpha'], help='Alpha parameter for Focal Loss.')
+    parser.add_argument('--focal-gamma', type=float, default=DEFAULT_ARGS['focal_gamma'], help='Gamma parameter for Focal Loss.')
+    parser.add_argument('--focal-loss-weight', type=float, default=DEFAULT_ARGS['focal_loss_weight'], help='Weight for Focal Loss component.')
+    parser.add_argument('--dice-loss-weight', type=float, default=DEFAULT_ARGS['dice_loss_weight'], help='Weight for Dice Loss component.')
 
     # --- Data Augmentation Parameters ---
-    # Handled by default args.
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=DEFAULT_ARGS['min_lesion_area_pixels'], help='Min lesion area for CenterAmplification.')
+    parser.add_argument('--expansion-factor', type=float, default=DEFAULT_ARGS['expansion_factor'], help='Expansion factor for CenterAmplification.')
+    parser.add_argument('--min-bbox-h', type=int, default=DEFAULT_ARGS['min_bbox_h'], help='Min bbox height for CenterAmplification.')
+    parser.add_argument('--min-bbox-w', type=int, default=DEFAULT_ARGS['min_bbox_w'], help='Min bbox width for CenterAmplification.')
+    parser.add_argument('--wavelet-type', type=str, default=DEFAULT_ARGS['wavelet_type'], help='Wavelet type for DWT contrast enhancement.')
+    parser.add_argument('--wavelet-level', type=int, default=DEFAULT_ARGS['wavelet_level'], help='DWT decomposition level.')
+    parser.add_argument('--wavelet-detail-scale', type=float, default=DEFAULT_ARGS['wavelet_detail_scale'], help='Scaling factor for DWT detail coefficients.')
 
     # --- Scheduler Parameters ---
-    # Handled by default args.
+    parser.add_argument('--scheduler-patience', type=int, default=DEFAULT_ARGS['scheduler_patience'], help='Patience for ReduceLROnPlateau.')
+    parser.add_argument('--scheduler-factor', type=float, default=DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
+    parser.add_argument('--scheduler-min-lr', type=float, default=DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
 
     # --- Control Flow ---
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
@@ -167,29 +178,34 @@ def get_args():
     parser.add_argument('--num-workers', type=int, default=DEFAULT_ARGS['num_workers'], help='Number of data loading workers.')
     
     # --- Parse Arguments ---
-    args = parser.parse_args()
+    # Use parse_args([]) for environments like notebooks where sys.exit might be too harsh
+    try:
+        args = parser.parse_args()
+    except SystemExit:
+        args = parser.parse_args([]) # Fallback for notebooks
     
     # Post-parsing validation and adjustments
     # Ensure deep supervision weights have the correct length (5 for this model)
     if len(args.deep_supervision_weights) != 5:
-        parser.error(f"deep-supervision-weights must have 5 values (one for each deep supervision output + final). Got {len(args.deep_supervision_weights)}")
+        parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     # Get dataset specific config and update args if necessary
     try:
         dataset_info = config.get_dataset_info(args.dataset_name)
-        # Update args with dataset-specific info (like num_classes, paths, structure, extensions)
         args.dataset_path = dataset_info['path']
         args.dataset_structure = dataset_info['structure']
         args.num_classes = dataset_info['num_classes']
         args.image_ext = dataset_info.get('image_ext', IMAGE_EXTENSIONS)
         args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)
-        args.dataset_subfolders = dataset_info.get('subfolders') # For STANDARD structure
+        args.dataset_subfolders = dataset_info.get('subfolders')
     except ValueError as e:
         parser.error(str(e))
     
-    # Dynamically set num_workers if not provided by user but is a default arg
-    # This is already handled by argparse default, but good to be aware of.
-    
+    # If --backbone is not provided and default is also not in BACKBONE_CHANNELS, handle it.
+    # This should not happen if DEFAULT_ARGS['backbone'] is valid.
+    if args.backbone not in BACKBONE_CHANNELS:
+        parser.error(f"The specified backbone '{args.backbone}' is not supported. Supported backbones are: {list(BACKBONE_CHANNELS.keys())}")
+
     return args
 
 # --- Logging Setup ---
