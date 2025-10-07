@@ -1,4 +1,4 @@
-# train.py (Final Corrected Version incorporating all previous fixes and fine-tuning logic)
+# train.py (Corrected with global freeze_backbone and unfreeze_backbone functions)
 
 import sys
 import os
@@ -26,6 +26,7 @@ from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
 # --- Loss Functions ---
+# (Keep your FocalLoss and DiceLoss definitions here)
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -86,6 +87,50 @@ class DiceLoss(nn.Module):
         elif self.reduction == 'sum': return loss * inputs.shape[0] 
         else: return loss 
 
+# --- Backbone Freezing/Unfreezing Helper Functions ---
+# DEFINED AT TOP LEVEL FOR GLOBAL ACCESS
+def freeze_backbone(model, backbone_name):
+    """Freezes parameters of the backbone encoder."""
+    frozen_layers = []
+    if backbone_name == 'vgg16':
+        frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    elif backbone_name == 'resnet50':
+        frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    elif backbone_name == 'inception_v3':
+        frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    elif backbone_name.startswith('efficientnet'):
+        frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    else:
+        logging.warning(f"Backbone '{backbone_name}' not recognized for freezing. No layers frozen.")
+        return
+
+    for layer_name in frozen_layers:
+        if hasattr(model, layer_name):
+            for param in getattr(model, layer_name).parameters():
+                param.requires_grad = False
+    logging.info(f"Backbone '{backbone_name}' frozen for Phase 1 training.")
+
+def unfreeze_backbone(model, backbone_name):
+    """Unfreezes parameters of the backbone encoder."""
+    unfrozen_layers = []
+    if backbone_name == 'vgg16':
+        unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    elif backbone_name == 'resnet50':
+        unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    elif backbone_name == 'inception_v3':
+        unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    elif backbone_name.startswith('efficientnet'):
+        unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
+    else:
+        logging.warning(f"Backbone '{backbone_name}' not recognized for unfreezing. No layers unfrozen.")
+        return
+
+    for layer_name in unfrozen_layers:
+        if hasattr(model, layer_name):
+            for param in getattr(model, layer_name).parameters():
+                param.requires_grad = True
+    logging.info(f"Backbone '{backbone_name}' unfrozen for Phase 2 training.")
+
 # --- Argument Parsing ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Multi-Dataset and Multi-Backbone Support')
@@ -110,7 +155,6 @@ def get_args():
                         help='Patience for early stopping based on validation mIoU.')
 
     # --- Image Preprocessing ---
-    # Defaults will be dynamically set based on backbone AFTER parsing
     parser.add_argument('--scale-h', type=int, help='Height for resizing (adjusted based on backbone)')
     parser.add_argument('--scale-w', type=int, help='Width for resizing (adjusted based on backbone)')
     
@@ -143,24 +187,24 @@ def get_args():
     parser.add_argument('--scheduler-factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-min-lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
     parser.add_argument('--scheduler-T0', type=int, default=config.DEFAULT_ARGS.get('scheduler_T0', 10), help='T_0 for CosineAnnealingWarmRestarts.')
-    parser.add_argument('--scheduler-T-mult', type=int, default=config.DEFAULT_ARGS.get('scheduler_T_mult', 2), help='T_mult for CosineAnnealingWarmRestarts (must be integer).') # Ensure it's int
+    parser.add_argument('--scheduler-T-mult', type=int, default=config.DEFAULT_ARGS.get('scheduler_T_mult', 2), help='T_mult for CosineAnnealingWarmRestarts (must be integer).')
 
     # --- Control Flow ---
     parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
     parser.add_argument('--resume', action='store_true', help='Resume training from the latest checkpoint.')
 
-    # --- Add num_workers argument explicitly ---
-    parser.add_argument('--num-workers', type=int, default=config.DEFAULT_ARGS['num_workers'], help='Number of data loading workers.')
-    
     # --- Fine-tuning Control ---
     parser.add_argument('--fine-tune-epochs', type=int, default=config.DEFAULT_ARGS['fine_tune_epochs'], 
                         help='Number of epochs to freeze backbone (Phase 1). Set to 0 for end-to-end training.')
 
+    # --- Add num_workers argument explicitly ---
+    parser.add_argument('--num-workers', type=int, default=config.DEFAULT_ARGS['num_workers'], help='Number of data loading workers.')
+    
     # --- Parse Arguments ---
     try:
         args = parser.parse_args()
     except SystemExit:
-        args = parser.parse_args([]) # Fallback for notebooks
+        args = parser.parse_args([]) 
     
     # --- Post-parsing validation and adjustments ---
     if len(args.deep_supervision_weights) != 5:
@@ -183,7 +227,7 @@ def get_args():
     except Exception as e: 
         parser.error(f"Error accessing dataset configuration for '{args.dataset_name}': {e}")
 
-    # Validate selected backbone against available ones from config
+    # Validate selected backbone
     if args.backbone not in config.BACKBONE_CHANNELS:
         parser.error(f"The specified backbone '{args.backbone}' is not supported. Supported backbones are: {list(config.BACKBONE_CHANNELS.keys())}")
 
@@ -291,6 +335,7 @@ def main():
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                          patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
     elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
+        # Ensure T_mult is an integer
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
     else:
         logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
@@ -318,10 +363,8 @@ def main():
             if args.fine_tune_epochs > 0:
                 if start_epoch < args.fine_tune_epochs:
                     freeze_backbone(net, args.backbone)
-                else: # Resuming into or past fine-tuning phase
+                else: 
                     unfreeze_backbone(net, args.backbone)
-                    # If optimizer/scheduler states were saved correctly, they should reflect phase 2.
-                    # If not, careful re-initialization might be needed.
                     logging.info(f"Resuming into or past fine-tuning phase. Backbone is {'unfrozen' if net.encoder1.weight.requires_grad else 'frozen'}.")
         except Exception as e:
             logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
@@ -405,23 +448,20 @@ def main():
             unfreeze_backbone(net, args.backbone)
             
             # Re-initialize optimizer and scheduler for Phase 2 with a potentially lower LR
-            # Adjust the LR reduction factor as needed.
             new_lr = args.lr / 5.0 
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             
-            # Re-initialize scheduler to continue its cycle or start fresh if T_0 is relative
-            # For CosineAnnealingWarmRestarts, T_0 usually refers to the first cycle length.
-            # If we want it to restart with the new LR, we might need to re-instantiate.
             if args.scheduler_type == 'ReduceLROnPlateau':
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                                  patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
             elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
-                # Keep T_0 and T_mult as they are, or adjust if starting a new cycle interpretation is desired.
-                # Typically, the scheduler continues its cycle. If you need to reset, you'd need to know the current epoch within a cycle.
+                # T_0 should be relative to the remaining epochs or the cycle length.
+                # If fine-tuning epochs are specified, we might want to adjust T_0.
+                # For now, keeping original T_0 and T_mult.
                 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
             else:
-                # Fallback
+                logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
 
             logging.info("Optimizer and scheduler re-initialized for Phase 2.")
