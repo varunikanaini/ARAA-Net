@@ -16,19 +16,13 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-# --- Import Model, Dataset, Config, and Utilities ---
-# Dynamically import model based on backbone name if needed, or use the generalized one
-# from lasa_unet_model import LASA_Unet # Use the generalized LASA_Unet model
-# If you have separate model files like lasa_vgg_model.py, lasa_resnet_model.py, etc.
-# you could dynamically import them. For now, we use the generalized LASA_Unet.
+import config 
 from lasa_unet_model import LASA_Unet 
 from datasets import ImageFolder, make_dataset # Import make_dataset directly
 from config import CKPT_ROOT, DATASET_CONFIG, BACKBONE_CHANNELS, DEFAULT_ARGS # Import config
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- Loss Functions (Assume they are defined here or imported) ---
-# Defined in the provided context as part of train_unet.py
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
