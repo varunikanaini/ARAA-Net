@@ -1,4 +1,4 @@
-# train.py (Modified get_args function again)
+# train.py (Corrected get_args function for scale_h and scale_w)
 
 import sys
 import os
@@ -87,10 +87,6 @@ class DiceLoss(nn.Module):
         elif self.reduction == 'sum': return loss * inputs.shape[0] 
         else: return loss 
 
-# train.py (Modified get_args function)
-
-# ... (all other imports and initializations remain the same) ...
-
 # --- Argument Parsing ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train LASA-Unet Model with Multi-Dataset and Multi-Backbone Support')
@@ -115,11 +111,9 @@ def get_args():
                         help='Patience for early stopping based on validation mIoU.')
 
     # --- Image Preprocessing ---
-    # Dynamically set scale_h and scale_w based on the SELECTED backbone
-    # We'll use a temporary default that will be overridden after parsing
-    # This is a bit of a trick to get argparse to accept defaults, then we override.
-    parser.add_argument('--scale-h', type=int, default=224, help='Height for resizing (adjusted based on backbone)')
-    parser.add_argument('--scale-w', type=int, default=224, help='Width for resizing (adjusted based on backbone)')
+    # Removed the explicit defaults here. These will be dynamically set later.
+    parser.add_argument('--scale-h', type=int, help='Height for resizing (adjusted based on backbone)')
+    parser.add_argument('--scale-w', type=int, help='Width for resizing (adjusted based on backbone)')
     
     # --- LASA Module Arguments ---
     parser.add_argument('--lasa-kernels', type=int, default=config.DEFAULT_ARGS.get('lasa_kernels'), nargs='+',
@@ -182,7 +176,6 @@ def get_args():
         args.dataset_subfolders = dataset_info.get('subfolders')
         
         # --- CRITICAL FIX: Assign DATASET_CONFIG to args ---
-        # This makes config.DATASET_CONFIG accessible within ImageFolder via args.DATASET_CONFIG
         args.DATASET_CONFIG = config.DATASET_CONFIG 
 
     except KeyError: 
@@ -195,8 +188,10 @@ def get_args():
         parser.error(f"The specified backbone '{args.backbone}' is not supported. Supported backbones are: {list(config.BACKBONE_CHANNELS.keys())}")
 
     # --- Dynamically set scale_h and scale_w based on the selected backbone ---
-    # This is crucial for matching pre-trained model expectations.
+    # Fetch resolution from config.BACKBONE_INPUT_RESOLUTIONS
     backbone_h, backbone_w = config.get_backbone_resolution(args.backbone)
+    
+    # Assign these to args.scale_h and args.scale_w
     args.scale_h = backbone_h
     args.scale_w = backbone_w
     logging.info(f"Set input resolution to {args.scale_h}x{args.scale_w} based on backbone '{args.backbone}'.")
@@ -301,7 +296,10 @@ def main():
     elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=args.scheduler_min_lr)
     else:
-        raise ValueError(f"Unsupported LR scheduler type: {args.scheduler_type}")
+        # This case should ideally be caught by argparse choices, but good for robustness.
+        logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
+                                                         patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
 
     # --- Resuming Training ---
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
@@ -431,8 +429,7 @@ def main():
         elif isinstance(scheduler, optim.lr_scheduler.CosineAnnealingWarmRestarts):
             scheduler.step() # Cosine annealing doesn't take metric
         else:
-            # Fallback if scheduler type is unknown or not handled
-            pass 
+            pass # Should not happen if scheduler type is valid
 
         # --- Checkpointing ---
         if current_mIoU > best_mIoU:
@@ -463,6 +460,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
