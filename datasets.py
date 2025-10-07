@@ -184,7 +184,7 @@ class ImageFolder(data.Dataset):
                 
                 # <<< MODIFIED AUGMENTATIONS START >>>
                 # Removed WaveletContrastEnhancement and HistogramEqualization for less aggressive training
-                # tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
+                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
                 # tr.HistogramEqualization(),
                 
                 # Reduced RandomAffine parameters
