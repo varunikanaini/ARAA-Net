@@ -124,8 +124,8 @@ DEFAULT_ARGS = {
     'wavelet_type': 'haar',
     'wavelet_level': 1,
     'wavelet_detail_scale': 1.5,
+    'scheduler_type': 'CosineAnnealingWarmRestarts',
 
-    'lr_scheduler_type': 'CosineAnnealingWarmRestarts', # Changed default to the preferred scheduler
     'scheduler_patience': 5,
     'scheduler_factor': 0.5,
     'scheduler_min_lr': 1e-6,
