@@ -169,7 +169,6 @@ class ImageFolder(data.Dataset):
         expansion_factor = args.expansion_factor
         min_bbox_h = args.min_bbox_h
         min_bbox_w = args.min_bbox_w
-        
         scale_h = args.scale_h
         scale_w = args.scale_w
         
@@ -177,27 +176,24 @@ class ImageFolder(data.Dataset):
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=scale_w, h=scale_h),
-                # Conditional application of CenterAmplification if min_lesion_area_pixels is set > 0
+                # Conditional application of CenterAmplification if min_lesion_area_pixels > 0
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)) if min_lesion_area > 0 else lambda x: x,
                 
-                # <<< MODIFIED AUGMENTATIONS START >>>
-                # Removed WaveletContrastEnhancement and HistogramEqualization for less aggressive training
-                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
-                tr.HistogramEqualization(),
-                
+                # <<< MINIMAL AUGMENTATIONS START >>>
+                # Removed WaveletContrastEnhancement and HistogramEqualization
                 # Reduced RandomAffine parameters
-                tr.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.85, 1.15), shear=10, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
-                
+                tr.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05), shear=5, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
                 # Reduced RandomGaussianBlur radius
-                tr.RandomGaussianBlur(radius_range=(0.1, 1.5)) if hasattr(tr, 'RandomGaussianBlur') else lambda x: x,
+                tr.RandomGaussianBlur(radius_range=(0.1, 1.0)) if hasattr(tr, 'RandomGaussianBlur') else lambda x: x,
                 
-                # Keep other augmentations
+                # Essential augmentations
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((scale_h, scale_w)), 
+                # ColorJitter can be kept or removed, start with it kept
                 tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05) if hasattr(tr, 'ColorJitter') else lambda x: x,
-                # <<< MODIFIED AUGMENTATIONS END >>>
+                # <<< MINIMAL AUGMENTATIONS END >>>
 
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
