@@ -1,4 +1,4 @@
-# train.py (Modified get_args function)
+# train.py (Modified get_args function again)
 
 import sys
 import os
@@ -94,7 +94,6 @@ def get_args():
     # --- Explicitly add arguments, using config.DEFAULT_ARGS for their default values ---
 
     # --- Dataset Selection ---
-    # Get the keys from config.DATASET_CONFIG to populate choices dynamically
     dataset_choices = list(config.DATASET_CONFIG.keys())
     parser.add_argument('--dataset-name', type=str, default=config.DEFAULT_ARGS['dataset_name'],
                         choices=dataset_choices, help='Name of the dataset to use')
@@ -156,24 +155,30 @@ def get_args():
     try:
         args = parser.parse_args()
     except SystemExit:
-        args = parser.parse_args([]) # Fallback for notebooks
+        args = parser.parse_args([]) 
     
-    # Post-parsing validation and adjustments
+    # --- Post-parsing validation and adjustments ---
     if len(args.deep_supervision_weights) != 5:
         parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     # Get dataset specific config and update args
     try:
-        # Access DATASET_CONFIG directly from the imported config module
+        # Fetch the specific dataset configuration
         dataset_info = config.DATASET_CONFIG[args.dataset_name] 
+        
+        # Assign derived information to args
         args.dataset_path = dataset_info['path']
         args.dataset_structure = dataset_info['structure']
         args.num_classes = dataset_info['num_classes']
-        # Use extensions from dataset_info, falling back to global defaults if not specified
-        args.image_ext = dataset_info.get('image_ext', IMAGE_EXTENSIONS)
-        args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)
+        args.image_ext = dataset_info.get('image_ext', IMAGE_EXTENSIONS) # Use from dataset config or global default
+        args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)   # Use from dataset config or global default
         args.dataset_subfolders = dataset_info.get('subfolders')
-    except KeyError: # If dataset_name is not found in DATASET_CONFIG
+        
+        # Also assign the full DATASET_CONFIG to args so ImageFolder can access it
+        # THIS IS THE KEY FIX FOR THE ATTRIBUTEERROR
+        args.DATASET_CONFIG = config.DATASET_CONFIG 
+
+    except KeyError: # If dataset_name is not found in config.DATASET_CONFIG
         parser.error(f"Dataset '{args.dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
     except Exception as e: # Catch other potential errors during config access
         parser.error(f"Error accessing dataset configuration for '{args.dataset_name}': {e}")
@@ -191,7 +196,7 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-# --- Evaluation Function (needed if test-only mode is used) ---
+# --- Evaluation Function ---
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating"):
     net.eval()
     confmat = ConfusionMatrix(num_classes=args.num_classes) 
@@ -257,7 +262,7 @@ def main():
     ]
     exp_name = "_".join(exp_name_parts)
     
-    exp_path = os.path.join(config.CKPT_ROOT, exp_name) # Use config.CKPT_ROOT
+    exp_path = os.path.join(config.CKPT_ROOT, exp_name)
     check_mkdir(exp_path)
     setup_logging(exp_path) 
 
@@ -359,7 +364,7 @@ def main():
         return 
 
     # --- Training Loop ---
-    if train_set is None or val_loader is None: # Check if validation loader is available
+    if train_set is None or val_loader is None: 
         logging.error("Train or Validation dataset/loader is not available. Cannot start training.")
         sys.exit(1)
 
