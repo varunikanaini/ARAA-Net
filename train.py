@@ -1,4 +1,4 @@
-# train.py (Corrected get_args function for all issues)
+# train.py (Final Corrected Version with all fixes)
 
 import sys
 import os
@@ -19,14 +19,15 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Config and Other Modules ---
+# CRITICAL: Ensure config is imported here!
 import config 
+
 from lasa_unet_model import LASA_Unet 
 from datasets import ImageFolder, make_dataset, IMAGE_EXTENSIONS, MASK_EXTENSIONS
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
 # --- Loss Functions ---
-# (Keep your FocalLoss and DiceLoss definitions here)
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -89,7 +90,6 @@ class DiceLoss(nn.Module):
 
 # --- Backbone Freezing/Unfreezing Helper Functions ---
 def freeze_backbone(model, backbone_name):
-    """Freezes parameters of the backbone encoder."""
     frozen_layers = []
     if backbone_name == 'vgg16':
         frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
@@ -110,7 +110,6 @@ def freeze_backbone(model, backbone_name):
     logging.info(f"Backbone '{backbone_name}' frozen for Phase 1 training.")
 
 def unfreeze_backbone(model, backbone_name):
-    """Unfreezes parameters of the backbone encoder."""
     unfrozen_layers = []
     if backbone_name == 'vgg16':
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
@@ -182,7 +181,8 @@ def get_args():
     parser.add_argument('--wavelet-detail-scale', type=float, default=config.DEFAULT_ARGS['wavelet_detail_scale'], help='Scaling factor for DWT detail coefficients.')
 
     # --- Scheduler Parameters ---
-    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['lr_scheduler_type'], choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
+    # Use 'scheduler-type' as the argument name, as defined in config.DEFAULT_ARGS
+    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['scheduler_type'], choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
     parser.add_argument('--scheduler-patience', type=int, default=config.DEFAULT_ARGS['scheduler_patience'], help='Patience for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-min-lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
@@ -289,6 +289,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
         net.train()
     return mIoU
 
+
 def custom_collate_fn(batch):
     batch = [item for item in batch if item is not None] 
     if not batch:
@@ -334,7 +335,6 @@ def main():
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                          patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
     elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
-        # Ensure T_mult is an integer
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
     else:
         logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
@@ -447,7 +447,7 @@ def main():
             unfreeze_backbone(net, args.backbone)
             
             # Re-initialize optimizer and scheduler for Phase 2
-            new_lr = args.lr / 5.0 # Reduce LR for fine-tuning
+            new_lr = args.lr / 5.0 
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             
@@ -455,9 +455,6 @@ def main():
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                                  patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
             elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
-                # For CosineAnnealingWarmRestarts, T_0 is usually set relative to the number of epochs.
-                # If fine-tuning epochs are a fraction of total, adjust T_0 accordingly or keep it fixed.
-                # Keeping original T_0 and T_mult as per previous setup.
                 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
             else:
                 logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
