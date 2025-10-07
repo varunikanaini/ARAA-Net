@@ -184,8 +184,8 @@ class ImageFolder(data.Dataset):
                 
                 # <<< MODIFIED AUGMENTATIONS START >>>
                 # Removed WaveletContrastEnhancement and HistogramEqualization for less aggressive training
-                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
-                # tr.HistogramEqualization(),
+                # tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
+                tr.HistogramEqualization(),
                 
                 # Reduced RandomAffine parameters
                 tr.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05), shear=5, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
