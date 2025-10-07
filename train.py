@@ -18,7 +18,7 @@ if project_path not in sys.path:
 
 import config 
 from lasa_unet_model import LASA_Unet 
-from datasets import ImageFolder, make_dataset # Import make_dataset directly
+from datasets import ImageFolder, make_dataset, IMAGE_EXTENSIONS, MASK_EXTENSIONS
 from config import CKPT_ROOT, DATASET_CONFIG, BACKBONE_CHANNELS, DEFAULT_ARGS # Import config
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
