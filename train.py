@@ -295,13 +295,13 @@ def main():
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
     # --- LR Scheduler Setup ---
-    if args.lr_scheduler_type == 'ReduceLROnPlateau':
+    if args.scheduler_type == 'ReduceLROnPlateau':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                          patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
-    elif args.lr_scheduler_type == 'CosineAnnealingWarmRestarts':
+    elif args.scheduler_type == 'CosineAnnealingWarmRestarts':
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=args.scheduler_min_lr)
     else:
-        raise ValueError(f"Unsupported LR scheduler type: {args.lr_scheduler_type}")
+        raise ValueError(f"Unsupported LR scheduler type: {args.scheduler_type}")
 
     # --- Resuming Training ---
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
