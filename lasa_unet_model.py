@@ -33,10 +33,13 @@ class LASAUNet(nn.Module):
             for i in range(1, len(self.encoder_channels) - 1)  # 4 layers
         ])
         
-        # LASA block: Apply for each encoder feature map
+        # Decoder output channels: [256, 128, 64, 64]
+        self.decoder_channels = [self.encoder_channels[-i-2] for i in range(1, len(self.encoder_channels) - 1)] + [self.encoder_channels[0]]
+        
+        # LASA block: Apply for each decoder output
         self.lasa = nn.ModuleList([
             nn.Conv2d(ch, num_classes, kernel_size=k, padding=k//2)
-            for ch in self.encoder_channels
+            for ch in self.decoder_channels
             for k in lasa_kernels
         ])
         
@@ -60,7 +63,7 @@ class LASAUNet(nn.Module):
             x = self.decoder[i](x)
             # Apply LASA convolutions for deep supervision
             for j in range(len(self.lasa_kernels)):
-                lasa_idx = (len(self.encoder_channels) - i - 1) * len(self.lasa_kernels) + j
+                lasa_idx = i * len(self.lasa_kernels) + j  # Corrected indexing
                 lasa_out = self.lasa[lasa_idx](x)
                 outputs.append(lasa_out)
         
