@@ -177,13 +177,12 @@ class ImageFolder(data.Dataset):
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)) if min_lesion_area > 0 else lambda x: x,
-                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.97, 1.03), shear=7, mask_fill_value=0),
-                tr.RandomGaussianBlur(radius_range=(0.1, 1.2)),
+                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0),                tr.RandomGaussianBlur(radius_range=(0.1, 1.2)),
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((scale_h, scale_w)),
                 tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
-                tr.RandomCutout(num_holes_range=(1, 2), max_h_size=32, max_w_size=32, fill_value=0, p=0.3),
-                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale) if np.random.rand() < 0.2 else lambda x: x,
+                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=40, max_w_size=40, fill_value=0, p=0.5),                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
         else:  # Validation/Test
