@@ -1,15 +1,14 @@
-# datasets.py
-
 import os
 import torch.utils.data as data
 from PIL import Image, UnidentifiedImageError
 import numpy as np
 from torchvision import transforms
 import random
-import cv2 # Using OpenCV for potentially better image reading
+import cv2  # Using OpenCV for potentially better image reading
 
-import custom_transforms as tr 
+import custom_transforms as tr
 import config
+
 # --- IMPORT IMAGE_EXTENSIONS and MASK_EXTENSIONS ---
 # These are defined globally in datasets.py and used as fallbacks in train.py
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
@@ -47,7 +46,7 @@ def make_dataset(data_info, split):
             if f.lower().endswith(img_ext):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(split_image_dir, f)
-                
+
                 mask_found = False
                 for ext in mask_ext:
                     mask_full_path = os.path.join(split_mask_dir, img_name_base + ext)
@@ -65,7 +64,7 @@ def make_dataset(data_info, split):
             return []
 
         image_dir_name = subfolders.get('images')
-        mask_dir_name = subfolders.get('masks', subfolders.get('GT')) # Allow 'masks' or 'GT'
+        mask_dir_name = subfolders.get('masks', subfolders.get('GT'))  # Allow 'masks' or 'GT'
 
         if not image_dir_name or not mask_dir_name:
             print(f"Error: Missing 'images' or 'masks'/'GT' dir names in subfolders config for STANDARD structure, split '{split}'.")
@@ -85,7 +84,7 @@ def make_dataset(data_info, split):
             if f.lower().endswith(img_ext):
                 img_name_base = os.path.splitext(f)[0]
                 img_full_path = os.path.join(split_image_path, f)
-                
+
                 mask_found = False
                 for ext in mask_ext:
                     mask_full_path = os.path.join(split_mask_path, img_name_base + ext)
@@ -110,7 +109,7 @@ def make_dataset(data_info, split):
                 if f.lower().endswith(img_ext):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(cls_image_path, f)
-                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png') 
+                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png')
                     if os.path.exists(mask_full_path):
                         dataset_items.append((img_full_path, mask_full_path))
                     else:
@@ -122,42 +121,41 @@ def make_dataset(data_info, split):
             split_base_path = os.path.join(base_path, cls_name)
             cls_image_path = os.path.join(split_base_path, 'images')
             cls_mask_path = os.path.join(split_base_path, 'masks')
-            
+
             if not os.path.exists(cls_image_path) or not os.path.exists(cls_mask_path):
                 print(f"Warning: SixDiseasesChestXRay class '{cls_name}' image/mask path not found in split '{split}'. Skipping class.")
                 continue
-            
+
             for f in os.listdir(cls_image_path):
                 if f.lower().endswith(img_ext):
                     img_name_base = os.path.splitext(f)[0]
                     img_full_path = os.path.join(cls_image_path, f)
-                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png') 
+                    mask_full_path = os.path.join(cls_mask_path, img_name_base + '.png')
                     if os.path.exists(mask_full_path):
                         dataset_items.append((img_full_path, mask_full_path))
                     else:
                         print(f"Warning: Mask not found for SixDiseasesChestXRay image {f} in class '{cls_name}', split '{split}'. Skipping.")
     else:
         raise ValueError(f"Unknown dataset structure type: {structure}. Please define handling for this structure.")
-    
+
     if not dataset_items:
         print(f"Warning: Found 0 image-mask pairs for dataset structure '{structure}' split '{split}' in '{base_path}'. Please check path and dataset structure.")
-        
-    return dataset_items
 
+    return dataset_items
 
 class ImageFolder(data.Dataset):
     def __init__(self, root, dataset_name, args, split='train'):
-        self.root = root 
+        self.root = root
         self.dataset_name = dataset_name
         self.split = split
         self.args = args
-        
+
         try:
-            dataset_info = config.DATASET_CONFIG[dataset_name] 
+            dataset_info = config.DATASET_CONFIG[dataset_name]
         except KeyError:
             raise ValueError(f"Dataset '{dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
 
-        self.imgs = make_dataset(dataset_info, split) 
+        self.imgs = make_dataset(dataset_info, split)
 
         if not self.imgs:
             raise RuntimeError(f"No images found for dataset '{self.dataset_name}' split '{self.split}'. Check paths, structure in config, and file extensions.")
@@ -171,34 +169,24 @@ class ImageFolder(data.Dataset):
         min_bbox_w = args.min_bbox_w
         scale_h = args.scale_h
         scale_w = args.scale_w
-        
+
         # --- Define Transforms ---
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=scale_w, h=scale_h),
-                # Conditional application of CenterAmplification if min_lesion_area_pixels > 0
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)) if min_lesion_area > 0 else lambda x: x,
-                
-                # <<< MINIMAL AUGMENTATIONS START >>>
-                # Removed WaveletContrastEnhancement and HistogramEqualization
-                # Reduced RandomAffine parameters
-                tr.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05), shear=5, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
-                # Reduced RandomGaussianBlur radius
-                tr.RandomGaussianBlur(radius_range=(0.1, 1.0)) if hasattr(tr, 'RandomGaussianBlur') else lambda x: x,
-                
-                # Essential augmentations
+                tr.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10, mask_fill_value=0),
+                tr.RandomGaussianBlur(radius_range=(0.1, 1.0)),
                 tr.RandomHorizontalFlip(),
-                tr.RandomCrop((scale_h, scale_w)), 
-                # ColorJitter can be kept or removed, start with it kept
-                tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05) if hasattr(tr, 'ColorJitter') else lambda x: x,
-                # <<< MINIMAL AUGMENTATIONS END >>>
-
+                tr.RandomCrop((scale_h, scale_w)),
+                tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
+                tr.RandomCutout(num_holes_range=(1, 2), max_h_size=32, max_w_size=32, fill_value=0, p=0.3),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
-        else: # Validation/Test
+        else:  # Validation/Test
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=scale_w, h=scale_h),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
@@ -211,41 +199,41 @@ class ImageFolder(data.Dataset):
             img_cv = cv2.imread(img_path)
             if img_cv is None:
                 raise FileNotFoundError(f"OpenCV could not read image: {img_path}. File might be corrupted or path incorrect.")
-            
+
             if img_cv.ndim == 3 and img_cv.shape[2] == 3:
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-            elif img_cv.ndim == 2: 
+            elif img_cv.ndim == 2:
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
-            
+
             img = Image.fromarray(img_cv)
 
             mask_cv = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
             if mask_cv is None:
                 raise FileNotFoundError(f"OpenCV could not read mask: {gt_path}. File might be corrupted or path incorrect.")
-            
+
             target = Image.fromarray(mask_cv, mode='L')
             label = self.convert_label(target)
-            
+
         except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError, Exception) as e:
             print(f"ERROR: Could not open/process image or mask for paths: {img_path}, {gt_path}. Error: {e}. Returning None for this sample.")
-            return None 
-        
+            return None
+
         sample = {'image': img, 'label': label}
         transformed_sample = self.composed_transforms(sample)
-        
+
         if self.split != 'train':
             transformed_sample['name'] = os.path.basename(img_path)
-        
+
         return transformed_sample
-    
+
     def convert_label(self, label):
         label_np = np.array(label, dtype=np.uint8)
         if label_np.ndim == 3 and label_np.shape[2] == 1:
             label_np = label_np.squeeze(2)
-        
+
         label_index = np.zeros_like(label_np, dtype=np.uint8)
-        label_index[label_np > 0] = 1 
-        
+        label_index[label_np > 0] = 1
+
         return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
