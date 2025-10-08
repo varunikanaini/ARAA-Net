@@ -447,7 +447,7 @@ def main():
             unfreeze_backbone(net, args.backbone)
             
             # Re-initialize optimizer and scheduler for Phase 2
-            new_lr = args.lr / 10.0 # Reduce LR for fine-tuning
+            new_lr = args.lr / 5.0 # Reduce LR for fine-tuning
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             
