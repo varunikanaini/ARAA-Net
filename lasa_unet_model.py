@@ -15,7 +15,7 @@ class LASAUNet(nn.Module):
         # Encoder feature channels (from VGG16 feature maps at indices [4, 9, 16, 23, 30])
         self.encoder_channels = [64, 128, 256, 512, 512]
         
-        # Decoder: 4 blocks to match 5 encoder features (skip top feature)
+        # Decoder: 4 blocks to match 5 encoder features (skipping top feature)
         self.decoder = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(self.encoder_channels[-i-1] + self.encoder_channels[-i-2], self.encoder_channels[-i-2], 3, padding=1),
@@ -24,16 +24,16 @@ class LASAUNet(nn.Module):
                 nn.Conv2d(self.encoder_channels[-i-2], self.encoder_channels[-i-2], 3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(p=0.2)  # Added dropout
-            ) for i in range(1, len(self.encoder_channels) - 1)  # Only 4 decoder blocks
+            ) for i in range(1, len(self.encoder_channels) - 1)  # 4 blocks
         ])
         
         # Upsampling: 4 layers to match decoder blocks
         self.upsample = nn.ModuleList([
             nn.ConvTranspose2d(self.encoder_channels[-i-1], self.encoder_channels[-i-2], 2, stride=2)
-            for i in range(1, len(self.encoder_channels) - 1)  # Only 4 upsampling layers
+            for i in range(1, len(self.encoder_channels) - 1)  # 4 layers
         ])
         
-        # LASA block: Apply for each feature map
+        # LASA block: Apply for each encoder feature map
         self.lasa = nn.ModuleList([
             nn.Conv2d(ch, num_classes, kernel_size=k, padding=k//2)
             for ch in self.encoder_channels

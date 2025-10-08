@@ -10,16 +10,8 @@ import config
 from lasa_unet_model import LASAUNet
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
-# Lovasz-Softmax implementation (simplified, adapted from https://github.com/bermanmaxim/LovaszSoftmax)
+# Lovasz-Softmax implementation
 def lovasz_softmax(probs, labels, classes='present', ignore_index=None):
-    """
-    Lovasz-Softmax loss for multi-class segmentation.
-    Args:
-        probs: [B, C, H, W] class probabilities (after softmax)
-        labels: [B, H, W] ground truth labels
-        classes: 'present' (use classes in batch) or list of classes
-        ignore_index: ignore this label index
-    """
     if probs.dim() != 4 or labels.dim() != 3:
         raise ValueError("Probs must be [B, C, H, W], labels must be [B, H, W]")
     
@@ -29,10 +21,8 @@ def lovasz_softmax(probs, labels, classes='present', ignore_index=None):
     for c in range(num_classes):
         if ignore_index is not None and c == ignore_index:
             continue
-        target_c = (labels == c).float()  # [B, H, W]
-        prob_c = probs[:, c, :, :]  # [B, H, W]
-        
-        # Compute Jaccard loss per class
+        target_c = (labels == c).float()
+        prob_c = probs[:, c, :, :]
         intersection = (prob_c * target_c).sum(dim=(1, 2))
         union = prob_c.sum(dim=(1, 2)) + target_c.sum(dim=(1, 2)) - intersection
         jaccard_loss = 1 - (intersection + 1e-10) / (union + 1e-10)
@@ -76,7 +66,7 @@ def evaluate_model(model, data_loader, device, num_classes):
     
     with torch.no_grad():
         for batch in data_loader:
-            if batch is None:
+            if batch is None or batch['image'].size(0) == 0:
                 continue
             images = batch['image'].to(device)
             targets = batch['label'].to(device)
@@ -103,7 +93,7 @@ def evaluate_model(model, data_loader, device, num_classes):
                 iou[c, :] += pred_c.sum().item()
                 iou[:, c] += target_c.sum().item()
     
-    avg_loss = total_loss / total_samples
+    avg_loss = total_loss / total_samples if total_samples > 0 else float('inf')
     miou = (iou.diag() / (iou.sum(0) + iou.sum(1) - iou.diag() + 1e-10)).mean().item()
     fwiou = ((iou.diag() / (iou.sum(0) + iou.sum(1) - iou.diag() + 1e-10)) * (iou.sum(1) / iou.sum())).sum().item()
     dice = (2 * iou.diag() / (iou.sum(0) + iou.sum(1) + 1e-10)).mean().item()
@@ -120,11 +110,9 @@ def evaluate_model(model, data_loader, device, num_classes):
     return avg_loss, oa, miou, fwiou, dice, class_metrics
 
 def main():
-    # Setup logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
     logger = logging.getLogger()
     
-    # Parse arguments (simplified for brevity, use your full argparse setup)
     class Args:
         dataset_name = 'TSRS_RSNA-Epiphysis'
         backbone = 'vgg16'
@@ -168,10 +156,8 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
-    # Initialize model
     model = LASAUNet(backbone=args.backbone, num_classes=args.num_classes, lasa_kernels=args.lasa_kernels).to(device)
     
-    # Freeze backbone for fine-tuning
     if args.fine_tune_epochs > 0:
         for param in model.backbone.parameters():
             param.requires_grad = False
@@ -180,20 +166,17 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=args.scheduler_min_lr)
     
-    # Load datasets
     train_set = ImageFolder(args.dataset_path, args.dataset_name, args, split='train')
     val_set = ImageFolder(args.dataset_path, args.dataset_name, args, split='val')
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True)
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     
-    # Loss functions
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
     dice_loss_fn = DiceLoss()
     
     best_miou = 0.0
     start_epoch = 0
     
-    # Checkpoint loading
     checkpoint_dir = f"/kaggle/working/ARAA-Net/ckpt/vgg16_LASA1_3_5_7_DSW0.2_0.4_0.6_0.8_1.0_FLW0.5_DLW1.5_epiphysis"
     os.makedirs(checkpoint_dir, exist_ok=True)
     best_checkpoint_path = os.path.join(checkpoint_dir, 'best_checkpoint.pth')
@@ -210,7 +193,6 @@ def main():
         except Exception as e:
             logger.error(f"Could not load checkpoint: {e}. Starting from scratch.")
     
-    # Training loop
     for epoch in range(start_epoch, args.epochs):
         model.train()
         if epoch == args.fine_tune_epochs:
@@ -218,8 +200,10 @@ def main():
                 param.requires_grad = True
             logger.info(f"Backbone '{args.backbone}' unfrozen for Phase 2 training.")
         
+        running_loss = 0.0
+        total_samples = 0
         for batch in train_loader:
-            if batch is None:
+            if batch is None or batch['image'].size(0) == 0:
                 continue
             images = batch['image'].to(device)
             targets = batch['label'].to(device)
@@ -241,10 +225,14 @@ def main():
             
             loss.backward()
             optimizer.step()
+            running_loss += loss.item() * images.size(0)
+            total_samples += images.size(0)
+        
+        epoch_loss = running_loss / total_samples if total_samples > 0 else float('inf')
+        logger.info(f"Epoch {epoch+1}/{args.epochs}, Training Loss: {epoch_loss:.4f}")
         
         scheduler.step()
         
-        # Validation
         logger.info("--- Validating Summary ---")
         avg_loss, oa, miou, fwiou, dice, class_metrics = evaluate_model(model, val_loader, device, args.num_classes)
         logger.info(f"  Average Loss: {avg_loss:.4f}")

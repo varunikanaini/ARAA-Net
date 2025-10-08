@@ -145,7 +145,7 @@ class ImageFolder(data.Dataset):
             raise ValueError(f"Dataset '{dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
 
         self.imgs = make_dataset(dataset_info, split)
-        random.shuffle(self.imgs)  # Shuffle for better batch diversity
+        random.shuffle(self.imgs)
 
         if not self.imgs:
             raise RuntimeError(f"No images found for dataset '{self.dataset_name}' split '{self.split}'. Check paths, structure in config, and file extensions.")
