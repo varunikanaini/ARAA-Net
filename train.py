@@ -1,4 +1,4 @@
-# train.py (Final Corrected Version with all fixes)
+# train.py (Complete Corrected Version with all fixes and fine-tuning logic)
 
 import sys
 import os
@@ -19,9 +19,7 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 # --- Import Config and Other Modules ---
-# CRITICAL: Ensure config is imported here!
 import config 
-
 from lasa_unet_model import LASA_Unet 
 from datasets import ImageFolder, make_dataset, IMAGE_EXTENSIONS, MASK_EXTENSIONS
 from seg_utils import ConfusionMatrix
@@ -90,6 +88,7 @@ class DiceLoss(nn.Module):
 
 # --- Backbone Freezing/Unfreezing Helper Functions ---
 def freeze_backbone(model, backbone_name):
+    """Freezes parameters of the backbone encoder."""
     frozen_layers = []
     if backbone_name == 'vgg16':
         frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
@@ -110,6 +109,7 @@ def freeze_backbone(model, backbone_name):
     logging.info(f"Backbone '{backbone_name}' frozen for Phase 1 training.")
 
 def unfreeze_backbone(model, backbone_name):
+    """Unfreezes parameters of the backbone encoder."""
     unfrozen_layers = []
     if backbone_name == 'vgg16':
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
@@ -153,7 +153,6 @@ def get_args():
                         help='Patience for early stopping based on validation mIoU.')
 
     # --- Image Preprocessing ---
-    # Defaults will be dynamically set based on backbone AFTER parsing
     parser.add_argument('--scale-h', type=int, help='Height for resizing (adjusted based on backbone)')
     parser.add_argument('--scale-w', type=int, help='Width for resizing (adjusted based on backbone)')
     
@@ -181,9 +180,7 @@ def get_args():
     parser.add_argument('--wavelet-detail-scale', type=float, default=config.DEFAULT_ARGS['wavelet_detail_scale'], help='Scaling factor for DWT detail coefficients.')
 
     # --- Scheduler Parameters ---
-    # Use 'scheduler-type' as the argument name, as defined in config.DEFAULT_ARGS
-    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['scheduler_type'], # Corrected to match config key
-                        choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
+    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['scheduler_type'], choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
     parser.add_argument('--scheduler-patience', type=int, default=config.DEFAULT_ARGS['scheduler_patience'], help='Patience for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
     parser.add_argument('--scheduler-min-lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
@@ -222,7 +219,7 @@ def get_args():
         args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)
         args.dataset_subfolders = dataset_info.get('subfolders')
         
-        args.DATASET_CONFIG = config.DATASET_CONFIG 
+        args.DATASET_CONFIG = config.DATASET_CONFIG # Make config available to ImageFolder
 
     except KeyError: 
         parser.error(f"Dataset '{args.dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
@@ -340,10 +337,10 @@ def main():
         # Ensure T_mult is treated as an integer
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
     else:
-        # Fallback logic (should be handled by argparse choices, but good for safety)
         logging.error(f"Unsupported scheduler type: {args.scheduler_type}. Defaulting to ReduceLROnPlateau.")
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, 
                                                          patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
+
     # --- Resuming Training ---
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     latest_checkpoint_path = os.path.join(exp_path, 'latest_checkpoint.pth')
@@ -450,7 +447,7 @@ def main():
             unfreeze_backbone(net, args.backbone)
             
             # Re-initialize optimizer and scheduler for Phase 2
-            new_lr = args.lr / 5.0 
+            new_lr = args.lr / 5.0 # Reduce LR for fine-tuning
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             
