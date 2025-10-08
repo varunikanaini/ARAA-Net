@@ -59,7 +59,7 @@ class DiceLoss(nn.Module):
         dice = (2. * intersection + self.smooth) / (union + self.smooth)
         return (1 - dice).mean()
 
-def evaluate_model(model, data_loader, device, num_classes):
+def evaluate_model(model, data_loader, device, num_classes, logger):
     model.eval()
     total_loss = 0.0
     iou = torch.zeros((num_classes, num_classes), device=device)
@@ -273,7 +273,7 @@ def main():
         scheduler.step()
         
         logger.info("--- Validating Summary ---")
-        avg_loss, oa, miou, fwiou, dice, class_metrics = evaluate_model(model, val_loader, device, args.num_classes)
+        avg_loss, oa, miou, fwiou, dice, class_metrics = evaluate_model(model, val_loader, device, args.num_classes, logger)
         logger.info(f"  Average Loss: {avg_loss:.4f}")
         logger.info(f"  OA (Overall Accuracy): {oa:.4f}")
         logger.info(f"  mIoU (Mean IoU): {miou:.4f}")
