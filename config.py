@@ -25,8 +25,19 @@ DATASET_CONFIG = {
         'mask_ext': ('.png', '.tif', '.tiff', '.bmp'),
     },
     'JSRT': {
-        'path': os.path.join(DATA_ROOT, 'jsrt-247-image-lung-segmentation-mask-dataset'),
+        # --- CRITICAL PATH ADJUSTMENT FOR JSRT ---
+        # The 'path' should point to the directory that CONTAINS 'content/jsrt',
+        # which in turn contains 'cxr' and 'masks' folders.
+        # Based on your file structure:
+        # /kaggle/working/ARAA-Net/data/jsrt-247-image-lung-segmentation-mask-dataset/content/jsrt/cxr
+        # /kaggle/working/ARAA-Net/data/jsrt-247-image-lung-segmentation-mask-dataset/content/jsrt/masks
+        # The 'path' should be:
+        'path': os.path.join(DATA_ROOT, 'jsrt-247-image-lung-segmentation-mask-dataset/content/jsrt'), 
         'structure': 'STANDARD',
+        # The 'subfolders' here are relative to the NEW 'path' defined above.
+        # Since we are relying on programmatic splitting in datasets.py when these specific
+        # 'train'/'val'/'test' directories are missing directly under the 'path', this
+        # subfolder definition helps make_dataset know what to look for WITHIN the 'content/jsrt' dir.
         'subfolders': {
             'train': {'images': 'cxr', 'masks': 'masks'},
             'val': {'images': 'cxr', 'masks': 'masks'},
