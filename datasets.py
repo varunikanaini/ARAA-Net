@@ -4,25 +4,14 @@ from PIL import Image, UnidentifiedImageError
 import numpy as np
 from torchvision import transforms
 import random
-import cv2  # Using OpenCV for potentially better image reading
-
+import cv2
 import custom_transforms as tr
 import config
 
-# --- IMPORT IMAGE_EXTENSIONS and MASK_EXTENSIONS ---
-# These are defined globally in datasets.py and used as fallbacks in train.py
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
 MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 
 def make_dataset(data_info, split):
-    """
-    Creates a list of (image_path, mask_path) tuples based on dataset configuration.
-    Args:
-        data_info (dict): Dictionary containing path, structure, and other info for the dataset.
-        split (str): 'train', 'val', or 'test'.
-    Returns:
-        list: A list of (image_path, mask_path) tuples.
-    """
     dataset_items = []
     base_path = data_info['path']
     structure = data_info['structure']
@@ -64,7 +53,7 @@ def make_dataset(data_info, split):
             return []
 
         image_dir_name = subfolders.get('images')
-        mask_dir_name = subfolders.get('masks', subfolders.get('GT'))  # Allow 'masks' or 'GT'
+        mask_dir_name = subfolders.get('masks', subfolders.get('GT'))
 
         if not image_dir_name or not mask_dir_name:
             print(f"Error: Missing 'images' or 'masks'/'GT' dir names in subfolders config for STANDARD structure, split '{split}'.")
@@ -156,13 +145,13 @@ class ImageFolder(data.Dataset):
             raise ValueError(f"Dataset '{dataset_name}' not found in config.DATASET_CONFIG. Available datasets: {list(config.DATASET_CONFIG.keys())}")
 
         self.imgs = make_dataset(dataset_info, split)
+        random.shuffle(self.imgs)  # Shuffle for better batch diversity
 
         if not self.imgs:
             raise RuntimeError(f"No images found for dataset '{self.dataset_name}' split '{self.split}'. Check paths, structure in config, and file extensions.")
         else:
             print(f"Found {len(self.imgs)} samples for {dataset_name} split '{self.split}'.")
 
-        # Get parameters from args
         min_lesion_area = args.min_lesion_area_pixels
         expansion_factor = args.expansion_factor
         min_bbox_h = args.min_bbox_h
@@ -170,22 +159,23 @@ class ImageFolder(data.Dataset):
         scale_h = args.scale_h
         scale_w = args.scale_w
 
-        # --- Define Transforms ---
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=scale_w, h=scale_h),
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)) if min_lesion_area > 0 else lambda x: x,
-                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0),                tr.RandomGaussianBlur(radius_range=(0.1, 1.2)),
+                tr.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05), shear=5, mask_fill_value=0),
+                tr.RandomGaussianBlur(radius_range=(0.1, 1.2)),
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((scale_h, scale_w)),
-                tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
+                tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05) if hasattr(tr, 'ColorJitter') else lambda x: x,
                 tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale) if np.random.rand() < 0.2 else lambda x: x,
-                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=40, max_w_size=40, fill_value=0, p=0.5),                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                tr.RandomCutout(num_holes_range=(1, 2), max_h_size=32, max_w_size=32, fill_value=0, p=0.3),
+                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
-        else:  # Validation/Test
+        else:
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=scale_w, h=scale_h),
                 tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
