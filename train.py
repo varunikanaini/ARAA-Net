@@ -37,6 +37,8 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
 
     def forward(self, inputs, targets):
+        if inputs.shape[2:] != targets.shape[1:]:
+            raise ValueError(f"Input shape {inputs.shape} and target shape {targets.shape} spatial dimensions do not match")
         ce_loss = nn.CrossEntropyLoss(reduction='none')(inputs, targets)
         pt = torch.exp(-ce_loss)
         focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
@@ -48,6 +50,8 @@ class DiceLoss(nn.Module):
         self.smooth = smooth
 
     def forward(self, inputs, targets):
+        if inputs.shape[2:] != targets.shape[1:]:
+            raise ValueError(f"Input shape {inputs.shape} and target shape {targets.shape} spatial dimensions do not match")
         inputs = torch.softmax(inputs, dim=1)
         targets = torch.nn.functional.one_hot(targets, num_classes=inputs.shape[1]).permute(0, 3, 1, 2).float()
         intersection = (inputs * targets).sum(dim=(2, 3))
@@ -73,12 +77,16 @@ def evaluate_model(model, data_loader, device, num_classes):
             
             outputs = model(images)
             if isinstance(outputs, list):
-                outputs = outputs[-1]
+                outputs = outputs[-1]  # Use final output for evaluation
             
-            focal_loss = focal_loss_fn(outputs, targets) * args.focal_loss_weight
-            dice_loss = dice_loss_fn(outputs, targets) * args.dice_loss_weight
-            lovasz_loss = lovasz_softmax(torch.softmax(outputs, dim=1), targets) * 0.5
-            loss = focal_loss + dice_loss + lovasz_loss
+            try:
+                focal_loss = focal_loss_fn(outputs, targets) * args.focal_loss_weight
+                dice_loss = dice_loss_fn(outputs, targets) * args.dice_loss_weight
+                lovasz_loss = lovasz_softmax(torch.softmax(outputs, dim=1), targets) * 0.5
+                loss = focal_loss + dice_loss + lovasz_loss
+            except ValueError as e:
+                logger.error(f"Loss computation failed: {e}. Skipping batch.")
+                continue
             
             total_loss += loss.item() * images.size(0)
             total_samples += images.size(0)
@@ -105,7 +113,7 @@ def evaluate_model(model, data_loader, device, num_classes):
         class_iou = iou[i, i] / (iou[i, :].sum() + iou[:, i].sum() - iou[i, i] + 1e-10)
         class_dice = (2 * class_iou) / (1 + class_iou)
         class_metrics.append((class_iou.item(), class_dice.item()))
-        logging.info(f"Class {i} IoU: {class_iou:.4f}, Dice: {class_dice:.4f}")
+        logger.info(f"Class {i} IoU: {class_iou:.4f}, Dice: {class_dice:.4f}")
     
     return avg_loss, oa, miou, fwiou, dice, class_metrics
 
@@ -193,6 +201,7 @@ def main():
         except Exception as e:
             logger.error(f"Could not load checkpoint: {e}. Starting from scratch.")
     
+    accum_steps = 2  # Gradient accumulation for effective batch size of 8
     for epoch in range(start_epoch, args.epochs):
         model.train()
         if epoch == args.fine_tune_epochs:
@@ -202,34 +211,64 @@ def main():
         
         running_loss = 0.0
         total_samples = 0
-        for batch in train_loader:
+        optimizer.zero_grad()
+        for i, batch in enumerate(train_loader):
             if batch is None or batch['image'].size(0) == 0:
                 continue
             images = batch['image'].to(device)
             targets = batch['label'].to(device)
             
-            optimizer.zero_grad()
             outputs = model(images)
             if isinstance(outputs, list):
-                loss = 0
-                for i, out in enumerate(outputs):
-                    focal_loss = focal_loss_fn(out, targets) * args.focal_loss_weight
-                    dice_loss = dice_loss_fn(out, targets) * args.dice_loss_weight
-                    lovasz_loss = lovasz_softmax(torch.softmax(out, dim=1), targets) * 0.5
-                    loss += args.deep_supervision_weights[i] * (focal_loss + dice_loss + lovasz_loss)
+                if len(outputs) != len(args.deep_supervision_weights):
+                    logger.warning(f"Mismatch: {len(outputs)} outputs, {len(args.deep_supervision_weights)} weights. Using last output.")
+                    outputs = [outputs[-1]]
+                    try:
+                        logger.debug(f"Output shape: {outputs[0].shape}, Target shape: {targets.shape}")
+                        focal_loss = focal_loss_fn(outputs[0], targets) * args.focal_loss_weight
+                        dice_loss = dice_loss_fn(outputs[0], targets) * args.dice_loss_weight
+                        lovasz_loss = lovasz_softmax(torch.softmax(outputs[0], dim=1), targets) * 0.5
+                        loss = focal_loss + dice_loss + lovasz_loss
+                    except ValueError as e:
+                        logger.error(f"Loss computation failed: {e}. Skipping batch.")
+                        continue
+                else:
+                    loss = 0
+                    for j, out in enumerate(outputs):
+                        try:
+                            logger.debug(f"Output {j} shape: {out.shape}, Target shape: {targets.shape}")
+                            focal_loss = focal_loss_fn(out, targets) * args.focal_loss_weight
+                            dice_loss = dice_loss_fn(out, targets) * args.dice_loss_weight
+                            lovasz_loss = lovasz_softmax(torch.softmax(out, dim=1), targets) * 0.5
+                            loss += args.deep_supervision_weights[j] * (focal_loss + dice_loss + lovasz_loss)
+                        except ValueError as e:
+                            logger.error(f"Loss computation failed for output {j}: {e}. Skipping output.")
+                            continue
             else:
-                focal_loss = focal_loss_fn(outputs, targets) * args.focal_loss_weight
-                dice_loss = dice_loss_fn(outputs, targets) * args.dice_loss_weight
-                lovasz_loss = lovasz_softmax(torch.softmax(outputs, dim=1), targets) * 0.5
-                loss = focal_loss + dice_loss + lovasz_loss
+                try:
+                    logger.debug(f"Output shape: {outputs.shape}, Target shape: {targets.shape}")
+                    focal_loss = focal_loss_fn(outputs, targets) * args.focal_loss_weight
+                    dice_loss = dice_loss_fn(outputs, targets) * args.dice_loss_weight
+                    lovasz_loss = lovasz_softmax(torch.softmax(outputs, dim=1), targets) * 0.5
+                    loss = focal_loss + dice_loss + lovasz_loss
+                except ValueError as e:
+                    logger.error(f"Loss computation failed: {e}. Skipping batch.")
+                    continue
             
+            loss = loss / accum_steps
             loss.backward()
-            optimizer.step()
-            running_loss += loss.item() * images.size(0)
+            if (i + 1) % accum_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+            
+            running_loss += loss.item() * images.size(0) * accum_steps
             total_samples += images.size(0)
         
-        epoch_loss = running_loss / total_samples if total_samples > 0 else float('inf')
-        logger.info(f"Epoch {epoch+1}/{args.epochs}, Training Loss: {epoch_loss:.4f}")
+        if total_samples > 0:
+            epoch_loss = running_loss / total_samples
+            logger.info(f"Epoch {epoch+1}/{args.epochs}, Training Loss: {epoch_loss:.4f}")
+        else:
+            logger.warning(f"Epoch {epoch+1}/{args.epochs}, No valid samples processed.")
         
         scheduler.step()
         
