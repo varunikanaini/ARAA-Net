@@ -280,7 +280,7 @@ class RandomAffine(object):
         img, label = sample['image'], sample['label']
 
         # Generate random affine parameters
-        angle = random.uniform(-self.degrees, self.degangles)
+        angle = random.uniform(-self.degrees, self.degrees)
         translate = (random.uniform(-self.translate[0], self.translate[0]) * img.size[0],
                      random.uniform(-self.translate[1], self.translate[1]) * img.size[1])
         scale = random.uniform(self.scale[0], self.scale[1])
@@ -292,4 +292,35 @@ class RandomAffine(object):
         # Apply affine transformation to label (use NEAREST to preserve label values)
         label = TF.affine(label, angle=angle, translate=translate, scale=scale, shear=shear, interpolation=TF.InterpolationMode.NEAREST, fill=self.mask_fill_value)
 
+        return {'image': img, 'label': label}
+
+class ColorJitter(object):
+    """
+    Applies random adjustments to brightness, contrast, saturation, and hue of the image.
+    Args:
+        brightness (float): Max adjustment factor for brightness (0 to disable).
+        contrast (float): Max adjustment factor for contrast (0 to disable).
+        saturation (float): Max adjustment factor for saturation (0 to disable).
+        hue (float): Max adjustment factor for hue (0 to disable).
+    """
+    def __init__(self, brightness=0, contrast=0, saturation=0, hue=0):
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
+        self.hue = hue
+
+    def __call__(self, sample):
+        img, label = sample['image'], sample['label']
+        if self.brightness > 0:
+            brightness_factor = random.uniform(max(0, 1 - self.brightness), 1 + self.brightness)
+            img = TF.adjust_brightness(img, brightness_factor)
+        if self.contrast > 0:
+            contrast_factor = random.uniform(max(0, 1 - self.contrast), 1 + self.contrast)
+            img = TF.adjust_contrast(img, contrast_factor)
+        if self.saturation > 0:
+            saturation_factor = random.uniform(max(0, 1 - self.saturation), 1 + self.saturation)
+            img = TF.adjust_saturation(img, saturation_factor)
+        if self.hue > 0:
+            hue_factor = random.uniform(-self.hue, self.hue)
+            img = TF.adjust_hue(img, hue_factor)
         return {'image': img, 'label': label}
