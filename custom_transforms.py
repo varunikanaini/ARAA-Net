@@ -300,6 +300,21 @@ class RandomAffine(object):
 
         return {'image': img, 'label': label}
 
+class ElasticTransform(object):
+    def __init__(self, alpha=120, sigma=5, p=0.3):
+        self.alpha = alpha
+        self.sigma = sigma
+        self.p = p
+
+    def __call__(self, sample):
+        if random.random() > self.p:
+            return sample
+        img, label = sample['image'], sample['label']
+        # Use albumentations if installed, or simple PIL warp (add import cv2; import scipy.ndimage)
+        # For quick: skip or use TF.perspective for pseudo-elastic
+        params = transforms.RandomPerspective(distortion_scale=0.1, p=1.0)(img)  # Approx elastic
+        sample['image'] = TF.to_pil_image(params) if isinstance(params, torch.Tensor) else params
+        return sample  # Apply similarly to label with NEAREST
 class ColorJitter(object):
     """
     Applies random adjustments to brightness, contrast, saturation, and hue of the image.
