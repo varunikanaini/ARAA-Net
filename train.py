@@ -515,6 +515,9 @@ def main():
                     else:
                         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
 
+                    logging.info("Optimizer and scheduler re-initialized for Phase 2.")
+
+
                 net.train() 
                 loss_recorder = AvgMeter()
                 train_iterator = tqdm(train_loader, desc=f"Fold {fold_num}/{args.k_folds} Epoch {epoch+1}/{args.epochs}", leave=False)

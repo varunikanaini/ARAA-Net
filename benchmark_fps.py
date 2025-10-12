@@ -5,6 +5,7 @@ import time
 import os
 import sys
 import logging
+import copy # Needed for potentially copying models if you were to modify them
 
 # --- Setup Project Path ---
 project_path = '/kaggle/working/ARAA-Net'
@@ -15,8 +16,8 @@ if project_path not in sys.path:
 # MODIFIED: Import the generalized LASA_Unet model
 from lasa_unet_model import LASA_Unet 
 from misc import check_mkdir
-# FIXED: Import CKPT_ROOT from config
-from config import CKPT_ROOT, DEFAULT_ARGS, BACKBONE_CHANNELS # Import relevant config parts
+# FIXED: Import CKPT_ROOT, DEFAULT_ARGS, BACKBONE_CHANNELS from config
+from config import CKPT_ROOT, DEFAULT_ARGS, BACKBONE_CHANNELS 
 
 # --- Logging Setup ---
 def setup_logging_benchmark(log_dir, filename='benchmark_results.log'):
@@ -72,8 +73,8 @@ def main():
     
     # Input dimensions for benchmarking (use common defaults or train defaults)
     # Suggest using dimensions that match common training scales.
-    parser.add_argument('--input-h', type=int, default=DEFAULT_ARGS.get('scale_h', 896), help='Height of dummy input image')
-    parser.add_argument('--input-w', type=int, default=DEFAULT_ARGS.get('scale_w', 576), help='Width of dummy input image')
+    parser.add_argument('--input-h', type=int, default=None, help='Height of dummy input image')
+    parser.add_argument('--input-w', type=int, default=None, help='Width of dummy input image')
     
     # Benchmarking parameters
     parser.add_argument('--num-warmup', type=int, default=20, help='Number of warmup inferences')
@@ -84,6 +85,19 @@ def main():
     except SystemExit:
         # Fallback for environments like notebooks that might exit prematurely
         args = parser.parse_args([])
+
+    # --- Set Input Dimensions based on Backbone if not provided ---
+    if args.input_h is None or args.input_w is None:
+        try:
+            # Get default input resolution from config for the selected backbone
+            input_h, input_w = config.get_backbone_resolution(args.backbone)
+            args.input_h = input_h
+            args.input_w = input_w
+            logging.info(f"Using default input resolution for backbone '{args.backbone}': {args.input_h}x{args.input_w}")
+        except Exception as e:
+            logging.error(f"Could not determine default input resolution for backbone '{args.backbone}': {e}")
+            logging.error("Please specify --input-h and --input-w manually.")
+            sys.exit(1)
 
     # --- Device Check ---
     if not torch.cuda.is_available():
@@ -105,9 +119,7 @@ def main():
 
     # --- Instantiate the Model ---
     # Instantiate the LASA_Unet model with the specified backbone
-    # For benchmarking, we don't strictly need num_classes or lasa_kernels if just measuring FPS,
-    # but it's good to keep it consistent with training.
-    # num_classes will be inferred or can be set to a default (e.g., 2).
+    # num_classes can be set to a default (e.g., 2).
     # lasa_kernels can be benchmarked with defaults or specified if relevant to FPS.
     model = LASA_Unet(num_classes=2, backbone_name=args.backbone, lasa_kernels=DEFAULT_ARGS.get('lasa_kernels', [1, 3, 5, 7]))
 
