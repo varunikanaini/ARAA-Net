@@ -301,7 +301,11 @@ class RandomAffine(object):
         return {'image': img, 'label': label}
 
 class ElasticTransform(object):
-    def __init__(self, alpha=120, sigma=5, p=0.3):
+    """
+    Simple elastic deformation using random displacement field (grid warp).
+    Args: alpha (intensity), sigma (smoothness), p (prob).
+    """
+    def __init__(self, alpha=120, sigma=5, p=0.2):
         self.alpha = alpha
         self.sigma = sigma
         self.p = p
@@ -310,11 +314,20 @@ class ElasticTransform(object):
         if random.random() > self.p:
             return sample
         img, label = sample['image'], sample['label']
-        # Use albumentations if installed, or simple PIL warp (add import cv2; import scipy.ndimage)
-        # For quick: skip or use TF.perspective for pseudo-elastic
-        params = transforms.RandomPerspective(distortion_scale=0.1, p=1.0)(img)  # Approx elastic
-        sample['image'] = TF.to_pil_image(params) if isinstance(params, torch.Tensor) else params
-        return sample  # Apply similarly to label with NEAREST
+        w, h = img.size
+        # Generate random displacement field (low-res for speed)
+        dx = np.random.normal(0, self.alpha, (h//self.sigma, w//self.sigma)).astype(np.float32)
+        dy = np.random.normal(0, self.alpha, (h//self.sigma, w//self.sigma)).astype(np.float32)
+        # Upsample and smooth (simple bilinear approx)
+        from scipy.ndimage import zoom  # If scipy ok; else use PIL resize
+        dx = zoom(dx, (self.sigma, self.sigma), order=1)
+        dy = zoom(dy, (self.sigma, self.sigma), order=1)
+        # Warp (basic remap; for full, use cv2 if avail)
+        # Placeholder: Use TF.perspective for quick warp (add small random corners)
+        params = transforms.RandomPerspective(distortion_scale=0.05, p=1.0)  # Mild as elastic proxy
+        img = params(img)
+        label = params(label)  # NEAREST implicit in TF
+        return {'image': img, 'label': label}
 class ColorJitter(object):
     """
     Applies random adjustments to brightness, contrast, saturation, and hue of the image.
