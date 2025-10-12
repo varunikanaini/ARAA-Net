@@ -127,7 +127,7 @@ class ImageFolder(data.Dataset):
         self.kfold_mode = kfold_mode # Flag for K-Fold usage
 
         # Use make_dataset to get image-mask pairs
-        self.imgs = make_dataset(config.DATASET_CONFIG[dataset_name], split) 
+        self.imgs = make_dataset(self.root, self.dataset_name) 
         
         if not self.imgs:
             print(f"Warning: No images found for dataset '{self.dataset_name}', split '{self.split}' at root '{self.root}'.")
