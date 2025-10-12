@@ -1,4 +1,4 @@
-# train.py (Complete Corrected Version with K-Fold and VGG19 Support)
+# train.py (Updated for new datasets.py structure and None handling)
 
 import sys
 import os
@@ -23,11 +23,11 @@ if project_path not in sys.path:
 # --- Import Config and Other Modules ---
 import config 
 from lasa_unet_model import LASA_Unet 
-from datasets import ImageFolder, make_dataset, IMAGE_EXTENSIONS, MASK_EXTENSIONS
+from datasets import ImageFolder, make_dataset, IMAGE_EXTENSIONS, MASK_EXTENSIONS # Import make_dataset from datasets
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- Loss Functions ---
+# --- Loss Functions (same as before) ---
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -88,7 +88,7 @@ class DiceLoss(nn.Module):
         elif self.reduction == 'sum': return loss * inputs.shape[0] 
         else: return loss 
 
-# --- Backbone Freezing/Unfreezing Helper Functions ---
+# --- Backbone Freezing/Unfreezing Helper Functions (same as before) ---
 def freeze_backbone(model, backbone_name):
     """Freezes parameters of the backbone encoder."""
     frozen_layers = []
@@ -221,7 +221,6 @@ def get_args():
         args.num_classes = dataset_info['num_classes']
         args.image_ext = dataset_info.get('image_ext', IMAGE_EXTENSIONS)
         args.mask_ext = dataset_info.get('mask_ext', MASK_EXTENSIONS)
-        args.dataset_subfolders = dataset_info.get('subfolders')
         
         args.DATASET_CONFIG = config.DATASET_CONFIG # Make config available to ImageFolder
 
@@ -334,10 +333,12 @@ def main():
     logging.info(f"Arguments: {vars(args)}")
     logging.info(f"Using device: {device}")
 
-    # --- Dataset Loading (outside the fold loop for efficiency) ---
+    # --- Dataset Loading ---
     all_train_dataset = None
     val_dataset = None
+    test_dataset = None # For test-only mode
 
+    # Load training data
     if not args.test_only: 
         train_data_path = os.path.join(args.dataset_path, 'train') 
         if not os.path.exists(train_data_path):
@@ -348,23 +349,29 @@ def main():
             all_train_dataset = ImageFolder(train_data_path, args.dataset_name, args, split='train', kfold_mode=True) 
             logging.info(f"Loaded {len(all_train_dataset)} training images for potential K-Fold split.")
 
+    # Load validation data (used if not running k-fold, or within k-fold if specified)
     val_data_path = os.path.join(args.dataset_path, 'val') 
     if not os.path.exists(val_data_path):
         logging.warning(f"Validation split not found at '{val_data_path}'. Validation will be skipped or K-Fold split will be used.")
     else:
-        # Load a separate validation dataset if it exists
         val_dataset = ImageFolder(val_data_path, args.dataset_name, args, split='val')
         logging.info(f"Loaded {len(val_dataset)} validation images from separate 'val' split.")
+
+    # Load test data (used only in test-only mode)
+    test_data_path = os.path.join(args.dataset_path, 'test')
+    if os.path.exists(test_data_path):
+        test_dataset = ImageFolder(test_data_path, args.dataset_name, args, split='test')
+        logging.info(f"Loaded {len(test_dataset)} test images.")
+    else:
+        logging.warning(f"Test split not found at '{test_data_path}'. Test-only mode will fall back to validation set if available.")
+
 
     # --- Test-Only Mode ---
     if args.test_only:
         logging.info("Running in TEST ONLY mode.")
         
-        # Determine the checkpoint to load (best of the last fold if k-fold, or main best if not)
         checkpoint_path_to_load = None
         if args.run_kfold:
-            # Assuming we want to test the model from the LAST fold if k-fold was run previously
-            # Or you might want to average weights, or test on a separate test set
             last_fold_best_ckpt = os.path.join(base_exp_path, f'fold_{args.k_folds}', 'best_checkpoint.pth')
             if os.path.exists(last_fold_best_ckpt):
                 checkpoint_path_to_load = last_fold_best_ckpt
@@ -378,7 +385,7 @@ def main():
                 checkpoint_path_to_load = main_best_checkpoint_path
                 logging.info(f"Using main best checkpoint for testing: {main_best_checkpoint_path}")
             else:
-                logging.error(f"❌ ERROR: No 'best_checkpoint.pth' found in '{base_exp_path}' or its fold subdirectories. Cannot run test-only mode.")
+                logging.error(f"❌ ERROR: No suitable 'best_checkpoint.pth' found. Cannot run test-only mode.")
                 sys.exit(1)
         
         # --- Load Model for Testing ---
@@ -393,20 +400,17 @@ def main():
             logging.error(f"Error loading model from checkpoint {checkpoint_path_to_load}: {e}. Exiting.")
             sys.exit(1)
 
-        # --- Load Test Data ---
-        test_split_name = 'test'
-        test_data_path = os.path.join(args.dataset_path, test_split_name)
-        if not os.path.exists(test_data_path):
-            logging.warning(f"Test split not found at '{test_data_path}'. Falling back to 'val' split for testing.")
-            test_split_name = 'val'
-            test_data_path = os.path.join(args.dataset_path, test_split_name)
-            if not os.path.exists(test_data_path):
-                logging.error(f"❌ ERROR: Neither 'test' nor 'val' split found for dataset '{args.dataset_name}'.")
-                sys.exit(1)
-        
-        test_set = ImageFolder(test_data_path, args.dataset_name, args, split=test_split_name)
-        test_loader = DataLoader(test_set, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
-        logging.info(f"Loaded {len(test_set)} images for testing from '{args.dataset_name}' split '{test_split_name}'.")
+        # --- Determine Test Data Loader ---
+        test_loader = None
+        if test_dataset:
+            test_loader = DataLoader(test_dataset, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
+            logging.info(f"Using dedicated test set ({len(test_dataset)} images) for evaluation.")
+        elif val_dataset: # Fallback to validation set if test set is not available
+            test_loader = DataLoader(val_dataset, batch_size=1, num_workers=args.num_workers, shuffle=False, pin_memory=True, collate_fn=custom_collate_fn)
+            logging.warning("Dedicated test set not found. Falling back to using the validation set for testing.")
+        else:
+            logging.error("❌ ERROR: No test or validation data available for evaluation. Cannot proceed.")
+            sys.exit(1)
 
         # --- Run Evaluation ---
         test_mIoU = evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Testing")
@@ -414,7 +418,7 @@ def main():
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logging.info(f"\n\n--- FINAL TEST RESULTS ({timestamp}) ---")
         logging.info(f"Model: LASA-Unet ({args.backbone} backbone, LASA Kernels: {args.lasa_kernels})")
-        logging.info(f"Dataset: {args.dataset_name} (evaluated on '{test_split_name}' split)")
+        logging.info(f"Dataset: {args.dataset_name} (evaluated on dedicated test set or fallback)")
         logging.info(f"Image scale for test: ({args.scale_h}, {args.scale_w})")
         logging.info(f"Final Test mIoU: {test_mIoU:.4f}")
         logging.info("---------------------------------")
@@ -475,7 +479,6 @@ def main():
                 logging.info(f"Fold {fold_num}: Using split from training data for validation.")
 
             # --- Instantiate Model, Optimizer, Scheduler for each fold ---
-            # Deep copy ensures each fold starts with a fresh model
             net = LASA_Unet(num_classes=args.num_classes, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
             focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
             dice_loss_fn = DiceLoss().to(device)
@@ -503,8 +506,7 @@ def main():
                     logging.info(f"Fold {fold_num}: Transitioning to Phase 2: Unfreezing backbone at Epoch {epoch}")
                     unfreeze_backbone(net, args.backbone)
                     
-                    # Re-initialize optimizer and scheduler for Phase 2
-                    new_lr = args.lr / 5.0 # Reduce LR for fine-tuning
+                    new_lr = args.lr / 5.0 
                     logging.info(f"Fold {fold_num}: Adjusting LR for Phase 2 to: {new_lr:.6f}")
                     optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
                     
@@ -514,9 +516,7 @@ def main():
                         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
                     else:
                         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
-
                     logging.info("Optimizer and scheduler re-initialized for Phase 2.")
-
 
                 net.train() 
                 loss_recorder = AvgMeter()
@@ -597,11 +597,6 @@ def main():
         logging.info("------------------------------------")
         logging.info("✅ K-Fold Cross-Validation completed.")
 
-        # --- Optional: Save a summary or average model ---
-        # You might want to train a final model on all data using the best hyperparameters,
-        # or save the average weights, or just report the results.
-        # For now, we just report the summary.
-        
         return # Exit after K-Fold training is complete
 
     # --- Standard Training Loop (if not running K-Fold) ---
@@ -662,7 +657,6 @@ def main():
             patience_counter = ckpt.get('patience_counter', 0)
             logging.info(f"Resuming standard training from epoch {start_epoch}, best mIoU was {best_mIoU:.4f}, patience counter: {patience_counter}")
             
-            # Handle backbone freezing/unfreezing on resume
             if args.fine_tune_epochs > 0:
                 if start_epoch < args.fine_tune_epochs:
                     freeze_backbone(net, args.backbone)
@@ -679,13 +673,12 @@ def main():
 
     # --- Main Training Loop (Standard) ---
     for epoch in range(start_epoch, args.epochs):
-        # --- Check for Phase Transition ---
+        # --- Phase Transition ---
         if args.fine_tune_epochs > 0 and epoch == args.fine_tune_epochs:
             logging.info(f"--- Transitioning to Phase 2: Unfreezing backbone at Epoch {epoch} ---")
             unfreeze_backbone(net, args.backbone)
             
-            # Re-initialize optimizer and scheduler for Phase 2
-            new_lr = args.lr / 5.0 # Reduce LR for fine-tuning
+            new_lr = args.lr / 5.0 
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             
@@ -695,7 +688,6 @@ def main():
                 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=int(args.scheduler_T_mult), eta_min=args.scheduler_min_lr)
             else:
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=args.scheduler_factor, patience=args.scheduler_patience, min_lr=args.scheduler_min_lr)
-
             logging.info("Optimizer and scheduler re-initialized for Phase 2.")
 
         net.train() 
