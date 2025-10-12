@@ -75,7 +75,13 @@ class ToTensor(object):
     """Converts the PIL label to a PyTorch LongTensor. Image is assumed to be already a Tensor."""
     def __call__(self, sample):
         img, label = sample['image'], sample['label']
-        label = torch.from_numpy(np.array(label, dtype=np.uint8)).long()
+        label_np = np.array(label)
+        # Binarize if necessary (assuming 0/255 for binary masks)
+        if label_np.max() > 1:
+            label_np = (label_np > 127).astype(np.int64)
+        else:
+            label_np = label_np.astype(np.int64)
+        label = torch.from_numpy(label_np).long()
         return {'image': img, 'label': label}
 
 class CenterAmplification(object):
