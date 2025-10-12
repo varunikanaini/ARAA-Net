@@ -83,6 +83,7 @@ BACKBONE_INPUT_RESOLUTIONS = {
     'inception_v3': (299, 299),
     'efficientnet_b0': (224, 224),
     'efficientnet_b3': (300, 300), 
+    'vgg19': (224, 224),
 }
 
 BACKBONE_CHANNELS = {
@@ -91,6 +92,7 @@ BACKBONE_CHANNELS = {
     'inception_v3': {'e1': 64, 'e2': 256, 'e3': 768, 'e4': 1280, 'bottleneck': 2048},
     'efficientnet_b0': {'e1': 32, 'e2': 48, 'e3': 136, 'e4': 384, 'bottleneck': 1280},
     'efficientnet_b3': {'e1': 40, 'e2': 56, 'e3': 160, 'e4': 448, 'bottleneck': 1536},
+    'vgg19': {'e1': 64, 'e2': 128, 'e3': 256, 'e4': 512, 'bottleneck': 512},
 }
 
 # --- Default Training Parameters ---

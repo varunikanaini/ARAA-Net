@@ -89,6 +89,15 @@ class LASA_Unet(nn.Module):
             encoder4 = nn.Sequential(*list(vgg_features.children())[23:33])
             bottleneck_layer = nn.Sequential(*list(vgg_features.children())[33:43])
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
+        
+        elif backbone_name == 'vgg19': # Add VGG19 extraction
+            vgg_features = models.vgg19_bn(weights=models.VGG19_BN_Weights.DEFAULT).features
+            encoder1 = nn.Sequential(*list(vgg_features.children())[:6])
+            encoder2 = nn.Sequential(*list(vgg_features.children())[6:13])
+            encoder3 = nn.Sequential(*list(vgg_features.children())[13:23])
+            encoder4 = nn.Sequential(*list(vgg_features.children())[23:33])
+            bottleneck_layer = nn.Sequential(*list(vgg_features.children())[33:43]) # Adjust if VGG19 has different final blocks
+            return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
 
         elif backbone_name == 'resnet50':
             resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
@@ -100,23 +109,12 @@ class LASA_Unet(nn.Module):
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
 
         elif backbone_name == 'inception_v3':
-            # InceptionV3 requires specific input size (299x299) and has a complex structure.
-            # Feature extraction points are approximations and might need adjustment.
             inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT, aux_logits=False) # aux_logits=False for cleaner feature extraction
             encoder1 = nn.Sequential(*list(inception.children())[:3]) # Up to conv3/3x3 + BN + ReLU
             encoder2 = nn.Sequential(*list(inception.children())[3:4]) # Mixed_3a
             encoder3 = nn.Sequential(*list(inception.children())[4:5]) # Mixed_4d
             encoder4 = nn.Sequential(*list(inception.children())[5:7]) # Mixed_5c
             bottleneck_layer = nn.Sequential(*list(inception.children())[7:]) # From Mixed_6 onwards, adapt to remove final classifiers
-
-            # The last part of inception can be tricky. This is a simplification.
-            # We might need to get features before the final avgpool/fc.
-            # Let's assume we take features after Mixed_6e (end of encoder4) and pass them to a bottleneck conv.
-            # This part might require manual tracing or testing.
-            # A common approach is to take output before the final avgpool/classifier.
-            # For simplicity here, let's assume bottleneck is a conv layer after encoder4.
-            # We will rely on _estimate_backbone_channels for exact sizes.
-            # For now, we'll just use the blocks as defined.
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer # Placeholder
 
         elif backbone_name in ['efficientnet_b0', 'efficientnet_b3']:
