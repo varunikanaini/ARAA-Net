@@ -80,12 +80,20 @@ class ImageFolder(data.Dataset):
             mask_path = os.path.join(self.root, mask_folder)
             
         elif structure == 'TSRS_RSNA':
-            # TSRS_RSNA datasets often have train/val/test directly under root,
-            # with images and masks inside each split folder.
-            img_path = os.path.join(self.root, self.split)
-            mask_path = os.path.join(self.root, self.split) 
-            # If masks are in a specific subfolder like 'Masks', adjust accordingly:
-            # mask_path = os.path.join(self.root, self.split, 'Masks')
+            # FIXED: Correctly construct paths for TSRS_RSNA structure based on your provided description
+            if self.split == 'train':
+                img_path = os.path.join(self.root, self.split, 'images')
+                mask_path = os.path.join(self.root, self.split, 'train_labels') # Corrected mask folder name
+            elif self.split == 'test':
+                img_path = os.path.join(self.root, self.split, 'images')
+                mask_path = os.path.join(self.root, self.split, 'test_labels') # Corrected mask folder name
+            elif self.split == 'val':
+                img_path = os.path.join(self.root, self.split, 'images')
+                mask_path = os.path.join(self.root, self.split, 'val_labels') # Corrected mask folder name
+            else:
+                # Fallback for unexpected splits if any
+                img_path = os.path.join(self.root, self.split, 'images')
+                mask_path = os.path.join(self.root, self.split, f'{self.split}_labels') # Generic fallback
             
         elif structure == 'COVID19':
             # COVID19 dataset has 'images' and 'masks' folders at the root,
@@ -224,8 +232,7 @@ class ImageFolder(data.Dataset):
                 img_transformed = self.transform(img)
                 
                 # Apply mask transform separately (e.g., resizing, converting to tensor)
-                # Certain PIL-based transforms like resize might be applied here.
-                # Ensure transforms that modify PIL objects are applied correctly.
+                # Certain transforms that modify PIL objects (like resize) might need to be applied here
                 if self.args.scale_h and self.args.scale_w:
                      mask = mask.resize((self.args.scale_w, self.args.scale_h), Image.NEAREST)
 
