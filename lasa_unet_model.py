@@ -43,8 +43,8 @@ class LASA_Unet(nn.Module):
         
         # Get channel info from config or estimate if not found
         channel_info = BACKBONE_CHANNELS_INFO.get(backbone_name)
-        if channel_info is None or backbone_name in ['efficientnet_b0', 'efficientnet_b3']:  # Force estimation for EfficientNets to avoid mismatches
-            print(f"Warning: Channel information for backbone '{backbone_name}' not found in config or forcing dynamic estimation.")
+        if channel_info is None:
+            print(f"Warning: Channel information for backbone '{backbone_name}' not found in config. Attempting dynamic estimation (may be slow or inaccurate).")
             channel_info = self._estimate_backbone_channels(backbone_name)
             if channel_info is None:
                  raise ValueError(f"Could not determine channel info for backbone '{backbone_name}'.")
@@ -174,18 +174,12 @@ class LASA_Unet(nn.Module):
                 return {'e1': e1_out.shape[1], 'e2': e2_out.shape[1], 'e3': e3_out.shape[1], 'e4': e4_out.shape[1], 'bottleneck': bottleneck_out.shape[1]}
             
             elif backbone_name in ['efficientnet_b0', 'efficientnet_b3']:
-                # Use correct input size for each variant
-                if backbone_name == 'efficientnet_b0':
-                    input_size = (224, 224)
-                else:  # efficientnet_b3
-                    input_size = (300, 300)
-                dummy_input_for_channels = torch.randn(1, 3, *input_size)
+                dummy_input_for_channels = torch.randn(1, 3, 224, 224) # Typical input size for EfficientNets
                 e1_out = self.encoder1(dummy_input_for_channels)
                 e2_out = self.encoder2(e1_out)
                 e3_out = self.encoder3(e2_out)
                 e4_out = self.encoder4(e3_out)
                 bottleneck_out = self.bottleneck_layer(e4_out)
-                print(f"Estimated channels for {backbone_name}: e1={e1_out.shape[1]}, e2={e2_out.shape[1]}, e3={e3_out.shape[1]}, e4={e4_out.shape[1]}, bottleneck={bottleneck_out.shape[1]}")
                 return {'e1': e1_out.shape[1], 'e2': e2_out.shape[1], 'e3': e3_out.shape[1], 'e4': e4_out.shape[1], 'bottleneck': bottleneck_out.shape[1]}
 
             else:
