@@ -91,7 +91,7 @@ BACKBONE_CHANNELS = {
     'resnet50': {'e1': 64, 'e2': 256, 'e3': 512, 'e4': 1024, 'bottleneck': 2048},
     'inception_v3': {'e1': 64, 'e2': 256, 'e3': 768, 'e4': 1280, 'bottleneck': 2048},
     'efficientnet_b0': {'e1': 32, 'e2': 48, 'e3': 136, 'e4': 384, 'bottleneck': 1280},
-    'efficientnet_b3': {'e1': 48, 'e2': 72, 'e3': 200, 'e4': 456, 'bottleneck': 1536},
+    'efficientnet_b3': {'e1': 24, 'e2': 32, 'e3': 96, 'e4': 232, 'bottleneck': 1536},
     'vgg19': {'e1': 64, 'e2': 128, 'e3': 256, 'e4': 512, 'bottleneck': 512},
 }
 

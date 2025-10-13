@@ -131,7 +131,7 @@ class LASA_Unet(nn.Module):
             encoder2 = nn.Sequential(effnet.features[2]) # Block2
             encoder3 = nn.Sequential(*list(effnet.features.children())[3:5]) # Block3, Block4
             encoder4 = nn.Sequential(*list(effnet.features.children())[5:7]) # Block5, Block6
-            bottleneck_layer = nn.Sequential(*list(effnet.features.children())[7:8]) # Block7 + Classifier (we use block7 part)
+            bottleneck_layer = nn.Sequential(*list(effnet.features.children())[7:]) # Block7 + Classifier (we use block7 part)
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
         
         else:
