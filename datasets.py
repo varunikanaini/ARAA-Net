@@ -131,35 +131,27 @@ class ImageFolder(data.Dataset):
         
         if not self.imgs:
             print(f"Warning: No images found for dataset '{self.dataset_name}', split '{self.split}' at root '{self.root}'.")
-            # Ensure self.imgs is an empty list to avoid errors later
             self.imgs = [] 
-
-        # --- Setup Transforms based on split and args ---
-        # These parameters are taken directly from the args, so they are not changed.
-        # They are used by the custom_transforms module.
         self.mean = (0.485, 0.456, 0.406) # Default ImageNet means
         self.std = (0.229, 0.224, 0.225)  # Default ImageNet stds
 
-        # Adjust mean/std for grayscale or specific datasets if needed
         if dataset_name in ['JSRT', 'COVID19_Radiography']: 
             self.mean = [0.5]
             self.std = [0.5]
 
-        # --- Define Transforms using custom_transforms module ---
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                # Conditionally apply CenterAmplification if parameters are set > 0
                 tr.CenterAmplification(min_lesion_area_pixels=args.min_lesion_area_pixels,
                                        expansion_factor=args.expansion_factor,
                                        min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
-                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
-                tr.HistogramEqualization(),
+                # tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
+                # tr.HistogramEqualization(),
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((args.scale_h, args.scale_w)), 
                 tr.RandomGaussianBlur(),
                 tr.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) if hasattr(tr, 'ColorJitter') else lambda x: x,
-                tr.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
+                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.7, 1.3), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
                 tr.RandomCutout(num_holes_range=(1, 2), max_h_size=32, max_w_size=32, fill_value=0, p=0.3) if hasattr(tr, 'RandomCutout') else lambda x: x, 
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor() 
