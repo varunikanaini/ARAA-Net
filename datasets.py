@@ -139,64 +139,77 @@ class ImageFolder(data.Dataset):
             self.mean = [0.5]
             self.std = [0.5]
 
+        min_lesion_area = args.min_lesion_area_pixels
+        expansion_factor = args.expansion_factor
+        min_bbox_h = args.min_bbox_h
+        min_bbox_w = args.min_bbox_w
+        scale_h = args.scale_h
+        scale_w = args.scale_w
+
+        # --- Define Transforms ---
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                tr.CenterAmplification(min_lesion_area_pixels=args.min_lesion_area_pixels,
-                                       expansion_factor=args.expansion_factor,
-                                       min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
-                # tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),
-                # tr.HistogramEqualization(),
+                tr.FixedResize(w=scale_w, h=scale_h),
+                tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
+                                       expansion_factor=expansion_factor,
+                                       min_bbox_size=(min_bbox_h, min_bbox_w)) if min_lesion_area > 0 else lambda x: x,
+                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0),                tr.RandomGaussianBlur(radius_range=(0.1, 1.2)),
                 tr.RandomHorizontalFlip(),
-                tr.RandomCrop((args.scale_h, args.scale_w)), 
-                tr.RandomGaussianBlur(),
-                tr.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) if hasattr(tr, 'ColorJitter') else lambda x: x,
-                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
-                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x, 
-                tr.Normalize(mean=self.mean, std=self.std),
-                tr.ToTensor() 
+                tr.RandomCrop((scale_h, scale_w)),
+                tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
+                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale) if np.random.rand() < 0.2 else lambda x: x,
+                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=40, max_w_size=40, fill_value=0, p=0.5),                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                tr.ToTensor()
             ])
         else:  # Validation/Test
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                tr.Normalize(mean=self.mean, std=self.std),
+                tr.FixedResize(w=scale_w, h=scale_h),
+                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                 tr.ToTensor()
             ])
 
     def __getitem__(self, index):
-        if not self.imgs:
-            print(f"Error: Attempted to access index {index} but dataset is empty.")
-            return None 
-            
         img_path, gt_path = self.imgs[index]
-        
         try:
-            # Load Image using PIL (as custom_transforms expect PIL)
-            img = Image.open(img_path).convert('RGB') # Always convert to RGB
-            
-            # Load Mask using PIL
-            mask = Image.open(gt_path)
-            
-            # Ensure mask is in 'L' mode (grayscale) for segmentation tasks
-            if mask.mode != 'L':
-                mask = mask.convert('L')
-            
-            # Apply transformations
-            sample = {'image': img, 'label': mask} # Label is PIL Image for transforms
-            transformed_sample = self.composed_transforms(sample)
-            
-            # Add filename for potential debugging or logging
-            if self.split != 'train':
-                transformed_sample['name'] = os.path.basename(img_path)
-            
-            return transformed_sample
+            img_cv = cv2.imread(img_path)
+            if img_cv is None:
+                raise FileNotFoundError(f"OpenCV could not read image: {img_path}. File might be corrupted or path incorrect.")
 
-        except (UnidentifiedImageError, FileNotFoundError, ValueError) as e:
-            print(f"ERROR: Could not open/process image or mask for sample at index {index} ('{img_path}', '{gt_path}'). Error: {e}. Returning None for this sample.")
-            return None 
-        except Exception as e: # Catch any other unexpected errors during loading/transform
-            print(f"UNEXPECTED ERROR processing sample {index} ('{img_path}'): {e}. Returning None.")
+            if img_cv.ndim == 3 and img_cv.shape[2] == 3:
+                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+            elif img_cv.ndim == 2:
+                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
+
+            img = Image.fromarray(img_cv)
+
+            mask_cv = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
+            if mask_cv is None:
+                raise FileNotFoundError(f"OpenCV could not read mask: {gt_path}. File might be corrupted or path incorrect.")
+
+            target = Image.fromarray(mask_cv, mode='L')
+            label = self.convert_label(target)
+
+        except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError, Exception) as e:
+            print(f"ERROR: Could not open/process image or mask for paths: {img_path}, {gt_path}. Error: {e}. Returning None for this sample.")
             return None
+
+        sample = {'image': img, 'label': label}
+        transformed_sample = self.composed_transforms(sample)
+
+        if self.split != 'train':
+            transformed_sample['name'] = os.path.basename(img_path)
+
+        return transformed_sample
+
+    def convert_label(self, label):
+        label_np = np.array(label, dtype=np.uint8)
+        if label_np.ndim == 3 and label_np.shape[2] == 1:
+            label_np = label_np.squeeze(2)
+
+        label_index = np.zeros_like(label_np, dtype=np.uint8)
+        label_index[label_np > 0] = 1
+
+        return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
         return len(self.imgs)
