@@ -202,8 +202,10 @@ class ImageFolder(data.Dataset):
             # Convert to RGB if needed
             if img_cv.ndim == 3 and img_cv.shape[2] == 3:
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+                print(f"This is color bgr2rgb")
             elif img_cv.ndim == 2: # If grayscale, convert to RGB
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
+                print(f"This is color gray2rgb")
 
             img = Image.fromarray(img_cv) # Convert to PIL Image
 
