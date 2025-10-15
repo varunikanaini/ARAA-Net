@@ -206,6 +206,14 @@ class ImageFolder(data.Dataset):
             elif img_cv.ndim == 2: # If grayscale, convert to RGB
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
                 print(f"This is color gray2rgb")
+            # --- PRINT CHANNEL VALUES ---
+            print(f"Image path: {img_path}")
+            print(f"Image shape: {img_cv.shape}")  # (H, W, C)
+
+            print(f"First pixel RGB values: {img_cv[0, 0]}")  # Example pixel [R, G, B]
+            print(f"Channel means (approx): R={img_cv[:,:,0].mean():.2f}, G={img_cv[:,:,1].mean():.2f}, B={img_cv[:,:,2].mean():.2f}")
+            print("-------------------------------------------------------")
+
 
             img = Image.fromarray(img_cv) # Convert to PIL Image
 
