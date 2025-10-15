@@ -1,4 +1,4 @@
-# datasets.py (Final Version Adhering to All Constraints)
+# datasets.py
 
 import os
 import torch
@@ -17,6 +17,7 @@ IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
 MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
 
 def make_dataset(root, dataset_name):
+    # ... (Your existing make_dataset function remains the same) ...
     dataset_items = []
 
     if 'TSRS_RSNA' in dataset_name:
@@ -132,12 +133,16 @@ class ImageFolder(data.Dataset):
         if not self.imgs:
             print(f"Warning: No images found for dataset '{self.dataset_name}', split '{self.split}' at root '{self.root}'.")
             self.imgs = [] 
+        
+        # Define mean and std based on dataset, defaulting to ImageNet
+        # You can expand this to be more dataset-specific if needed
         self.mean = (0.485, 0.456, 0.406) # Default ImageNet means
         self.std = (0.229, 0.224, 0.225)  # Default ImageNet stds
 
         if dataset_name in ['JSRT', 'COVID19_Radiography']: 
             self.mean = [0.5]
             self.std = [0.5]
+        # Add more dataset-specific mean/std here if known and different
 
         min_lesion_area = args.min_lesion_area_pixels
         expansion_factor = args.expansion_factor
@@ -153,49 +158,72 @@ class ImageFolder(data.Dataset):
                 tr.CenterAmplification(min_lesion_area_pixels=min_lesion_area,
                                        expansion_factor=expansion_factor,
                                        min_bbox_size=(min_bbox_h, min_bbox_w)) if min_lesion_area > 0 else lambda x: x,
-                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0),                tr.RandomGaussianBlur(radius_range=(0.1, 1.2)),
+                # Re-added HistogramEqualization and WaveletContrastEnhancement (with probability)
+                tr.HistogramEqualization() if np.random.rand() < 0.5 else lambda x: x, # Apply HE with 50% prob
+                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale) if np.random.rand() < 0.2 else lambda x: x, # Apply DWT with 20% prob
+                
+                # Adjusted RandomAffine based on "old" version's more conservative parameters
+                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0),                
+                tr.RandomGaussianBlur(radius_range=(0.1, 1.2)),
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((scale_h, scale_w)),
+
+                # Adjusted ColorJitter parameters to be less aggressive, similar to "old" version
                 tr.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
-                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale) if np.random.rand() < 0.2 else lambda x: x,
-                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=40, max_w_size=40, fill_value=0, p=0.5),                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+
+                # Adjusted RandomCutout parameters for potentially better balance
+                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=40, max_w_size=40, fill_value=0, p=0.5),                
+                
+                # Normalization should use the dataset-specific mean/std defined above
+                tr.Normalize(mean=self.mean, std=self.std), 
                 tr.ToTensor()
             ])
         else:  # Validation/Test
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=scale_w, h=scale_h),
-                tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                # Normalization should use the dataset-specific mean/std defined above
+                tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor()
             ])
 
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]
         try:
+            # Using OpenCV for more robust reading, especially for potentially corrupted files.
             img_cv = cv2.imread(img_path)
             if img_cv is None:
                 raise FileNotFoundError(f"OpenCV could not read image: {img_path}. File might be corrupted or path incorrect.")
 
+            # Convert to RGB if needed (OpenCV reads as BGR by default)
             if img_cv.ndim == 3 and img_cv.shape[2] == 3:
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-            elif img_cv.ndim == 2:
+            elif img_cv.ndim == 2: # If grayscale, convert to RGB
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
 
-            img = Image.fromarray(img_cv)
+            img = Image.fromarray(img_cv) # Convert to PIL Image
 
+            # Load mask in grayscale
             mask_cv = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
             if mask_cv is None:
                 raise FileNotFoundError(f"OpenCV could not read mask: {gt_path}. File might be corrupted or path incorrect.")
 
-            target = Image.fromarray(mask_cv, mode='L')
+            target = Image.fromarray(mask_cv, mode='L') # PIL Image in L mode (grayscale)
+            
+            # Your convert_label function creates a binary mask (0 or 1)
             label = self.convert_label(target)
 
         except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError, Exception) as e:
+            # Log the error and return None, so custom_collate_fn can handle it
             print(f"ERROR: Could not open/process image or mask for paths: {img_path}, {gt_path}. Error: {e}. Returning None for this sample.")
             return None
 
-        sample = {'image': img, 'label': label}
+        # Prepare sample for transforms
+        sample = {'image': img, 'label': label} # label is now a PIL Image object in mode 'P' after convert_label
+        
+        # Apply the composed transformations
         transformed_sample = self.composed_transforms(sample)
 
+        # Add filename for debugging/logging if not training
         if self.split != 'train':
             transformed_sample['name'] = os.path.basename(img_path)
 
@@ -203,13 +231,13 @@ class ImageFolder(data.Dataset):
 
     def convert_label(self, label):
         label_np = np.array(label, dtype=np.uint8)
+        
         if label_np.ndim == 3 and label_np.shape[2] == 1:
             label_np = label_np.squeeze(2)
-
         label_index = np.zeros_like(label_np, dtype=np.uint8)
-        label_index[label_np > 0] = 1
+        label_index[label_np > 0] = 1 
 
-        return Image.fromarray(label_index, mode='P')
+        return Image.fromarray(label_index, mode='P') # Use 'P' mode for consistency with common segmentation outputs
 
     def __len__(self):
         return len(self.imgs)
