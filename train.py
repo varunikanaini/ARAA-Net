@@ -276,41 +276,63 @@ def clean_mask(mask, min_area_threshold=100):
             cleaned_mask_np[labels == i] = 1
             
     return torch.from_numpy(cleaned_mask_np).to(mask.device)
-# --- Evaluation Function ---
+
+# In /kaggle/working/ARAA-Net/train.py
+
+# --- REPLACE YOUR ENTIRE evaluate_model FUNCTION WITH THIS ---
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating", fold_num=None):
     net.eval()
-    confmat = ConfusionMatrix(num_classes=args.num_classes) 
+    confmat = ConfusionMatrix(num_classes=args.num_classes)
     loss_recorder = AvgMeter()
     
     log_prefix = f"Fold {fold_num} " if fold_num is not None else ""
 
     with torch.no_grad():
         for data in tqdm(data_loader, desc=f"{log_prefix}{mode}", leave=False):
-            if data is None: 
+            if data is None:
                 logging.warning(f"{log_prefix}Skipping empty {mode} batch due to corrupted/missing samples.")
                 continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            outputs = net(inputs)
-            flipped_inputs = torch.flip(inputs, [3])
-            flipped_outputs_raw = net(flipped_inputs)
-            flipped_outputs = [torch.flip(out, [3]) for out in flipped_outputs_raw]
-            final_pred_avg = (outputs[-1] + flipped_outputs[-1]) / 2.0
+            # --- 1. Get Predictions (with TTA for final mask) ---
+            # Prediction on the original image
+            outputs_original = net(inputs)
             
-            # --- GET PREDICTION and APPLY POST-PROCESSING ---
-            pred_mask = final_pred_avg.argmax(1) # Get the binary mask (B, H, W)
+            # Prediction on the horizontally flipped image
+            flipped_inputs = torch.flip(inputs, dims=[3])
+            outputs_flipped_raw = net(flipped_inputs)
             
-            # Clean each mask in the batch
-            cleaned_preds = [clean_mask(mask, min_area_threshold=150) for mask in pred_mask]
-            final_pred_cleaned = torch.stack(cleaned_preds)
+            # Un-flip the flipped outputs to align with the original
+            outputs_flipped = [torch.flip(out, dims=[3]) for out in outputs_flipped_raw]
 
-            # ... (loss calculation can use the raw outputs) ...
-            total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
+            # --- 2. Calculate Loss (using original outputs for consistency) ---
+            total_loss = 0  # <--- INITIALIZE THE VARIABLE HERE
+            for i, pred_output in enumerate(outputs_original):
+                current_focal_loss = focal_loss_fn(pred_output, labels.long())
+                current_dice_loss = dice_loss_fn(pred_output, labels.long())
+                
+                combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + \
+                                         (args.dice_loss_weight * current_dice_loss)
+                
+                total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
-            # --- UPDATE CONFUSION MATRIX WITH THE CLEANED MASK ---
-            confmat.update(labels.flatten(), final_pred_cleaned.flatten())
+
+            # --- 3. Create Final Mask using Averaged TTA Predictions ---
+            final_pred_original = outputs_original[-1]
+            final_pred_flipped = outputs_flipped[-1]
+            final_pred_averaged = (final_pred_original + final_pred_flipped) / 2.0
             
+            # Get the class indices from the averaged predictions
+            pred_mask_tta = final_pred_averaged.argmax(dim=1)
+
+            # --- 4. Apply Post-Processing (Clean Mask) ---
+            # Clean each mask in the batch
+            cleaned_preds = [clean_mask(mask, min_area_threshold=150) for mask in pred_mask_tta]
+            final_pred_cleaned = torch.stack(cleaned_preds)
+            
+            # --- 5. Update Confusion Matrix with the best possible mask ---
+            confmat.update(labels.flatten(), final_pred_cleaned.flatten())
             
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
@@ -322,8 +344,8 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
     logging.info(f"  FWIoU (Frequency Weighted IoU): {fwiou.item():.4f}")
     logging.info(f"  Dice (Mean Dice Coefficient): {mDice:.4f}")
     
-    if mode == "Validating": 
-        net.train() # Set back to train mode after validation
+    if mode == "Validating":
+        net.train() # Set back to train mode
     return mIoU
 
 
