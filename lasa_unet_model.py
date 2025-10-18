@@ -23,6 +23,7 @@ except ImportError:
     BACKBONE_CHANNELS_INFO = {
         'vgg16': {'e1': 64, 'e2': 128, 'e3': 256, 'e4': 512, 'bottleneck': 512},
         'resnet50': {'e1': 64, 'e2': 256, 'e3': 512, 'e4': 1024, 'bottleneck': 2048},
+        'vgg19': {'e1': 64, 'e2': 128, 'e3': 256, 'e4': 512, 'bottleneck': 512},
         # Add other backbones here if config is not available
     }
 
