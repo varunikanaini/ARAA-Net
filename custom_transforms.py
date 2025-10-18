@@ -5,13 +5,16 @@ from torchvision import transforms
 import pywt
 import random
 from torchvision.transforms import functional as TF
-# Add these imports at the top of custom_transforms.py
-from scipy.ndimage.interpolation import map_coordinates
-from scipy.ndimage.filters import gaussian_filter
+# Add these imports at the top of custom_transforms.py if they aren't there
+from scipy.ndimage import map_coordinates
+from scipy.ndimage import gaussian_filter
 
+# --- REPLACE THE OLD ElasticTransform WITH THIS NEW ONE ---
 class ElasticTransform(object):
     """
     Apply elastic deformation on a PIL image and its corresponding mask.
+    Based on the excellent implementation from:
+    https://github.com/albu/albumentations/blob/master/albumentations/augmentations/geometric/functional.py
     """
     def __init__(self, alpha, sigma, p=0.5):
         self.alpha = alpha
@@ -28,25 +31,30 @@ class ElasticTransform(object):
         img_np = np.array(img)
         label_np = np.array(label)
 
-        shape = img_np.shape
+        # Get the 2D shape of the image
+        shape = img_np.shape[:2]
+
+        # Generate random displacement fields
         dx = gaussian_filter((np.random.rand(*shape) * 2 - 1), self.sigma) * self.alpha
         dy = gaussian_filter((np.random.rand(*shape) * 2 - 1), self.sigma) * self.alpha
+
+        # Create coordinate grid
+        y, x = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing='ij')
+        indices = np.reshape(y + dy, (-1, 1)), np.reshape(x + dx, (-1, 1))
+
+        # Apply transformation to the label (order=0 for nearest neighbor interpolation)
+        transformed_label_np = map_coordinates(label_np, indices, order=0, mode='reflect').reshape(shape)
+
+        # Apply transformation to each channel of the image (order=1 for bilinear interpolation)
+        if len(img_np.shape) == 3 and img_np.shape[2] > 1:
+            channels = [map_coordinates(img_np[..., i], indices, order=1, mode='reflect').reshape(shape) for i in range(img_np.shape[2])]
+            transformed_img_np = np.stack(channels, axis=-1)
+        else: # Handle grayscale images
+            transformed_img_np = map_coordinates(img_np, indices, order=1, mode='reflect').reshape(shape)
         
-        if len(shape) == 3: # For RGB images
-             dz = np.zeros_like(dx)
-             x, y, z = np.meshgrid(np.arange(shape[1]), np.arange(shape[0]), np.arange(shape[2]))
-             indices = np.reshape(y+dy, (-1, 1)), np.reshape(x+dx, (-1, 1)), np.reshape(z+dz, (-1, 1))
-        else: # For Grayscale images
-            x, y = np.meshgrid(np.arange(shape[1]), np.arange(shape[0]))
-            indices = np.reshape(y+dy, (-1, 1)), np.reshape(x+dx, (-1, 1))
-
-        # Apply transform to image and label
-        img_np = map_coordinates(img_np, indices, order=1, mode='reflect').reshape(shape)
-        label_np = map_coordinates(label_np, indices, order=0, mode='constant').reshape(shape[:2]) # Use order=0 for masks
-
         # Convert back to PIL
-        img = Image.fromarray(img_np.astype(np.uint8))
-        label = Image.fromarray(label_np.astype(np.uint8))
+        img = Image.fromarray(transformed_img_np.astype(np.uint8))
+        label = Image.fromarray(transformed_label_np.astype(np.uint8))
         
         return {'image': img, 'label': label}
 

@@ -165,51 +165,47 @@ class ImageFolder(data.Dataset):
             ])
 
     def __getitem__(self, index):
-        if not self.imgs:
-            print(f"Error: Attempted to access index {index} but dataset is empty.")
-            return None
-            
         img_path, gt_path = self.imgs[index]
-        
         try:
-            img = Image.open(img_path).convert('RGB')
-            mask_raw = Image.open(gt_path)
-            
-            # --- THIS IS THE CRITICAL FIX ---
-            # Convert the raw mask to a clean, binary label (0s and 1s)
-            label = self.convert_label(mask_raw)
-            # -----------------------------
+            img_cv = cv2.imread(img_path)
+            if img_cv is None:
+                raise FileNotFoundError(f"OpenCV could not read image: {img_path}. File might be corrupted or path incorrect.")
 
-            sample = {'image': img, 'label': label}
-            transformed_sample = self.composed_transforms(sample)
-            
-            if self.split != 'train':
-                transformed_sample['name'] = os.path.basename(img_path)
-            
-            return transformed_sample
+            if img_cv.ndim == 3 and img_cv.shape[2] == 3:
+                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+            elif img_cv.ndim == 2:
+                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
 
-        except (UnidentifiedImageError, FileNotFoundError, ValueError) as e:
-            print(f"ERROR: Could not open/process image or mask for sample at index {index} ('{img_path}', '{gt_path}'). Error: {e}. Returning None.")
+            img = Image.fromarray(img_cv)
+
+            mask_cv = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
+            if mask_cv is None:
+                raise FileNotFoundError(f"OpenCV could not read mask: {gt_path}. File might be corrupted or path incorrect.")
+
+            target = Image.fromarray(mask_cv, mode='L')
+            label = self.convert_label(target)
+
+        except (UnidentifiedImageError, FileNotFoundError, cv2.error, ValueError, Exception) as e:
+            print(f"ERROR: Could not open/process image or mask for paths: {img_path}, {gt_path}. Error: {e}. Returning None for this sample.")
             return None
-        except Exception as e:
-            print(f"UNEXPECTED ERROR processing sample {index} ('{img_path}'): {e}. Returning None.")
-            return None
 
-    # --- THIS IS THE REQUIRED HELPER METHOD ---
+        sample = {'image': img, 'label': label}
+        transformed_sample = self.composed_transforms(sample)
+
+        if self.split != 'train':
+            transformed_sample['name'] = os.path.basename(img_path)
+
+        return transformed_sample
+
     def convert_label(self, label):
         label_np = np.array(label, dtype=np.uint8)
-        # Handle cases where mask might have an extra channel dimension
         if label_np.ndim == 3 and label_np.shape[2] == 1:
             label_np = label_np.squeeze(2)
 
-        # Create a new array and binarize: pixels > 0 become 1, others remain 0
         label_index = np.zeros_like(label_np, dtype=np.uint8)
         label_index[label_np > 0] = 1
 
-        # Return as a PIL Image, ready for the transform pipeline
         return Image.fromarray(label_index, mode='P')
-    # ---------------------------------------------
 
     def __len__(self):
         return len(self.imgs)
-
