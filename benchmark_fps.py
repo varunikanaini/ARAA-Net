@@ -17,7 +17,7 @@ if project_path not in sys.path:
 from lasa_unet_model import LASA_Unet 
 from misc import check_mkdir
 # FIXED: Import CKPT_ROOT, DEFAULT_ARGS, BACKBONE_CHANNELS from config
-from config import CKPT_ROOT, DEFAULT_ARGS, BACKBONE_CHANNELS, get_backbone_resolution  # Added get_backbone_resolution
+from config import CKPT_ROOT, DEFAULT_ARGS, BACKBONE_CHANNELS 
 
 # --- Logging Setup ---
 def setup_logging_benchmark(log_dir, filename='benchmark_results.log'):
@@ -90,7 +90,7 @@ def main():
     if args.input_h is None or args.input_w is None:
         try:
             # Get default input resolution from config for the selected backbone
-            input_h, input_w = get_backbone_resolution(args.backbone)
+            input_h, input_w = config.get_backbone_resolution(args.backbone)
             args.input_h = input_h
             args.input_w = input_w
             logging.info(f"Using default input resolution for backbone '{args.backbone}': {args.input_h}x{args.input_w}")
