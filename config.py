@@ -98,22 +98,26 @@ BACKBONE_CHANNELS = {
 # --- Default Training Parameters ---
 DEFAULT_ARGS = {
     'dataset_name': 'TSRS_RSNA-Epiphysis',
-    'num_workers': 4, # Kaggle-optimized
-    'backbone': 'vgg19',  # Default to VGG19 for your setup
+    'num_workers': 2, # Reduced workers for Kaggle environments
+    'backbone': 'vgg16',
     'lasa_kernels': [1, 3, 5, 7],
 
-    'epochs': 150,  # As requested
-    'batch_size': 8,  # Safer for stability
+    'epochs': 50,
+    'batch_size': 4,
     'lr': 0.0005,
     'weight_decay': 0.0001,
-    'patience': 15,  # As requested
+    'patience': 15,
+
+    # Defaults for scaling/resolution will be backbone-dependent
+    # 'scale_h': 224, 
+    # 'scale_w': 224,
 
     'deep_supervision_weights': [0.2, 0.4, 0.6, 0.8, 1.0],
 
-    'focal_alpha': 0.25,
-    'focal_gamma': 2.5,  # Slight increase for harder examples
-    'focal_loss_weight': 0.5,  # Balanced
-    'dice_loss_weight': 1.5,
+    'focal_alpha': 0.5,
+    'focal_gamma': 2.0,
+    'focal_loss_weight': 1.0,
+    'dice_loss_weight': 1.0,
 
     'min_lesion_area_pixels': 576,
     'expansion_factor': 1.5,
@@ -122,7 +126,7 @@ DEFAULT_ARGS = {
     'wavelet_type': 'haar',
     'wavelet_level': 1,
     'wavelet_detail_scale': 1.5,
-    'scheduler_type': 'CosineAnnealingWarmRestarts',  # Cyclic for momentum
+    'scheduler_type': 'CosineAnnealingWarmRestarts',
 
     'scheduler_patience': 5,
     'scheduler_factor': 0.5,
@@ -133,7 +137,7 @@ DEFAULT_ARGS = {
     'test_only': False,
     'resume': False,
     
-    'fine_tune_epochs': 25,  # Balanced Phase 1
+    'fine_tune_epochs': 0, # Default to no fine-tuning, will be controlled by CLI arg
 }
 
 def get_dataset_info(dataset_name):
@@ -145,4 +149,4 @@ def get_backbone_resolution(backbone_name):
     if backbone_name not in BACKBONE_INPUT_RESOLUTIONS:
         print(f"Warning: Resolution for backbone '{backbone_name}' not found in BACKBONE_INPUT_RESOLUTIONS. Using default 224x224.")
         return (224, 224) 
-    return BACKBONE_INPUT_RESOLUTIONS[backbone_name]
+    return BACKBONE_INPUT_RESOLUTIONS[backbone_name] 

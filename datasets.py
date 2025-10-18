@@ -13,7 +13,6 @@ import cv2 # Using OpenCV for more robust image reading
 import custom_transforms as tr # Import your custom transforms module
 import config
 
-
 # --- IMPORT IMAGE_EXTENSIONS and MASK_EXTENSIONS ---
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
 MASK_EXTENSIONS = ('.png', '.tif', '.tiff', '.bmp')
@@ -120,50 +119,46 @@ def make_dataset(root, dataset_name):
     return dataset_items
 
 
-class ImageFolder(Dataset):
+class ImageFolder(data.Dataset):
     def __init__(self, root, dataset_name, args, split='train', kfold_mode=False):
         self.root = root
         self.dataset_name = dataset_name
         self.split = split
         self.args = args
-        self.kfold_mode = kfold_mode # Flag for K-Fold usage
+        self.kfold_mode = kfold_mode
 
-        # Use make_dataset to get image-mask pairs
         self.imgs = make_dataset(self.root, self.dataset_name) 
         
         if not self.imgs:
             print(f"Warning: No images found for dataset '{self.dataset_name}', split '{self.split}' at root '{self.root}'.")
-            self.imgs = [] 
-        self.mean = (0.485, 0.456, 0.406) # Default ImageNet means
-        self.std = (0.229, 0.224, 0.225)  # Default ImageNet stds
+            self.imgs = []
+        
+        self.mean = (0.485, 0.456, 0.406)
+        self.std = (0.229, 0.224, 0.225)
 
         if dataset_name in ['JSRT', 'COVID19_Radiography']: 
             self.mean = [0.5]
             self.std = [0.5]
 
+        # Your transforms compositions remain the same
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                tr.CLAHE(clip_limit=1.0, tile_grid_size=(8,8)),  # Softened
                 tr.CenterAmplification(min_lesion_area_pixels=args.min_lesion_area_pixels,
                                        expansion_factor=args.expansion_factor,
                                        min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
-                tr.HistogramEqualization(),  # Enabled
-                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),  # Enabled
                 tr.RandomHorizontalFlip(),
-                tr.RandomRotation(degrees=10),
                 tr.RandomCrop((args.scale_h, args.scale_w)), 
                 tr.RandomGaussianBlur(),
                 tr.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) if hasattr(tr, 'ColorJitter') else lambda x: x,
-                tr.RandomAffine(degrees=10, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
-                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.4) if hasattr(tr, 'RandomCutout') else lambda x: x, 
+                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
+                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x, 
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor() 
             ])
-        else:  # Validation/Test
+        else:
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                tr.CLAHE(clip_limit=1.0, tile_grid_size=(8,8)),  # Softened for val/test
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor()
             ])
@@ -171,49 +166,49 @@ class ImageFolder(Dataset):
     def __getitem__(self, index):
         if not self.imgs:
             print(f"Error: Attempted to access index {index} but dataset is empty.")
-            return None 
+            return None
             
         img_path, gt_path = self.imgs[index]
         
         try:
-            # Load Image using PIL
             img = Image.open(img_path).convert('RGB')
+            mask_raw = Image.open(gt_path)
             
-            # Load Mask using PIL
-            mask = Image.open(gt_path)
-            if mask.mode != 'L':
-                mask = mask.convert('L')
-            
-            # Binarize the label
-            label = self.convert_label(mask)
-            
-            # Apply transformations
-            sample = {'image': img, 'label': label} 
+            # --- THIS IS THE CRITICAL FIX ---
+            # Convert the raw mask to a clean, binary label (0s and 1s)
+            label = self.convert_label(mask_raw)
+            # -----------------------------
+
+            sample = {'image': img, 'label': label}
             transformed_sample = self.composed_transforms(sample)
             
-            # Add filename for potential debugging or logging
             if self.split != 'train':
                 transformed_sample['name'] = os.path.basename(img_path)
             
             return transformed_sample
 
         except (UnidentifiedImageError, FileNotFoundError, ValueError) as e:
-            print(f"ERROR: Could not open/process image or mask for sample at index {index} ('{img_path}', '{gt_path}'). Error: {e}. Returning None for this sample.")
-            return None 
-        except Exception as e: 
+            print(f"ERROR: Could not open/process image or mask for sample at index {index} ('{img_path}', '{gt_path}'). Error: {e}. Returning None.")
+            return None
+        except Exception as e:
             print(f"UNEXPECTED ERROR processing sample {index} ('{img_path}'): {e}. Returning None.")
             return None
 
+    # --- THIS IS THE REQUIRED HELPER METHOD ---
     def convert_label(self, label):
         label_np = np.array(label, dtype=np.uint8)
+        # Handle cases where mask might have an extra channel dimension
         if label_np.ndim == 3 and label_np.shape[2] == 1:
             label_np = label_np.squeeze(2)
-        
-        # Binarize: 0 everywhere, 1 where >0
+
+        # Create a new array and binarize: pixels > 0 become 1, others remain 0
         label_index = np.zeros_like(label_np, dtype=np.uint8)
         label_index[label_np > 0] = 1
-        
-        return Image.fromarray(label_index, mode='P')  # Palette mode for segmentation
+
+        # Return as a PIL Image, ready for the transform pipeline
+        return Image.fromarray(label_index, mode='P')
+    # ---------------------------------------------
 
     def __len__(self):
         return len(self.imgs)
+
