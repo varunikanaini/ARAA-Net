@@ -96,7 +96,13 @@ BACKBONE_CHANNELS = {
     'efficientnet_b0': {'e1': 24, 'e2': 40, 'e3': 80, 'e4': 112, 'bottleneck': 320},
     'efficientnet_b3': {'e1': 32, 'e2': 48, 'e3': 136, 'e4': 232, 'bottleneck': 384},
     # --- ADD THIS NEW ENTRY ---
-    'efficientnet_b4': {'e1': 32, 'e2': 56, 'e3': 160, 'e4': 272, 'bottleneck': 448},
+    'efficientnet_b4': {
+        'e1': 32,   # Output of features[1]
+        'e2': 56,   # Output of features[2]
+        'e3': 112,  # Output of features[3]
+        'e4': 160,  # Output of features[4]
+        'bottleneck': 1792 # Output of the final layer (features[7])
+    },
     # --------------------------
 }
 

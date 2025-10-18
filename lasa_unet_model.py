@@ -135,13 +135,13 @@ class LASA_Unet(nn.Module):
             
             features = effnet.features
             
-            # Correctly slicing the model for U-Net architecture
-            encoder1 = nn.Sequential(features[0], features[1]) # Outputs 32 channels for B4
-            encoder2 = nn.Sequential(features[2])              # Outputs 56 channels for B4
-            encoder3 = nn.Sequential(features[3], features[4]) # Outputs 160 channels for B4
-            encoder4 = nn.Sequential(features[5], features[6]) # Outputs 272 channels for B4
-            bottleneck_layer = nn.Sequential(features[7])       # Outputs 448 channels for B4
-            
+            # Definitive slicing for a 4-stage encoder + bottleneck U-Net
+            encoder1 = nn.Sequential(features[0], features[1])
+            encoder2 = features[2]
+            encoder3 = features[3]
+            encoder4 = features[4]
+            bottleneck_layer = nn.Sequential(*features[5:]) # All remaining layers form the bottleneck
+
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
         # --------------------------------------------------------
         
