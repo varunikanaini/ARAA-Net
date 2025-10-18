@@ -122,21 +122,25 @@ class LASA_Unet(nn.Module):
             bottleneck_layer = nn.Sequential(*list(inception.children())[7:]) # From Mixed_6 onwards, adapt to remove final classifiers
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer # Placeholder
 
-        elif backbone_name in ['efficientnet_b0', 'efficientnet_b3']:
+        elif backbone_name in ['efficientnet_b0', 'efficientnet_b3', 'efficientnet_b4']:
             if backbone_name == 'efficientnet_b0':
                 weights = models.EfficientNet_B0_Weights.DEFAULT
                 effnet = models.efficientnet_b0(weights=weights)
             elif backbone_name == 'efficientnet_b3':
                 weights = models.EfficientNet_B3_Weights.DEFAULT
                 effnet = models.efficientnet_b3(weights=weights)
+            # --- ADD THE NEW B4 OPTION ---
+            elif backbone_name == 'efficientnet_b4':
+                weights = models.EfficientNet_B4_Weights.DEFAULT
+                effnet = models.efficientnet_b4(weights=weights)
             
-            # Extracting features at common stages for U-Net style skip connections
-            # The `features` attribute is a Sequential module that needs careful slicing.
-            encoder1 = nn.Sequential(effnet.features[0], effnet.features[1]) # Stem + Block1
-            encoder2 = nn.Sequential(effnet.features[2]) # Block2
-            encoder3 = nn.Sequential(*list(effnet.features.children())[3:5]) # Block3, Block4
-            encoder4 = nn.Sequential(*list(effnet.features.children())[5:7]) # Block5, Block6
-            bottleneck_layer = nn.Sequential(*list(effnet.features.children())[7:]) # Block7 + Classifier (we use block7 part)
+            # Extracting features at standard U-Net stages
+            features = effnet.features
+            encoder1 = nn.Sequential(features[0], features[1]) # Stage 2
+            encoder2 = nn.Sequential(features[2])              # Stage 3
+            encoder3 = nn.Sequential(features[3], features[4]) # Stages 4, 5
+            encoder4 = nn.Sequential(features[5])              # Stage 6
+            bottleneck_layer = nn.Sequential(features[6], features[7]) # Stages 7, 8
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
         
         else:

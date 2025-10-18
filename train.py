@@ -14,6 +14,7 @@ import time
 import datetime
 from sklearn.model_selection import KFold
 import copy
+import cv2
 
 # --- Setup Project Path ---
 project_path = '/kaggle/working/ARAA-Net'
@@ -251,6 +252,30 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
+def clean_mask(mask, min_area_threshold=100):
+    """
+    Removes small, noisy connected components from a binary mask.
+    
+    Args:
+        mask (torch.Tensor): A binary mask tensor of shape (H, W).
+        min_area_threshold (int): The minimum number of pixels for a component to be kept.
+        
+    Returns:
+        torch.Tensor: The cleaned binary mask.
+    """
+    mask_np = mask.cpu().numpy().astype(np.uint8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_np, connectivity=8)
+    
+    # Create a new mask to store the cleaned result
+    cleaned_mask_np = np.zeros_like(mask_np)
+    
+    # Iterate through components, keeping the ones larger than the threshold
+    # Note: component 0 is always the background, so we start from 1
+    for i in range(1, num_labels):
+        if stats[i, cv2.CC_STAT_AREA] >= min_area_threshold:
+            cleaned_mask_np[labels == i] = 1
+            
+    return torch.from_numpy(cleaned_mask_np).to(mask.device)
 # --- Evaluation Function ---
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating", fold_num=None):
     net.eval()
@@ -266,33 +291,26 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
                 continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            outputs = net(inputs) 
+            outputs = net(inputs)
             flipped_inputs = torch.flip(inputs, [3])
             flipped_outputs_raw = net(flipped_inputs)
-
-            # 3. De-augment (flip back) the predictions
-            # We need to do this for each of the 5 outputs from the model
             flipped_outputs = [torch.flip(out, [3]) for out in flipped_outputs_raw]
+            final_pred_avg = (outputs[-1] + flipped_outputs[-1]) / 2.0
             
-            # 4. Average the predictions
-            # The final output is the last one in the list
-            final_pred_original = outputs[-1]
-            final_pred_flipped = flipped_outputs[-1]
-            final_pred = (final_pred_original + final_pred_flipped) / 2.0
-            # final_pred = outputs[-1]
+            # --- GET PREDICTION and APPLY POST-PROCESSING ---
+            pred_mask = final_pred_avg.argmax(1) # Get the binary mask (B, H, W)
             
-            total_loss = 0
-            for i, pred_output in enumerate(outputs):
-                current_focal_loss = focal_loss_fn(pred_output, labels.long())
-                current_dice_loss = dice_loss_fn(pred_output, labels.long())
-                
-                combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + \
-                                         (args.dice_loss_weight * current_dice_loss)
-                
-                total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
+            # Clean each mask in the batch
+            cleaned_preds = [clean_mask(mask, min_area_threshold=150) for mask in pred_mask]
+            final_pred_cleaned = torch.stack(cleaned_preds)
+
+            # ... (loss calculation can use the raw outputs) ...
+            total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
-            confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
+            # --- UPDATE CONFUSION MATRIX WITH THE CLEANED MASK ---
+            confmat.update(labels.flatten(), final_pred_cleaned.flatten())
+            
             
     global_acc, class_acc, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
