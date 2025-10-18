@@ -27,7 +27,7 @@ from datasets import ImageFolder, make_dataset, IMAGE_EXTENSIONS, MASK_EXTENSION
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- Loss Functions (same as before) ---
+# --- Loss Functions ---
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -88,11 +88,10 @@ class DiceLoss(nn.Module):
         elif self.reduction == 'sum': return loss * inputs.shape[0] 
         else: return loss 
 
-# --- Backbone Freezing/Unfreezing Helper Functions (same as before) ---
 def freeze_backbone(model, backbone_name):
     """Freezes parameters of the backbone encoder."""
     frozen_layers = []
-    if backbone_name == 'vgg16' or backbone_name == 'vgg19': # Include VGG19
+    if backbone_name == 'vgg16' or backbone_name == 'vgg19':
         frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     elif backbone_name == 'resnet50':
         frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
@@ -104,32 +103,45 @@ def freeze_backbone(model, backbone_name):
         logging.warning(f"Backbone '{backbone_name}' not recognized for freezing. No layers frozen.")
         return
 
+    frozen_count = 0
     for layer_name in frozen_layers:
         if hasattr(model, layer_name):
             for param in getattr(model, layer_name).parameters():
-                param.requires_grad = False
-    logging.info(f"Backbone '{backbone_name}' frozen for Phase 1 training.")
+                if param.requires_grad:
+                    param.requires_grad = False
+                    frozen_count += 1
+        else:
+            logging.warning(f"Layer '{layer_name}' not found in model for freezing.")
+    
+    logging.info(f"Backbone '{backbone_name}' frozen for Phase 1 training. {frozen_count} parameters frozen.")
+
 
 def unfreeze_backbone(model, backbone_name):
     """Unfreezes parameters of the backbone encoder."""
     unfrozen_layers = []
-    if backbone_name == 'vgg16' or backbone_name == 'vgg19': # Include VGG19
+    if backbone_name == 'vgg16' or backbone_name == 'vgg19':
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     elif backbone_name == 'resnet50':
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     elif backbone_name == 'inception_v3':
-        unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']  # Fixed: Plain list, no dict syntax
+        unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     elif backbone_name.startswith('efficientnet'):
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     else:
         logging.warning(f"Backbone '{backbone_name}' not recognized for unfreezing. No layers unfrozen.")
         return
 
+    unfrozen_count = 0
     for layer_name in unfrozen_layers:
         if hasattr(model, layer_name):
             for param in getattr(model, layer_name).parameters():
-                param.requires_grad = True
-    logging.info(f"Backbone '{backbone_name}' unfrozen for Phase 2 training.")
+                if not param.requires_grad:
+                    param.requires_grad = True
+                    unfrozen_count += 1
+        else:
+            logging.warning(f"Layer '{layer_name}' not found in model for unfreezing.")
+    
+    logging.info(f"Backbone '{backbone_name}' unfrozen for Phase 2 training. {unfrozen_count} parameters unfrozen.")
 
 # --- Argument Parsing ---
 def get_args():
@@ -194,6 +206,7 @@ def get_args():
     # --- Control Flow ---
     parser.add_argument('--test_only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
     parser.add_argument('--resume', action='store_true', help='Resume training from the latest checkpoint.')
+    parser.add_argument('--use_tta', action='store_true', default=True, help='Use TTA during testing.')
 
     # --- Fine-tuning Control ---
     parser.add_argument('--fine_tune_epochs', type=int, default=config.DEFAULT_ARGS['fine_tune_epochs'], 
@@ -211,7 +224,7 @@ def get_args():
     
     # --- Post-parsing validation and adjustments ---
     if len(args.deep_supervision_weights) != 5:
-        parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
+        parser.error(f"deep-supervision_weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     # Get dataset specific config and update args
     try:
@@ -235,9 +248,9 @@ def get_args():
 
     # --- Dynamically set scale_h and scale_w based on the selected backbone ---
     backbone_h, backbone_w = config.get_backbone_resolution(args.backbone)
-    args.scale_h = 256  # Override for finer details
-    args.scale_w = 256
-    logging.info(f"Overriding input resolution to {args.scale_h}x{args.scale_w} for better detail.")
+    args.scale_h = backbone_h
+    args.scale_w = backbone_w
+    logging.info(f"Set input resolution to {args.scale_h}x{args.scale_w} based on backbone '{args.backbone}'.")
 
     return args
 
@@ -281,14 +294,16 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
                 continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            if mode == "Testing":
+            if args.use_tta and mode == "Testing":
                 final_pred = tta_predict(net, inputs)  # Use TTA for test only
             else:
                 outputs = net(inputs) 
                 final_pred = outputs[-1]
             
+            # Loss computation (use outputs for deep sup, but final for confmat)
+            outputs = outputs if not (args.use_tta and mode == "Testing") else [final_pred] * 5  # Dummy for loss if TTA
             total_loss = 0
-            for i, pred_output in enumerate(outputs if mode != "Testing" else [final_pred]):
+            for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
                 current_dice_loss = dice_loss_fn(pred_output, labels.long())
                 
@@ -385,7 +400,6 @@ def main():
     else:
         logging.warning(f"Test split not found at '{test_data_path}'. Test-only mode will fall back to validation set if available.")
 
-
     # --- Test-Only Mode ---
     if args.test_only:
         logging.info("Running in TEST ONLY mode.")
@@ -420,7 +434,8 @@ def main():
             logging.error(f"Error loading model from checkpoint {checkpoint_path_to_load}: {e}. Exiting.")
             sys.exit(1)
 
-        logging.info("Using Test-Time Augmentation (TTA) for inference.")
+        if args.use_tta:
+            logging.info("Using Test-Time Augmentation (TTA) for inference.")
 
         # --- Determine Test Data Loader ---
         test_loader = None
@@ -526,9 +541,9 @@ def main():
                 # --- Phase Transition ---
                 if args.fine_tune_epochs > 0 and epoch == args.fine_tune_epochs:
                     logging.info(f"Fold {fold_num}: Transitioning to Phase 2: Unfreezing backbone at Epoch {epoch}")
-                    unfreeze_backbone(net, args.backbone)
+                    unfrozen_backbone(net, args.backbone)
                     
-                    new_lr = 1e-5 
+                    new_lr = 5e-6 
                     logging.info(f"Fold {fold_num}: Adjusting LR for Phase 2 to: {new_lr:.6f}")
                     optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
                     
@@ -626,7 +641,7 @@ def main():
          logging.error("No training dataset available for standard training. Exiting.")
          sys.exit(1)
 
-    logging.info("Starting standard training (K-Fold not enabled).")
+    logging.info("Starting standard training (K-Fold not enabled.")
     
     # Setup logging for the main experiment path
     setup_logging(base_exp_path, filename='training.log') 
@@ -700,7 +715,7 @@ def main():
             logging.info(f"--- Transitioning to Phase 2: Unfreezing backbone at Epoch {epoch} ---")
             unfreeze_backbone(net, args.backbone)
             
-            new_lr = 1e-5 
+            new_lr = 5e-6 
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             

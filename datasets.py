@@ -119,6 +119,7 @@ def make_dataset(root, dataset_name):
         
     return dataset_items
 
+
 class ImageFolder(Dataset):
     def __init__(self, root, dataset_name, args, split='train', kfold_mode=False):
         self.root = root
@@ -143,26 +144,26 @@ class ImageFolder(Dataset):
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                tr.CLAHE(clip_limit=2.0, tile_grid_size=(8,8)),  # New: Contrast boost
+                tr.CLAHE(clip_limit=1.0, tile_grid_size=(8,8)),  # Softened
                 tr.CenterAmplification(min_lesion_area_pixels=args.min_lesion_area_pixels,
                                        expansion_factor=args.expansion_factor,
                                        min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
-                tr.HistogramEqualization(),  # Uncommented: Extra contrast
-                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),  # Uncommented
+                tr.HistogramEqualization(),  # Enabled
+                tr.WaveletContrastEnhancement(wavelet=args.wavelet_type, level=args.wavelet_level, detail_scale_factor=args.wavelet_detail_scale),  # Enabled
                 tr.RandomHorizontalFlip(),
-                tr.RandomRotation(degrees=10),  # New: Rotation aug
+                tr.RandomRotation(degrees=10),
                 tr.RandomCrop((args.scale_h, args.scale_w)), 
                 tr.RandomGaussianBlur(),
                 tr.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) if hasattr(tr, 'ColorJitter') else lambda x: x,
                 tr.RandomAffine(degrees=10, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
-                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x, 
+                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.4) if hasattr(tr, 'RandomCutout') else lambda x: x, 
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor() 
             ])
         else:  # Validation/Test
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                tr.CLAHE(clip_limit=2.0, tile_grid_size=(8,8)),  # Add for val/test too
+                tr.CLAHE(clip_limit=1.0, tile_grid_size=(8,8)),  # Softened for val/test
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor()
             ])
@@ -175,13 +176,11 @@ class ImageFolder(Dataset):
         img_path, gt_path = self.imgs[index]
         
         try:
-            # Load Image using PIL (as custom_transforms expect PIL)
-            img = Image.open(img_path).convert('RGB') # Always convert to RGB
+            # Load Image using PIL
+            img = Image.open(img_path).convert('RGB')
             
             # Load Mask using PIL
             mask = Image.open(gt_path)
-            
-            # Ensure mask is in 'L' mode (grayscale) for segmentation tasks
             if mask.mode != 'L':
                 mask = mask.convert('L')
             
@@ -189,7 +188,7 @@ class ImageFolder(Dataset):
             label = self.convert_label(mask)
             
             # Apply transformations
-            sample = {'image': img, 'label': label} # Label is PIL Image for transforms
+            sample = {'image': img, 'label': label} 
             transformed_sample = self.composed_transforms(sample)
             
             # Add filename for potential debugging or logging
@@ -201,7 +200,7 @@ class ImageFolder(Dataset):
         except (UnidentifiedImageError, FileNotFoundError, ValueError) as e:
             print(f"ERROR: Could not open/process image or mask for sample at index {index} ('{img_path}', '{gt_path}'). Error: {e}. Returning None for this sample.")
             return None 
-        except Exception as e: # Catch any other unexpected errors during loading/transform
+        except Exception as e: 
             print(f"UNEXPECTED ERROR processing sample {index} ('{img_path}'): {e}. Returning None.")
             return None
 
