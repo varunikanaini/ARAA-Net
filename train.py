@@ -267,7 +267,19 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
             outputs = net(inputs) 
-            final_pred = outputs[-1]
+            flipped_inputs = torch.flip(inputs, [3])
+            flipped_outputs_raw = net(flipped_inputs)
+
+            # 3. De-augment (flip back) the predictions
+            # We need to do this for each of the 5 outputs from the model
+            flipped_outputs = [torch.flip(out, [3]) for out in flipped_outputs_raw]
+            
+            # 4. Average the predictions
+            # The final output is the last one in the list
+            final_pred_original = outputs[-1]
+            final_pred_flipped = flipped_outputs[-1]
+            final_pred = (final_pred_original + final_pred_flipped) / 2.0
+            # final_pred = outputs[-1]
             
             total_loss = 0
             for i, pred_output in enumerate(outputs):
