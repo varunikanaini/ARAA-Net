@@ -5,6 +5,50 @@ from torchvision import transforms
 import pywt
 import random
 from torchvision.transforms import functional as TF
+# Add these imports at the top of custom_transforms.py
+from scipy.ndimage.interpolation import map_coordinates
+from scipy.ndimage.filters import gaussian_filter
+
+class ElasticTransform(object):
+    """
+    Apply elastic deformation on a PIL image and its corresponding mask.
+    """
+    def __init__(self, alpha, sigma, p=0.5):
+        self.alpha = alpha
+        self.sigma = sigma
+        self.p = p
+
+    def __call__(self, sample):
+        if np.random.rand() > self.p:
+            return sample
+
+        img, label = sample['image'], sample['label']
+        
+        # Convert PIL to numpy
+        img_np = np.array(img)
+        label_np = np.array(label)
+
+        shape = img_np.shape
+        dx = gaussian_filter((np.random.rand(*shape) * 2 - 1), self.sigma) * self.alpha
+        dy = gaussian_filter((np.random.rand(*shape) * 2 - 1), self.sigma) * self.alpha
+        
+        if len(shape) == 3: # For RGB images
+             dz = np.zeros_like(dx)
+             x, y, z = np.meshgrid(np.arange(shape[1]), np.arange(shape[0]), np.arange(shape[2]))
+             indices = np.reshape(y+dy, (-1, 1)), np.reshape(x+dx, (-1, 1)), np.reshape(z+dz, (-1, 1))
+        else: # For Grayscale images
+            x, y = np.meshgrid(np.arange(shape[1]), np.arange(shape[0]))
+            indices = np.reshape(y+dy, (-1, 1)), np.reshape(x+dx, (-1, 1))
+
+        # Apply transform to image and label
+        img_np = map_coordinates(img_np, indices, order=1, mode='reflect').reshape(shape)
+        label_np = map_coordinates(label_np, indices, order=0, mode='constant').reshape(shape[:2]) # Use order=0 for masks
+
+        # Convert back to PIL
+        img = Image.fromarray(img_np.astype(np.uint8))
+        label = Image.fromarray(label_np.astype(np.uint8))
+        
+        return {'image': img, 'label': label}
 
 class RandomHorizontalFlip(object):
     def __call__(self, sample):

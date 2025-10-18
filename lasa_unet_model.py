@@ -4,7 +4,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
 from lasa import LASA # Imports the user's original LASA module
-
+from cbam import CBAM
 # --- New imports for backbones ---
 # Import specific weights for newer torchvision versions if needed,
 # but generally models.MODEL_NAME_Weights.DEFAULT works.
@@ -191,13 +191,14 @@ class LASA_Unet(nn.Module):
 
     def _decoder_block(self, in_channels, out_channels):
         return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                CBAM(out_channels)  # <-- ADD THIS LINE
+    )
 
     def forward(self, x):
         input_h, input_w = x.shape[2:] 
