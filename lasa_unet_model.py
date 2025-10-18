@@ -5,6 +5,7 @@ import torchvision.models as models
 import torch.nn.functional as F
 from lasa import LASA # Imports the user's original LASA module
 from cbam import CBAM
+from attention_gate import AttentionGate
 # --- New imports for backbones ---
 # Import specific weights for newer torchvision versions if needed,
 # but generally models.MODEL_NAME_Weights.DEFAULT works.
@@ -78,6 +79,10 @@ class LASA_Unet(nn.Module):
         
         # --- 4. Final Output Convolution ---
         self.final_conv = nn.Conv2d(self.encoder1_channels, num_classes, kernel_size=1)
+        self.Att4 = AttentionGate(F_g=self.bottleneck_channels, F_l=self.encoder4_channels, F_int=self.encoder4_channels // 2)
+        self.Att3 = AttentionGate(F_g=self.encoder4_channels, F_l=self.encoder3_channels, F_int=self.encoder3_channels // 2)
+        self.Att2 = AttentionGate(F_g=self.encoder3_channels, F_l=self.encoder2_channels, F_int=self.encoder2_channels // 2)
+        self.Att1 = AttentionGate(F_g=self.encoder2_channels, F_l=self.encoder1_channels, F_int=self.encoder1_channels // 2)
 
     def _get_backbone_features(self, backbone_name):
         """ Helper to extract encoder features and bottleneck from various backbones. """
@@ -215,42 +220,41 @@ class LASA_Unet(nn.Module):
         # Bottleneck
         bottleneck = self.bottleneck_layer(e4_enhanced) 
 
-        # --- Decoder Path with Skip Connections and Deep Supervision ---
+        # In lasa_unet_model.py, replace the entire "Decoder Path" section in the forward method
+
         aux_outputs = [] 
 
-        # Decoder 4
         d4_interp_size = e4_enhanced.shape[2:] 
-        d4 = F.interpolate(bottleneck, size=d4_interp_size, mode='bilinear', align_corners=True)
-        d4 = torch.cat([d4, e4_enhanced], dim=1) 
+        d4_gating = F.interpolate(bottleneck, size=d4_interp_size, mode='bilinear', align_corners=True)
+        e4_att = self.Att4(g=d4_gating, x=e4_enhanced) # Apply Attention Gate
+        d4 = torch.cat([d4_gating, e4_att], dim=1)      # Concatenate attended features
         d4_out = self.decoder4(d4) 
         aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        
-        # Decoder 3
+
         d3_interp_size = e3.shape[2:]
-        d3 = F.interpolate(d4_out, size=d3_interp_size, mode='bilinear', align_corners=True)
-        d3 = torch.cat([d3, e3], dim=1) 
+        d3_gating = F.interpolate(d4_out, size=d3_interp_size, mode='bilinear', align_corners=True)
+        e3_att = self.Att3(g=d3_gating, x=e3)           # Apply Attention Gate
+        d3 = torch.cat([d3_gating, e3_att], dim=1)      # Concatenate attended features
         d3_out = self.decoder3(d3) 
         aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Decoder 2
         d2_interp_size = e2.shape[2:]
-        d2 = F.interpolate(d3_out, size=d2_interp_size, mode='bilinear', align_corners=True)
-        d2 = torch.cat([d2, e2], dim=1) 
+        d2_gating = F.interpolate(d3_out, size=d2_interp_size, mode='bilinear', align_corners=True)
+        e2_att = self.Att2(g=d2_gating, x=e2)           # Apply Attention Gate
+        d2 = torch.cat([d2_gating, e2_att], dim=1)      # Concatenate attended features
         d2_out = self.decoder2(d2) 
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
 
-        # Decoder 1
         d1_interp_size = e1.shape[2:]
-        d1 = F.interpolate(d2_out, size=d1_interp_size, mode='bilinear', align_corners=True)
-        d1 = torch.cat([d1, e1], dim=1) 
+        d1_gating = F.interpolate(d2_out, size=d1_interp_size, mode='bilinear', align_corners=True)
+        e1_att = self.Att1(g=d1_gating, x=e1)           # Apply Attention Gate
+        d1 = torch.cat([d1_gating, e1_att], dim=1)      # Concatenate attended features
         d1_out = self.decoder1(d1) 
         aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True)) 
-        
-        # Final output
+
         final_output = self.final_conv(d1_out) 
         final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
-        
-        return tuple(aux_outputs + [final_output_upsampled])
 
+        return tuple(aux_outputs + [final_output_upsampled])
 # Helper to create aliases for convenience
 # LASA_VGG_Unet = LASA_Unet # No longer needed as it's generalized
