@@ -102,18 +102,18 @@ DEFAULT_ARGS = {
     'backbone': 'vgg19',  # Default to VGG19 for your setup
     'lasa_kernels': [1, 3, 5, 7],
 
-    'epochs': 150,  # Increased for deeper convergence
-    'batch_size': 16,  # Stable for Kaggle GPU
+    'epochs': 150,  # As requested
+    'batch_size': 8,  # Safer for stability
     'lr': 0.0005,
     'weight_decay': 0.0001,
-    'patience': 25,  # Less aggressive stopping
+    'patience': 15,  # As requested
 
     'deep_supervision_weights': [0.2, 0.4, 0.6, 0.8, 1.0],
 
     'focal_alpha': 0.25,
     'focal_gamma': 2.5,  # Slight increase for harder examples
-    'focal_loss_weight': 0.3,  # Favor Dice for overlap
-    'dice_loss_weight': 0.7,
+    'focal_loss_weight': 0.5,  # Balanced
+    'dice_loss_weight': 1.5,
 
     'min_lesion_area_pixels': 576,
     'expansion_factor': 1.5,
