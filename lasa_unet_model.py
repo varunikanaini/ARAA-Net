@@ -23,7 +23,6 @@ except ImportError:
     BACKBONE_CHANNELS_INFO = {
         'vgg16': {'e1': 64, 'e2': 128, 'e3': 256, 'e4': 512, 'bottleneck': 512},
         'resnet50': {'e1': 64, 'e2': 256, 'e3': 512, 'e4': 1024, 'bottleneck': 2048},
-        'vgg19': {'e1': 64, 'e2': 128, 'e3': 256, 'e4': 512, 'bottleneck': 512},
         # Add other backbones here if config is not available
     }
 
@@ -91,24 +90,14 @@ class LASA_Unet(nn.Module):
             bottleneck_layer = nn.Sequential(*list(vgg_features.children())[33:43])
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
         
-        elif backbone_name == 'vgg19':
+        elif backbone_name == 'vgg19': # Add VGG19 extraction
             vgg_features = models.vgg19_bn(weights=models.VGG19_BN_Weights.DEFAULT).features
-            # Block-based slicing for VGG19 (longer conv blocks in 3-5)
-            encoder1 = nn.Sequential(*list(vgg_features.children())[0:7])   # Conv1_1 to MaxPool1 (out: 64ch)
-            encoder2 = nn.Sequential(*list(vgg_features.children())[7:14])  # Conv2_1 to MaxPool2 (128ch)
-            encoder3 = nn.Sequential(*list(vgg_features.children())[14:27]) # Conv3_1-4 to MaxPool3 (256ch)
-            encoder4 = nn.Sequential(*list(vgg_features.children())[27:40]) # Conv4_1-4 to MaxPool4 (512ch)
-            bottleneck_layer = nn.Sequential(*list(vgg_features.children())[40:])  # Conv5_1-4 (512ch)
+            encoder1 = nn.Sequential(*list(vgg_features.children())[:6])
+            encoder2 = nn.Sequential(*list(vgg_features.children())[6:13])
+            encoder3 = nn.Sequential(*list(vgg_features.children())[13:23])
+            encoder4 = nn.Sequential(*list(vgg_features.children())[23:33])
+            bottleneck_layer = nn.Sequential(*list(vgg_features.children())[33:43]) # Adjust if VGG19 has different final blocks
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
-        
-        # elif backbone_name == 'vgg19': # Add VGG19 extraction
-        #     vgg_features = models.vgg19_bn(weights=models.VGG19_BN_Weights.DEFAULT).features
-        #     encoder1 = nn.Sequential(*list(vgg_features.children())[:6])
-        #     encoder2 = nn.Sequential(*list(vgg_features.children())[6:13])
-        #     encoder3 = nn.Sequential(*list(vgg_features.children())[13:23])
-        #     encoder4 = nn.Sequential(*list(vgg_features.children())[23:33])
-        #     bottleneck_layer = nn.Sequential(*list(vgg_features.children())[33:43]) # Adjust if VGG19 has different final blocks
-        #     return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
 
         elif backbone_name == 'resnet50':
             resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)

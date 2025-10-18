@@ -27,7 +27,7 @@ from datasets import ImageFolder, make_dataset, IMAGE_EXTENSIONS, MASK_EXTENSION
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- Loss Functions ---
+# --- Loss Functions (same as before) ---
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -88,10 +88,11 @@ class DiceLoss(nn.Module):
         elif self.reduction == 'sum': return loss * inputs.shape[0] 
         else: return loss 
 
+# --- Backbone Freezing/Unfreezing Helper Functions (same as before) ---
 def freeze_backbone(model, backbone_name):
     """Freezes parameters of the backbone encoder."""
     frozen_layers = []
-    if backbone_name == 'vgg16' or backbone_name == 'vgg19':
+    if backbone_name == 'vgg16' or backbone_name == 'vgg19': # Include VGG19
         frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     elif backbone_name == 'resnet50':
         frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
@@ -103,23 +104,16 @@ def freeze_backbone(model, backbone_name):
         logging.warning(f"Backbone '{backbone_name}' not recognized for freezing. No layers frozen.")
         return
 
-    frozen_count = 0
     for layer_name in frozen_layers:
         if hasattr(model, layer_name):
             for param in getattr(model, layer_name).parameters():
-                if param.requires_grad:
-                    param.requires_grad = False
-                    frozen_count += 1
-        else:
-            logging.warning(f"Layer '{layer_name}' not found in model for freezing.")
-    
-    logging.info(f"Backbone '{backbone_name}' frozen for Phase 1 training. {frozen_count} parameters frozen.")
-
+                param.requires_grad = False
+    logging.info(f"Backbone '{backbone_name}' frozen for Phase 1 training.")
 
 def unfreeze_backbone(model, backbone_name):
     """Unfreezes parameters of the backbone encoder."""
     unfrozen_layers = []
-    if backbone_name == 'vgg16' or backbone_name == 'vgg19':
+    if backbone_name == 'vgg16' or backbone_name == 'vgg19': # Include VGG19
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     elif backbone_name == 'resnet50':
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
@@ -131,17 +125,11 @@ def unfreeze_backbone(model, backbone_name):
         logging.warning(f"Backbone '{backbone_name}' not recognized for unfreezing. No layers unfrozen.")
         return
 
-    unfrozen_count = 0
     for layer_name in unfrozen_layers:
         if hasattr(model, layer_name):
             for param in getattr(model, layer_name).parameters():
-                if not param.requires_grad:
-                    param.requires_grad = True
-                    unfrozen_count += 1
-        else:
-            logging.warning(f"Layer '{layer_name}' not found in model for unfreezing.")
-    
-    logging.info(f"Backbone '{backbone_name}' unfrozen for Phase 2 training. {unfrozen_count} parameters unfrozen.")
+                param.requires_grad = True
+    logging.info(f"Backbone '{backbone_name}' unfrozen for Phase 2 training.")
 
 # --- Argument Parsing ---
 def get_args():
@@ -149,7 +137,7 @@ def get_args():
     
     # --- Dataset Selection ---
     dataset_choices = list(config.DATASET_CONFIG.keys())
-    parser.add_argument('--dataset_name', type=str, default=config.DEFAULT_ARGS['dataset_name'],
+    parser.add_argument('--dataset-name', type=str, default=config.DEFAULT_ARGS['dataset_name'],
                         choices=dataset_choices, help='Name of the dataset to use')
     parser.add_argument('--split', type=str, default='train',
                         choices=['train', 'val', 'test'], help='Dataset split to load (used if not running k-fold)')
@@ -161,70 +149,69 @@ def get_args():
 
     # --- Training Parameters ---
     parser.add_argument('--epochs', type=int, default=config.DEFAULT_ARGS['epochs'])
-    parser.add_argument('--batch_size', type=int, default=config.DEFAULT_ARGS['batch_size'])
+    parser.add_argument('--batch-size', type=int, default=config.DEFAULT_ARGS['batch_size'])
     parser.add_argument('--lr', type=float, default=config.DEFAULT_ARGS['lr'])
-    parser.add_argument('--weight_decay', type=float, default=config.DEFAULT_ARGS['weight_decay'])
+    parser.add_argument('--weight-decay', type=float, default=config.DEFAULT_ARGS['weight_decay'])
     parser.add_argument('--patience', type=int, default=config.DEFAULT_ARGS['patience'],
                         help='Patience for early stopping based on validation mIoU.')
 
     # --- Image Preprocessing ---
-    parser.add_argument('--scale_h', type=int, help='Height for resizing (adjusted based on backbone)')
-    parser.add_argument('--scale_w', type=int, help='Width for resizing (adjusted based on backbone)')
+    parser.add_argument('--scale-h', type=int, help='Height for resizing (adjusted based on backbone)')
+    parser.add_argument('--scale-w', type=int, help='Width for resizing (adjusted based on backbone)')
     
     # --- LASA Module Arguments ---
-    parser.add_argument('--lasa_kernels', type=int, default=config.DEFAULT_ARGS.get('lasa_kernels'), nargs='+',
+    parser.add_argument('--lasa-kernels', type=int, default=config.DEFAULT_ARGS.get('lasa_kernels'), nargs='+',
                         help='Kernel sizes for LASA module')
 
     # --- Deep Supervision Weights ---
-    parser.add_argument('--deep_supervision_weights', type=float, default=config.DEFAULT_ARGS.get('deep_supervision_weights'), nargs='+',
+    parser.add_argument('--deep-supervision-weights', type=float, default=config.DEFAULT_ARGS.get('deep_supervision_weights'), nargs='+',
                         help='Weights for deep supervision outputs')
 
     # --- Loss Function Parameters ---
-    parser.add_argument('--focal_alpha', type=float, default=config.DEFAULT_ARGS['focal_alpha'], help='Alpha parameter for Focal Loss.')
-    parser.add_argument('--focal_gamma', type=float, default=config.DEFAULT_ARGS['focal_gamma'], help='Gamma parameter for Focal Loss.')
-    parser.add_argument('--focal_loss_weight', type=float, default=config.DEFAULT_ARGS['focal_loss_weight'], help='Weight for Focal Loss component.')
-    parser.add_argument('--dice_loss_weight', type=float, default=config.DEFAULT_ARGS['dice_loss_weight'], help='Weight for Dice Loss component.')
+    parser.add_argument('--focal-alpha', type=float, default=config.DEFAULT_ARGS['focal_alpha'], help='Alpha parameter for Focal Loss.')
+    parser.add_argument('--focal-gamma', type=float, default=config.DEFAULT_ARGS['focal_gamma'], help='Gamma parameter for Focal Loss.')
+    parser.add_argument('--focal-loss-weight', type=float, default=config.DEFAULT_ARGS['focal_loss_weight'], help='Weight for Focal Loss component.')
+    parser.add_argument('--dice-loss-weight', type=float, default=config.DEFAULT_ARGS['dice_loss_weight'], help='Weight for Dice Loss component.')
 
     # --- Data Augmentation Parameters ---
-    parser.add_argument('--min_lesion_area_pixels', type=int, default=config.DEFAULT_ARGS['min_lesion_area_pixels'], help='Min lesion area for CenterAmplification.')
-    parser.add_argument('--expansion_factor', type=float, default=config.DEFAULT_ARGS['expansion_factor'], help='Expansion factor for CenterAmplification.')
-    parser.add_argument('--min_bbox_h', type=int, default=config.DEFAULT_ARGS['min_bbox_h'], help='Min bbox height for CenterAmplification.')
-    parser.add_argument('--min_bbox_w', type=int, default=config.DEFAULT_ARGS['min_bbox_w'], help='Min bbox width for CenterAmplification.')
-    parser.add_argument('--wavelet_type', type=str, default=config.DEFAULT_ARGS['wavelet_type'], help='Wavelet type for DWT contrast enhancement.')
-    parser.add_argument('--wavelet_level', type=int, default=config.DEFAULT_ARGS['wavelet_level'], help='DWT decomposition level.')
-    parser.add_argument('--wavelet_detail_scale', type=float, default=config.DEFAULT_ARGS['wavelet_detail_scale'], help='Scaling factor for DWT detail coefficients.')
+    parser.add_argument('--min-lesion-area-pixels', type=int, default=config.DEFAULT_ARGS['min_lesion_area_pixels'], help='Min lesion area for CenterAmplification.')
+    parser.add_argument('--expansion-factor', type=float, default=config.DEFAULT_ARGS['expansion_factor'], help='Expansion factor for CenterAmplification.')
+    parser.add_argument('--min-bbox-h', type=int, default=config.DEFAULT_ARGS['min_bbox_h'], help='Min bbox height for CenterAmplification.')
+    parser.add_argument('--min-bbox-w', type=int, default=config.DEFAULT_ARGS['min_bbox_w'], help='Min bbox width for CenterAmplification.')
+    parser.add_argument('--wavelet-type', type=str, default=config.DEFAULT_ARGS['wavelet_type'], help='Wavelet type for DWT contrast enhancement.')
+    parser.add_argument('--wavelet-level', type=int, default=config.DEFAULT_ARGS['wavelet_level'], help='DWT decomposition level.')
+    parser.add_argument('--wavelet-detail-scale', type=float, default=config.DEFAULT_ARGS['wavelet_detail_scale'], help='Scaling factor for DWT detail coefficients.')
 
     # --- Scheduler Parameters ---
-    parser.add_argument('--scheduler_type', type=str, default=config.DEFAULT_ARGS['scheduler_type'], choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
-    parser.add_argument('--scheduler_patience', type=int, default=config.DEFAULT_ARGS['scheduler_patience'], help='Patience for ReduceLROnPlateau.')
-    parser.add_argument('--scheduler_factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
-    parser.add_argument('--scheduler_min_lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
-    parser.add_argument('--scheduler_T0', type=int, default=config.DEFAULT_ARGS.get('scheduler_T0', 10), help='T_0 for CosineAnnealingWarmRestarts.')
-    parser.add_argument('--scheduler_T_mult', type=int, default=config.DEFAULT_ARGS.get('scheduler_T_mult', 2), 
+    parser.add_argument('--scheduler-type', type=str, default=config.DEFAULT_ARGS['scheduler_type'], choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'], help='Learning rate scheduler type.')
+    parser.add_argument('--scheduler-patience', type=int, default=config.DEFAULT_ARGS['scheduler_patience'], help='Patience for ReduceLROnPlateau.')
+    parser.add_argument('--scheduler-factor', type=float, default=config.DEFAULT_ARGS['scheduler_factor'], help='Factor for ReduceLROnPlateau.')
+    parser.add_argument('--scheduler-min-lr', type=float, default=config.DEFAULT_ARGS['scheduler_min_lr'], help='Minimum learning rate for the scheduler.')
+    parser.add_argument('--scheduler-T0', type=int, default=config.DEFAULT_ARGS.get('scheduler_T0', 10), help='T_0 for CosineAnnealingWarmRestarts.')
+    parser.add_argument('--scheduler-T-mult', type=int, default=config.DEFAULT_ARGS.get('scheduler_T_mult', 2), 
                         help='T_mult for CosineAnnealingWarmRestarts (must be integer).')
 
     # --- Control Flow ---
-    parser.add_argument('--test_only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
+    parser.add_argument('--test-only', action='store_true', help='Only run evaluation on the best saved checkpoint.')
     parser.add_argument('--resume', action='store_true', help='Resume training from the latest checkpoint.')
-    parser.add_argument('--use_tta', action='store_true', default=True, help='Use TTA during testing.')
 
     # --- Fine-tuning Control ---
-    parser.add_argument('--fine_tune_epochs', type=int, default=config.DEFAULT_ARGS['fine_tune_epochs'], 
+    parser.add_argument('--fine-tune-epochs', type=int, default=config.DEFAULT_ARGS['fine_tune_epochs'], 
                         help='Number of epochs to freeze backbone (Phase 1). Set to 0 for end-to-end training.')
 
     # --- K-Fold Cross-Validation ---
-    parser.add_argument('--k_folds', type=int, default=5, help='Number of folds for K-Fold cross-validation.')
-    parser.add_argument('--run_kfold', action='store_true', help='Enable K-Fold cross-validation.')
+    parser.add_argument('--k-folds', type=int, default=5, help='Number of folds for K-Fold cross-validation.')
+    parser.add_argument('--run-kfold', action='store_true', help='Enable K-Fold cross-validation.')
 
     # --- Add num_workers argument explicitly ---
-    parser.add_argument('--num_workers', type=int, default=config.DEFAULT_ARGS['num_workers'], help='Number of data loading workers.')
+    parser.add_argument('--num-workers', type=int, default=config.DEFAULT_ARGS['num_workers'], help='Number of data loading workers.')
     
     # --- Parse Arguments ---
     args = parser.parse_args()
     
     # --- Post-parsing validation and adjustments ---
     if len(args.deep_supervision_weights) != 5:
-        parser.error(f"deep-supervision_weights must have 5 values. Got {len(args.deep_supervision_weights)}")
+        parser.error(f"deep-supervision-weights must have 5 values. Got {len(args.deep_supervision_weights)}")
     
     # Get dataset specific config and update args
     try:
@@ -264,21 +251,6 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-# --- TTA Helper ---
-def tta_predict(net, inputs):
-    tta_preds = []
-    with torch.no_grad():
-        # Original
-        outputs = net(inputs)
-        tta_preds.append(outputs[-1])  # Final only for eval
-        
-        # Horizontal flip
-        inputs_f = torch.flip(inputs, dims=[3])
-        outputs_f = net(inputs_f)
-        tta_preds.append(torch.flip(outputs_f[-1], dims=[3]))
-    
-    return torch.mean(torch.stack(tta_preds), dim=0)  # Average logits
-
 # --- Evaluation Function ---
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating", fold_num=None):
     net.eval()
@@ -294,14 +266,9 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
                 continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            if args.use_tta and mode == "Testing":
-                final_pred = tta_predict(net, inputs)  # Use TTA for test only
-            else:
-                outputs = net(inputs) 
-                final_pred = outputs[-1]
+            outputs = net(inputs) 
+            final_pred = outputs[-1]
             
-            # Loss computation (use outputs for deep sup, but final for confmat)
-            outputs = outputs if not (args.use_tta and mode == "Testing") else [final_pred] * 5  # Dummy for loss if TTA
             total_loss = 0
             for i, pred_output in enumerate(outputs):
                 current_focal_loss = focal_loss_fn(pred_output, labels.long())
@@ -324,8 +291,6 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
     logging.info(f"  mIoU (Mean IoU): {mIoU:.4f}")
     logging.info(f"  FWIoU (Frequency Weighted IoU): {fwiou.item():.4f}")
     logging.info(f"  Dice (Mean Dice Coefficient): {mDice:.4f}")
-    logging.info(f"  Foreground IoU: {class_iou[1].item():.4f}")  # Assume binary; index 1=foreground
-    logging.info(f"  Foreground Dice: {mDice:.4f}")  # Dice is mean, but emphasize foreground
     
     if mode == "Validating": 
         net.train() # Set back to train mode after validation
@@ -400,6 +365,7 @@ def main():
     else:
         logging.warning(f"Test split not found at '{test_data_path}'. Test-only mode will fall back to validation set if available.")
 
+
     # --- Test-Only Mode ---
     if args.test_only:
         logging.info("Running in TEST ONLY mode.")
@@ -433,9 +399,6 @@ def main():
         except Exception as e:
             logging.error(f"Error loading model from checkpoint {checkpoint_path_to_load}: {e}. Exiting.")
             sys.exit(1)
-
-        if args.use_tta:
-            logging.info("Using Test-Time Augmentation (TTA) for inference.")
 
         # --- Determine Test Data Loader ---
         test_loader = None
@@ -541,9 +504,9 @@ def main():
                 # --- Phase Transition ---
                 if args.fine_tune_epochs > 0 and epoch == args.fine_tune_epochs:
                     logging.info(f"Fold {fold_num}: Transitioning to Phase 2: Unfreezing backbone at Epoch {epoch}")
-                    unfrozen_backbone(net, args.backbone)
+                    unfreeze_backbone(net, args.backbone)
                     
-                    new_lr = 5e-6 
+                    new_lr = args.lr / 5.0 
                     logging.info(f"Fold {fold_num}: Adjusting LR for Phase 2 to: {new_lr:.6f}")
                     optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
                     
@@ -641,7 +604,7 @@ def main():
          logging.error("No training dataset available for standard training. Exiting.")
          sys.exit(1)
 
-    logging.info("Starting standard training (K-Fold not enabled.")
+    logging.info("Starting standard training (K-Fold not enabled).")
     
     # Setup logging for the main experiment path
     setup_logging(base_exp_path, filename='training.log') 
@@ -715,7 +678,7 @@ def main():
             logging.info(f"--- Transitioning to Phase 2: Unfreezing backbone at Epoch {epoch} ---")
             unfreeze_backbone(net, args.backbone)
             
-            new_lr = 5e-6 
+            new_lr = args.lr / 5.0 
             logging.info(f"Adjusting LR for Phase 2 to: {new_lr:.6f}")
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             
@@ -795,4 +758,4 @@ def main():
     logging.info("Standard training finished.")
 
 if __name__ == '__main__':
-    main()
+    main() 

@@ -5,8 +5,6 @@ from torchvision import transforms
 import pywt
 import random
 from torchvision.transforms import functional as TF
-import cv2  # Add at top
-
 
 class RandomHorizontalFlip(object):
     def __call__(self, sample):
@@ -331,35 +329,4 @@ class ColorJitter(object):
         if self.hue > 0:
             hue_factor = random.uniform(-self.hue, self.hue)
             img = TF.adjust_hue(img, hue_factor)
-        return {'image': img, 'label': label}
-    
-class CLAHE(object):
-    def __init__(self, clip_limit=2.0, tile_grid_size=(8, 8)):
-        self.clip_limit = clip_limit
-        self.tile_grid_size = tile_grid_size
-
-    def __call__(self, sample):
-        img = np.array(sample['image'])
-        if len(img.shape) == 3:  # RGB
-            lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
-            l, a, b = cv2.split(lab)
-            cla = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
-            l = cla.apply(l)
-            lab = cv2.merge((l, a, b))
-            sample['image'] = Image.fromarray(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB))
-        else:  # Grayscale (unlikely, but handle)
-            cla = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
-            sample['image'] = Image.fromarray(cla.apply(img))
-        return sample
-
-class RandomRotation(object):
-    def __init__(self, degrees=10):
-        self.degrees = degrees
-
-    def __call__(self, sample):
-        img, label = sample['image'], sample['label']
-        angle = random.uniform(-self.degrees, self.degrees)
-        # Fill with 0 (black/background)
-        img = TF.rotate(img, angle, interpolation=TF.InterpolationMode.BILINEAR, fill=0)
-        label = TF.rotate(label, angle, interpolation=TF.InterpolationMode.NEAREST, fill=0)
         return {'image': img, 'label': label}
