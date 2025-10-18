@@ -109,6 +109,15 @@ class LASA_Unet(nn.Module):
             e2 = self.encoder_e2(e1)
             e3 = self.encoder_e3(e2)
             e4 = self.encoder_e4(e3)
+            
+        print("-" * 50)
+        print(f"DEBUG: Shape of e1 tensor: {e1.shape}")
+        print(f"DEBUG: Shape of e2 tensor: {e2.shape}")
+        print(f"DEBUG: Shape of e3 tensor: {e3.shape}")
+        print(f"DEBUG: Shape of e4 tensor: {e4.shape}")
+        print("-" * 50)
+        # This will stop the program after printing the shapes
+        raise RuntimeError("DEBUGGING COMPLETE: Check the printed tensor shapes above.") 
 
         # Apply LASA enhancement to e4 (Input: 160 channels)
         e4_enhanced = self.lasa_module(e4)
