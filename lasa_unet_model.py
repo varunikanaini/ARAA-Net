@@ -129,19 +129,21 @@ class LASA_Unet(nn.Module):
             elif backbone_name == 'efficientnet_b3':
                 weights = models.EfficientNet_B3_Weights.DEFAULT
                 effnet = models.efficientnet_b3(weights=weights)
-            # --- ADD THE NEW B4 OPTION ---
             elif backbone_name == 'efficientnet_b4':
                 weights = models.EfficientNet_B4_Weights.DEFAULT
                 effnet = models.efficientnet_b4(weights=weights)
             
-            # Extracting features at standard U-Net stages
             features = effnet.features
-            encoder1 = nn.Sequential(features[0], features[1]) # Stage 2
-            encoder2 = nn.Sequential(features[2])              # Stage 3
-            encoder3 = nn.Sequential(features[3], features[4]) # Stages 4, 5
-            encoder4 = nn.Sequential(features[5])              # Stage 6
-            bottleneck_layer = nn.Sequential(features[6], features[7]) # Stages 7, 8
+            
+            # Correctly slicing the model for U-Net architecture
+            encoder1 = nn.Sequential(features[0], features[1]) # Outputs 32 channels for B4
+            encoder2 = nn.Sequential(features[2])              # Outputs 56 channels for B4
+            encoder3 = nn.Sequential(features[3], features[4]) # Outputs 160 channels for B4
+            encoder4 = nn.Sequential(features[5], features[6]) # Outputs 272 channels for B4
+            bottleneck_layer = nn.Sequential(features[7])       # Outputs 448 channels for B4
+            
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
+        # --------------------------------------------------------
         
         else:
             raise ValueError(f"Unsupported backbone: {backbone_name}")
