@@ -118,7 +118,7 @@ def unfreeze_backbone(model, backbone_name):
     elif backbone_name == 'resnet50':
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     elif backbone_name == 'inception_v3':
-        unfrozen_layers = ['encoder1', 'encoder2', 'e3': 'encoder3', 'encoder4', 'bottleneck_layer']
+        unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']  # Fixed: Plain list, no dict syntax
     elif backbone_name.startswith('efficientnet'):
         unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4', 'bottleneck_layer']
     else:
