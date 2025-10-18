@@ -3,6 +3,7 @@
 import os
 import torch
 import torch.utils.data as data
+from torch.utils.data import Dataset
 from PIL import Image, UnidentifiedImageError
 import numpy as np
 from torchvision import transforms
