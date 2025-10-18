@@ -140,7 +140,8 @@ class LASA_Unet(nn.Module):
             encoder2 = features[2]
             encoder3 = features[3]
             encoder4 = features[4]
-            bottleneck_layer = nn.Sequential(*features[5:]) # All remaining layers form the bottleneck
+            # All remaining layers after stage 4 form the bottleneck
+            bottleneck_layer = nn.Sequential(*features[5:])
 
             return encoder1, encoder2, encoder3, encoder4, bottleneck_layer
         # --------------------------------------------------------
