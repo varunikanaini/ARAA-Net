@@ -1,17 +1,17 @@
 # /kaggle/working/ARAA-Net/lasa_unet_model.py
-# --- FINAL CORRECTED VERSION ---
+# --- FINAL, DEBUGGED, AND CORRECTED VERSION ---
 
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
 
-# Your custom modules remain essential
+# Import all required custom modules
 from lasa import LASA
 from attention_gate import AttentionGate
 import config
 
-# Load channel info from config
+# Load channel information from your config file
 BACKBONE_CHANNELS_INFO = config.BACKBONE_CHANNELS
 
 class LASA_Unet(nn.Module):
@@ -20,13 +20,13 @@ class LASA_Unet(nn.Module):
         self.backbone_name = backbone_name
         self.num_classes = num_classes
 
-        # --- 1. Load Backbone Layers Explicitly ---
+        # --- 1. Load Backbone Layers ---
         self._load_backbone_layers(backbone_name)
 
-        # --- 2. Get Channel Info from Config (Must Match Slicing) ---
+        # --- 2. Get Channel Info from Config (Must match the debugged reality) ---
         channel_info = BACKBONE_CHANNELS_INFO.get(backbone_name)
         if channel_info is None:
-            raise ValueError(f"Channel info for '{backbone_name}' not found in config.py")
+            raise ValueError(f"Channel info for backbone '{backbone_name}' not found in config.py.")
 
         self.encoder1_channels = channel_info['e1']
         self.encoder2_channels = channel_info['e2']
@@ -35,9 +35,10 @@ class LASA_Unet(nn.Module):
         self.bottleneck_channels = channel_info['bottleneck']
 
         # --- 3. Instantiate Custom Modules (LASA and Attention Gates) ---
+        # LASA module is applied to the output of the 4th encoder stage
         self.lasa_module = LASA(in_channels=self.encoder4_channels, L_list=lasa_kernels)
         
-        # Attention Gates for skip connections
+        # Attention Gates for each skip connection
         self.Att4 = AttentionGate(F_g=self.bottleneck_channels, F_l=self.encoder4_channels, F_int=self.encoder4_channels // 2)
         self.Att3 = AttentionGate(F_g=self.encoder4_channels, F_l=self.encoder3_channels, F_int=self.encoder3_channels // 2)
         self.Att2 = AttentionGate(F_g=self.encoder3_channels, F_l=self.encoder2_channels, F_int=self.encoder2_channels // 2)
@@ -60,12 +61,12 @@ class LASA_Unet(nn.Module):
 
     def _load_backbone_layers(self, backbone_name):
         """
-        Loads backbone and assigns its layers explicitly to prevent slicing errors.
+        Loads backbone and assigns its layers explicitly to match debugged shapes.
         """
         if backbone_name == 'efficientnet_b4':
             effnet = models.efficientnet_b4(weights=models.EfficientNet_B4_Weights.DEFAULT)
             features = effnet.features
-            # Define each encoder stage as a distinct layer
+            # This slicing is confirmed by the debug output to produce the correct channel counts
             self.encoder_stem = features[0]
             self.encoder_e1 = features[1]
             self.encoder_e2 = features[2]
@@ -73,16 +74,15 @@ class LASA_Unet(nn.Module):
             self.encoder_e4 = features[4]
             self.bottleneck_layer = nn.Sequential(*features[5:])
         elif backbone_name == 'vgg19':
+            # Kept for compatibility
             vgg_features = models.vgg19_bn(weights=models.VGG19_BN_Weights.DEFAULT).features
-            self.encoder_e1 = nn.Sequential(*list(vgg_features.children())[:13])
-            self.encoder_e2 = nn.Sequential(*list(vgg_features.children())[13:26])
-            self.encoder_e3 = nn.Sequential(*list(vgg_features.children())[26:39])
-            self.encoder_e4 = nn.Sequential(*list(vgg_features.children())[39:52])
-            self.bottleneck_layer = nn.Sequential(
-                nn.MaxPool2d(kernel_size=2, stride=2) # VGG needs an extra MaxPool
-            ) 
+            self.encoder_e1 = nn.Sequential(*vgg_features[:6])
+            self.encoder_e2 = nn.Sequential(*vgg_features[6:13])
+            self.encoder_e3 = nn.Sequential(*vgg_features[13:26])
+            self.encoder_e4 = nn.Sequential(*vgg_features[26:39])
+            self.bottleneck_layer = nn.Sequential(*vgg_features[39:52])
         else:
-            raise ValueError(f"Unsupported backbone: {backbone_name}")
+            raise NotImplementedError(f"Backbone '{backbone_name}' is not implemented in this version.")
 
     def _decoder_block(self, in_channels, out_channels):
         return nn.Sequential(
@@ -97,31 +97,22 @@ class LASA_Unet(nn.Module):
     def forward(self, x):
         input_h, input_w = x.shape[2:]
 
-        # --- Explicit Encoder Path ---
+        # --- Explicit Encoder Path ensures correct shapes ---
         if self.backbone_name == 'efficientnet_b4':
             s0 = self.encoder_stem(x)
             e1 = self.encoder_e1(s0)
             e2 = self.encoder_e2(e1)
             e3 = self.encoder_e3(e2)
-            e4 = self.encoder_e4(e3) # This will have 160 channels
-        else: # Fallback for VGG-like structures
+            e4 = self.encoder_e4(e3)
+        else: # VGG path
             e1 = self.encoder_e1(x)
             e2 = self.encoder_e2(e1)
             e3 = self.encoder_e3(e2)
             e4 = self.encoder_e4(e3)
-            
-        print("-" * 50)
-        print(f"DEBUG: Shape of e1 tensor: {e1.shape}")
-        print(f"DEBUG: Shape of e2 tensor: {e2.shape}")
-        print(f"DEBUG: Shape of e3 tensor: {e3.shape}")
-        print(f"DEBUG: Shape of e4 tensor: {e4.shape}")
-        print("-" * 50)
-        # This will stop the program after printing the shapes
-        raise RuntimeError("DEBUGGING COMPLETE: Check the printed tensor shapes above.") 
 
-        # Apply LASA enhancement to e4 (Input: 160 channels)
+        # Apply LASA enhancement to the final encoder output
         e4_enhanced = self.lasa_module(e4)
-
+        
         # Bottleneck
         bottleneck = self.bottleneck_layer(e4_enhanced)
 

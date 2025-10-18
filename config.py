@@ -97,12 +97,12 @@ BACKBONE_CHANNELS = {
     'efficientnet_b3': {'e1': 32, 'e2': 48, 'e3': 136, 'e4': 232, 'bottleneck': 384},
     # --- ADD THIS NEW ENTRY ---
     'efficientnet_b4': {
-        'e1': 32,      # Actual output of features[1]
-        'e2': 56,      # Actual output of features[2]
-        'e3': 112,     # Actual output of features[3]
-        'e4': 160,     # Actual output of features[4] <- LASA will receive this
-        'bottleneck': 1792 # Actual output of the final layer in features[5:]
-    },
+    'e1': 24,      # From your debug output
+    'e2': 32,      # From your debug output
+    'e3': 56,      # From your debug output
+    'e4': 112,     # From your debug output
+    'bottleneck': 1792 # This remains correct as the final stage output
+},
     # --------------------------
 }
 
