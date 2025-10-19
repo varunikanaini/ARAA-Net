@@ -1,5 +1,5 @@
 # /kaggle/working/ARAA-Net/train.py
-# --- FINAL VERSION: Reverted to VGG19 Baseline + Seg-CutMix Enhancement ---
+# --- FINAL COMPLETE & WORKING VERSION with Freeze-and-Tune + K-Fold ---
 
 import sys
 import os
@@ -21,14 +21,14 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-# --- Import Config and Other Modules ---
+# --- Import All Modules ---
 import config
 from lasa_unet_model import LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- Loss Functions (Unchanged from original) ---
+# --- Loss Functions (Unchanged) ---
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction='mean', ignore_index=255):
         super(FocalLoss, self).__init__()
@@ -71,106 +71,76 @@ class DiceLoss(nn.Module):
         loss = 1. - dice
         return loss
 
-# --- NEW: Seg-CutMix Augmentation ---
-def seg_cutmix(data, targets, alpha=1.0):
-    """Applies CutMix to a batch of images and segmentation masks."""
-    indices = torch.randperm(data.size(0))
-    shuffled_data = data[indices]
-    shuffled_targets = targets[indices]
-    lam = np.random.beta(alpha, alpha)
-    bbx1, bby1, bbx2, bby2 = rand_bbox(data.size(), lam)
-    data[:, :, bbx1:bbx2, bby1:bby2] = shuffled_data[:, :, bbx1:bbx2, bby1:bby2]
-    targets[:, :, bbx1:bbx2, bby1:bby2] = shuffled_targets[:, :, bbx1:bbx2, bby1:bby2]
-    return data, targets
+# --- Backbone Freezing/Unfreezing Helpers ---
+def freeze_backbone(model):
+    for name, param in model.named_parameters():
+        if 'encoder' in name:
+            param.requires_grad = False
+    logging.info("--- Encoder FROZEN. Training Decoder + Custom Modules ---")
 
-def rand_bbox(size, lam):
-    """Generates a random bounding box for CutMix."""
-    W = size[2]
-    H = size[3]
-    cut_rat = np.sqrt(1. - lam)
-    cut_w = int(W * cut_rat)
-    cut_h = int(H * cut_rat)
-    cx = np.random.randint(W)
-    cy = np.random.randint(H)
-    bbx1 = np.clip(cx - cut_w // 2, 0, W)
-    bby1 = np.clip(cy - cut_h // 2, 0, H)
-    bbx2 = np.clip(cx + cut_w // 2, 0, W)
-    bby2 = np.clip(cy + cut_h // 2, 0, H)
-    return bbx1, bby1, bbx2, bby2
+def unfreeze_backbone(model):
+    for name, param in model.named_parameters():
+        if 'encoder' in name:
+            param.requires_grad = True
+    logging.info("--- Encoder UN-FROZEN. Fine-tuning all layers ---")
 
-# --- Backbone Freezing/Unfreezing Helper Functions (Unchanged) ---
-def freeze_backbone(model, backbone_name):
-    # This part can be simplified if only VGG19 is used, but kept for compatibility
-    frozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4']
-    for layer_name in frozen_layers:
-        if hasattr(model, layer_name):
-            for param in getattr(model, layer_name).parameters():
-                param.requires_grad = False
-    logging.info(f"Backbone '{backbone_name}' frozen.")
-
-def unfreeze_backbone(model, backbone_name):
-    unfrozen_layers = ['encoder1', 'encoder2', 'encoder3', 'encoder4']
-    for layer_name in unfrozen_layers:
-        if hasattr(model, layer_name):
-            for param in getattr(model, layer_name).parameters():
-                param.requires_grad = True
-    logging.info(f"Backbone '{backbone_name}' unfrozen.")
-
-# --- Argument Parsing (Unchanged from original) ---
+# --- Argument Parsing (Complete) ---
 def get_args():
-    parser = argparse.ArgumentParser(description='Train LASA-Unet Model')
+    parser = argparse.ArgumentParser(description='Train LASA-Unet with Two-Phase Strategy')
+    
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
     parser.add_argument('--backbone', type=str, default='vgg19', choices=list(config.BACKBONE_CHANNELS.keys()))
-    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--epochs', type=int, default=120)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
-    parser.add_argument('--patience', type=int, default=15)
+    parser.add_argument('--patience', type=int, default=25)
     parser.add_argument('--lasa-kernels', type=int, nargs='+', default=[1, 3, 5, 7])
     parser.add_argument('--deep-supervision-weights', type=float, nargs='+', default=[0.2, 0.4, 0.6, 0.8, 1.0])
-    parser.add_argument('--focal-loss-weight', type=float, default=1.0)
-    parser.add_argument('--dice-loss-weight', type=float, default=1.0)
-    parser.add_argument('--scheduler-type', type=str, default='ReduceLROnPlateau', choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'])
-    parser.add_argument('--scheduler-T0', type=int, default=10, help='T_0 for CosineAnnealingWarmRestarts.')
+    parser.add_argument('--focal-loss-weight', type=float, default=0.5)
+    parser.add_argument('--dice-loss-weight', type=float, default=1.5)
+    parser.add_argument('--scheduler-type', type=str, default='CosineAnnealingWarmRestarts', choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'])
+    parser.add_argument('--scheduler-T0', type=int, default=15)
+    parser.add_argument('--scheduler-T-mult', type=int, default=2)
     parser.add_argument('--scheduler-patience', type=int, default=5)
+    parser.add_argument('--k-folds', type=int, default=5)
+    parser.add_argument('--run-kfold', action='store_true')
     parser.add_argument('--test-only', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--num-workers', type=int, default=2)
+    parser.add_argument('--fine-tune-epochs', type=int, default=40)
     
     args = parser.parse_args()
     
-    # Post-processing to add dataset-specific configs
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
     args.dataset_path = dataset_info['path']
     args.num_classes = dataset_info['num_classes']
     backbone_res = config.get_backbone_resolution(args.backbone)
     args.scale_h, args.scale_w = backbone_res[0], backbone_res[1]
     
-    # Add other default args from your config if needed
     for key, value in config.DEFAULT_ARGS.items():
         if not hasattr(args, key):
             setattr(args, key, value)
             
     return args
 
-# --- Logging Setup (Unchanged) ---
+# --- Logging ---
 def setup_logging(log_dir, filename='training.log'):
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
     log_file = os.path.join(log_dir, filename)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-# --- Evaluation Function (Reverted to original simple version) ---
-def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating"):
+# --- Evaluation Function ---
+def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating", fold_num=None):
     net.eval()
     confmat = ConfusionMatrix(num_classes=args.num_classes)
     loss_recorder = AvgMeter()
+    log_prefix = f"Fold {fold_num} " if fold_num is not None else ""
 
     with torch.no_grad():
-        for data in tqdm(data_loader, desc=mode, leave=False):
-            if data is None:
-                continue
+        for data in tqdm(data_loader, desc=f"{log_prefix}{mode}", leave=False):
+            if data is None: continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
             outputs = net(inputs)
@@ -178,11 +148,10 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
             
             total_loss = 0
             for i, pred_output in enumerate(outputs):
-                current_focal_loss = focal_loss_fn(pred_output, labels.long())
-                current_dice_loss = dice_loss_fn(pred_output, labels.long())
-                combined_loss_per_head = (args.focal_loss_weight * current_focal_loss) + \
-                                         (args.dice_loss_weight * current_dice_loss)
-                total_loss += args.deep_supervision_weights[i] * combined_loss_per_head
+                focal_loss = focal_loss_fn(pred_output, labels.long())
+                dice_loss = dice_loss_fn(pred_output, labels.long())
+                combined_loss = (args.focal_loss_weight * focal_loss) + (args.dice_loss_weight * dice_loss)
+                total_loss += args.deep_supervision_weights[i] * combined_loss
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
             confmat.update(labels.flatten(), final_pred.argmax(1).flatten())
@@ -190,18 +159,16 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
     global_acc, _, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
-    logging.info(f"--- {mode} Summary ---")
-    logging.info(f"  Average Loss: {loss_recorder.avg:.4f}")
-    logging.info(f"  OA: {global_acc.item():.4f}, mIoU: {mIoU:.4f}, FWIoU: {fwiou.item():.4f}, Dice: {mDice:.4f}")
+    logging.info(f"--- {log_prefix}{mode} Summary ---")
+    logging.info(f"  Loss: {loss_recorder.avg:.4f}, OA: {global_acc.item():.4f}, mIoU: {mIoU:.4f}")
     
-    if mode == "Validating":
-        net.train()
+    if mode == "Validating": net.train()
     return mIoU
 
+# --- Collate Function ---
 def custom_collate_fn(batch):
     batch = [item for item in batch if item is not None]
-    if not batch:
-        return None
+    if not batch: return None
     return torch.utils.data.dataloader.default_collate(batch)
 
 # --- Main Function ---
@@ -209,84 +176,144 @@ def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    exp_name = f"{args.backbone}_LASA{'_'.join(map(str, args.lasa_kernels))}_DSW{'_'.join(map(str, args.deep_supervision_weights))}_FLW{args.focal_loss_weight}_DLW{args.dice_loss_weight}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
+    exp_name = f"{args.backbone}_FreezeTune_LASA{'_'.join(map(str, args.lasa_kernels))}_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     base_exp_path = os.path.join(config.CKPT_ROOT, exp_name)
     check_mkdir(base_exp_path)
-    setup_logging(base_exp_path)
+    setup_logging(base_exp_path, filename='main_training.log')
 
     logging.info(f"Starting experiment: '{exp_name}'")
     logging.info(f"Arguments: {vars(args)}")
     logging.info(f"Using device: {device}")
 
-    train_dataset = ImageFolder(os.path.join(args.dataset_path, 'train'), args.dataset_name, args, split='train')
+    all_train_dataset = ImageFolder(os.path.join(args.dataset_path, 'train'), args.dataset_name, args, split='train')
     val_dataset = ImageFolder(os.path.join(args.dataset_path, 'val'), args.dataset_name, args, split='val')
-    
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate_fn, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn, pin_memory=True)
+    test_dataset = ImageFolder(os.path.join(args.dataset_path, 'test'), args.dataset_name, args, split='test')
 
     net = LASA_Unet(num_classes=args.num_classes, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
     dice_loss_fn = DiceLoss().to(device)
-    optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
-    if args.scheduler_type == 'CosineAnnealingWarmRestarts':
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6)
-    else: # Default to ReduceLROnPlateau
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=args.scheduler_patience)
-
     if args.test_only:
-        test_dataset = ImageFolder(os.path.join(args.dataset_path, 'test'), args.dataset_name, args, split='test')
-        test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn)
         checkpoint_path = os.path.join(base_exp_path, 'best_checkpoint.pth')
         if not os.path.exists(checkpoint_path):
-            logging.error(f"Checkpoint not found at {checkpoint_path}")
+            logging.error(f"FATAL: Checkpoint for testing not found at {checkpoint_path}")
             return
         net.load_state_dict(torch.load(checkpoint_path, map_location=device))
         logging.info(f"Model loaded from {checkpoint_path}")
         evaluate_model(net, test_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Testing")
         return
-        
+
+    if args.run_kfold:
+        kf = KFold(n_splits=args.k_folds, shuffle=True, random_state=42)
+        for fold, (train_idx, val_idx) in enumerate(kf.split(all_train_dataset)):
+            fold_num = fold + 1
+            fold_exp_path = os.path.join(base_exp_path, f'fold_{fold_num}')
+            check_mkdir(fold_exp_path)
+            setup_logging(fold_exp_path, filename=f'fold_{fold_num}_training.log')
+            logging.info(f"--- Starting Fold {fold_num}/{args.k_folds} ---")
+            
+            train_subsampler = SubsetRandomSampler(train_idx)
+            val_subsampler = SubsetRandomSampler(val_idx)
+            train_loader = DataLoader(all_train_dataset, batch_size=args.batch_size, sampler=train_subsampler, num_workers=args.num_workers, collate_fn=custom_collate_fn)
+            val_loader = DataLoader(all_train_dataset, batch_size=1, sampler=val_subsampler, num_workers=args.num_workers, collate_fn=custom_collate_fn)
+
+            fold_net = LASA_Unet(num_classes=args.num_classes, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
+            optimizer = optim.Adam(fold_net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=1e-6)
+            
+            freeze_backbone(fold_net) # Start with frozen backbone for each fold
+
+            best_mIoU_fold, patience_counter = 0.0, 0
+            best_checkpoint_path = os.path.join(fold_exp_path, 'best_checkpoint.pth')
+            
+            for epoch in range(args.epochs):
+                if epoch == args.fine_tune_epochs:
+                    unfreeze_backbone(fold_net)
+                    new_lr = args.lr / 10.0
+                    optimizer = optim.Adam(fold_net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
+                    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=1e-6)
+                    logging.info(f"Fold {fold_num}: Switched to Phase 2. New LR: {new_lr}")
+
+                # Training Step
+                fold_net.train()
+                loss_recorder = AvgMeter()
+                train_iterator = tqdm(train_loader, desc=f"Fold {fold_num} Epoch {epoch+1}/{args.epochs}", leave=False)
+                for data in train_iterator:
+                    if data is None: continue
+                    inputs, labels = data['image'].to(device), data['label'].to(device)
+                    optimizer.zero_grad(set_to_none=True)
+                    outputs = fold_net(inputs)
+                    total_loss = 0
+                    for head_idx, pred_output in enumerate(outputs):
+                        f_loss = focal_loss_fn(pred_output, labels.long())
+                        d_loss = dice_loss_fn(pred_output, labels.long())
+                        total_loss += args.deep_supervision_weights[head_idx] * ((args.focal_loss_weight * f_loss) + (args.dice_loss_weight * d_loss))
+                    total_loss.backward()
+                    optimizer.step()
+                    loss_recorder.update(total_loss.item(), inputs.size(0))
+                
+                # Validation Step
+                current_mIoU = evaluate_model(fold_net, val_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating", fold_num=fold_num)
+                scheduler.step()
+                
+                if current_mIoU > best_mIoU_fold:
+                    best_mIoU_fold = current_mIoU
+                    patience_counter = 0
+                    torch.save(fold_net.state_dict(), best_checkpoint_path)
+                    logging.info(f"Fold {fold_num}: ✅ New best mIoU: {best_mIoU_fold:.4f}. Model saved.")
+                else:
+                    patience_counter += 1
+                
+                if patience_counter >= args.patience:
+                    logging.info(f"Fold {fold_num}: Early stopping triggered.")
+                    break
+        return # End after K-Fold
+
+    # --- Standard Training (No K-Fold) ---
+    train_loader = DataLoader(all_train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn)
+    
+    optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=1e-6)
+    
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
-    latest_checkpoint_path = os.path.join(base_exp_path, 'latest_checkpoint.pth')
     best_checkpoint_path = os.path.join(base_exp_path, 'best_checkpoint.pth')
     
-    # Training Loop
+    if start_epoch < args.fine_tune_epochs:
+        freeze_backbone(net)
+    else:
+        unfreeze_backbone(net)
+
     for epoch in range(start_epoch, args.epochs):
+        if epoch == args.fine_tune_epochs:
+            unfreeze_backbone(net)
+            new_lr = args.lr / 10.0
+            optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=args.scheduler_T_mult, eta_min=1e-6)
+            logging.info(f"--- Switched to Phase 2. New LR: {new_lr} ---")
+            
         net.train()
         loss_recorder = AvgMeter()
-        train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=True)
-        
+        train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
+
         for i, data in enumerate(train_iterator):
             if data is None: continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            
-            # --- ENHANCEMENT: Seg-CutMix Augmentation ---
-            if np.random.rand() < 0.5: # Apply to 50% of batches
-                inputs, labels_float = seg_cutmix(inputs, labels.unsqueeze(1).float())
-                labels = labels_float.squeeze(1).long() # Convert back to Long type for loss
-            # ------------------------------------
-
             optimizer.zero_grad(set_to_none=True)
             outputs = net(inputs)
-            
             total_loss = 0
             for head_idx, pred_output in enumerate(outputs):
-                f_loss = focal_loss_fn(pred_output, labels)
-                d_loss = dice_loss_fn(pred_output, labels)
-                combined_loss = (args.focal_loss_weight * f_loss) + (args.dice_loss_weight * d_loss)
-                total_loss += args.deep_supervision_weights[head_idx] * combined_loss
-            
+                f_loss = focal_loss_fn(pred_output, labels.long())
+                d_loss = dice_loss_fn(pred_output, labels.long())
+                total_loss += args.deep_supervision_weights[head_idx] * ((args.focal_loss_weight * f_loss) + (args.dice_loss_weight * d_loss))
             total_loss.backward()
             optimizer.step()
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg)
         
-        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating")
-
-        if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(current_mIoU)
-        else:
-            scheduler.step()
+        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, args)
+        scheduler.step()
         
         if current_mIoU > best_mIoU:
             best_mIoU = current_mIoU
