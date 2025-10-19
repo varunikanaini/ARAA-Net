@@ -1,5 +1,5 @@
 # /kaggle/working/ARAA-Net/benchmark_fps.py
-# --- FINAL VERSION ---
+# --- FINAL, COMPLETE & WORKING VERSION for both models ---
 
 import torch
 import argparse
@@ -14,8 +14,9 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-# --- Import Model, Config, and Utilities ---
-from lasa_unet_model import LASA_Unet 
+# --- Import ALL Models, Config, and Utilities ---
+from lasa_unet_model import LASA_Unet
+from light_lasa_unet import Light_LASA_Unet # <-- IMPORT THE NEW LIGHTWEIGHT MODEL
 from misc import check_mkdir
 import config
 from config import CKPT_ROOT, DEFAULT_ARGS, BACKBONE_CHANNELS
@@ -27,10 +28,6 @@ def setup_logging_benchmark(log_dir, filename='benchmark_results.log'):
         logging.root.removeHandler(handler)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
-
-# --- Parameter Counting (Handled by thop, but can be kept) ---
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 # --- FPS Benchmarking ---
 def benchmark_fps(model, device, input_h, input_w, num_warmup=20, num_inference=100):
@@ -59,7 +56,8 @@ def benchmark_fps(model, device, input_h, input_w, num_warmup=20, num_inference=
 
 # --- Main Function ---
 def main():
-    parser = argparse.ArgumentParser(description='Benchmark LASA-Unet FPS, Parameters, and FLOPs')
+    parser = argparse.ArgumentParser(description='Benchmark Model FPS, Parameters, and FLOPs')
+    # Add all available backbones to the choices
     parser.add_argument('--backbone', type=str, default='vgg19', choices=list(config.BACKBONE_CHANNELS.keys()))
     parser.add_argument('--input-h', type=int, default=224)
     parser.add_argument('--input-w', type=int, default=224)
@@ -77,11 +75,23 @@ def main():
     log_filename = f'benchmark_{args.backbone}_input{args.input_h}x{args.input_w}.log'
     setup_logging_benchmark(benchmark_log_dir, filename=log_filename)
 
-    logging.info(f"--- Benchmarking LASA-Unet with {args.backbone} backbone ---")
+    logging.info(f"--- Benchmarking model with {args.backbone} backbone ---")
     logging.info(f"Input size for benchmark: {args.input_h}x{args.input_w}")
 
-    model = LASA_Unet(num_classes=2, backbone_name=args.backbone, lasa_kernels=DEFAULT_ARGS.get('lasa_kernels', [1, 3, 5, 7]))
+    # --- NEW: Logic to select and instantiate the correct model ---
+    model_name = ""
+    if args.backbone == 'mobilenet_v2':
+        model = Light_LASA_Unet(num_classes=2, lasa_kernels=DEFAULT_ARGS.get('lasa_kernels', [1, 3, 5, 7]))
+        model_name = "Light_LASA_Unet"
+    elif 'vgg' in args.backbone:
+        model = LASA_Unet(num_classes=2, backbone_name=args.backbone, lasa_kernels=DEFAULT_ARGS.get('lasa_kernels', [1, 3, 5, 7]))
+        model_name = "LASA_Unet"
+    else:
+        logging.error(f"Unsupported backbone '{args.backbone}' for benchmarking.")
+        return
+        
     model.to(device).eval()
+    logging.info(f"Instantiated model: {model_name}")
 
     dummy_input = torch.randn(1, 3, args.input_h, args.input_w).to(device)
 
