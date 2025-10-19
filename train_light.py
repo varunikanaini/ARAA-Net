@@ -1,28 +1,22 @@
 # /kaggle/working/ARAA-Net/train.py
 # --- FINAL, COMPLETE & WORKING VERSION with ALL ARGUMENTS & FEATURES ---
 
-import sys
-import os
-import logging
-import argparse
-import torch
-import numpy as np
+import sys, os, logging, argparse, torch, numpy as np
 from torch import nn, optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm import tqdm
 import torch.nn.functional as F
 
-# --- Setup & Imports ---
+# --- Setup, Imports, Loss Functions ---
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path: sys.path.insert(0, project_path)
 import config
 from lasa_unet_model import LASA_Unet
-from light_lasa_unet import Light_LASA_Unet
+from light_lasa_unet import Light_LASA_Unet # <-- Import the lightweight model
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
 
-# --- Loss Functions ---
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.5, gamma=2): super(FocalLoss, self).__init__(); self.alpha, self.gamma = alpha, gamma
     def forward(self, i, t):
@@ -63,6 +57,7 @@ def get_args():
     parser.add_argument('--dice-loss-weight', type=float, default=1.5)
     parser.add_argument('--scheduler-type', type=str, default='CosineAnnealingWarmRestarts', choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'])
     parser.add_argument('--scheduler-T0', type=int, default=15)
+    parser.add_argument('--scheduler-T-mult', type=int, default=2)
     parser.add_argument('--scheduler-patience', type=int, default=10)
     parser.add_argument('--test-only', action='store_true')
     parser.add_argument('--resume', action='store_true')
