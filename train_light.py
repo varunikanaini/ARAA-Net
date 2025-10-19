@@ -68,6 +68,9 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
+# In /kaggle/working/ARAA-Net/train_light.py
+
+# --- REPLACE THE ENTIRE evaluate_model FUNCTION WITH THIS ---
 def evaluate_model(net, data_loader, device, criterion, args, mode="Validating"):
     net.eval()
     confmat = ConfusionMatrix(num_classes=args.num_classes)
@@ -80,8 +83,16 @@ def evaluate_model(net, data_loader, device, criterion, args, mode="Validating")
             loss = criterion(outputs, labels.long())
             loss_recorder.update(loss.item(), inputs.size(0))
             confmat.update(labels.flatten(), outputs.argmax(1).flatten())
-    mIoU = confmat.compute()[2].mean().item()
-    logging.info(f"--- {mode} Summary --- Loss: {loss_recorder.avg:.4f}, mIoU: {mIoU:.4f}")
+            
+    # --- CORRECTED PART: Unpack all metrics from the computation ---
+    global_acc, _, class_iou, fwiou, mDice = confmat.compute()
+    mIoU = class_iou.mean().item()
+    
+    # --- CORRECTED PART: Update logging to print all metrics ---
+    logging.info(f"--- {mode} Summary ---")
+    logging.info(f"  Average Loss: {loss_recorder.avg:.4f}")
+    logging.info(f"  OA: {global_acc.item():.4f}, mIoU: {mIoU:.4f}, FWIoU: {fwiou.item():.4f}, Dice: {mDice:.4f}")
+    
     if mode == "Validating": net.train()
     return mIoU
 
