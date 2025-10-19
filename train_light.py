@@ -1,5 +1,5 @@
 # /kaggle/working/ARAA-Net/train_light.py
-# --- COMPLETE & WORKING TRAINER for LIGHTWEIGHT MODEL ---
+# --- FINAL, COMPLETE & WORKING VERSION with RESUME LOGIC ---
 
 import sys, os, logging, argparse, torch, numpy as np
 from torch import nn, optim
@@ -11,7 +11,7 @@ import torch.nn.functional as F
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path: sys.path.insert(0, project_path)
 import config
-from light_lasa_unet import Light_LASA_Unet # <-- IMPORT THE NEW LIGHTWEIGHT MODEL
+from light_lasa_unet import Light_LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
@@ -38,7 +38,7 @@ class DiceLoss(nn.Module):
         dice = (2. * intersection + self.smooth) / (probs.sum() + targets_one_hot.sum() + self.smooth)
         return 1. - dice
 
-# --- Argument Parsing ---
+# --- Argument Parsing (with --resume flag added) ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train Lightweight LASA-Unet')
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
@@ -49,6 +49,7 @@ def get_args():
     parser.add_argument('--focal-weight', type=float, default=0.5)
     parser.add_argument('--dice-weight', type=float, default=1.5)
     parser.add_argument('--test-only', action='store_true')
+    parser.add_argument('--resume', action='store_true', help="Resume training from the latest checkpoint") # <-- RESUME FLAG
     parser.add_argument('--num-workers', type=int, default=2)
     
     args = parser.parse_args()
@@ -56,7 +57,7 @@ def get_args():
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
     args.dataset_path = dataset_info['path']
     args.num_classes = dataset_info['num_classes']
-    args.scale_h, args.scale_w = 224, 224 # Hard-code for MobileNetV2
+    args.scale_h, args.scale_w = 224, 224
     for key, value in config.DEFAULT_ARGS.items():
         if not hasattr(args, key): setattr(args, key, value)
     return args
@@ -68,9 +69,6 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 
-# In /kaggle/working/ARAA-Net/train_light.py
-
-# --- REPLACE THE ENTIRE evaluate_model FUNCTION WITH THIS ---
 def evaluate_model(net, data_loader, device, criterion, args, mode="Validating"):
     net.eval()
     confmat = ConfusionMatrix(num_classes=args.num_classes)
@@ -84,11 +82,9 @@ def evaluate_model(net, data_loader, device, criterion, args, mode="Validating")
             loss_recorder.update(loss.item(), inputs.size(0))
             confmat.update(labels.flatten(), outputs.argmax(1).flatten())
             
-    # --- CORRECTED PART: Unpack all metrics from the computation ---
     global_acc, _, class_iou, fwiou, mDice = confmat.compute()
     mIoU = class_iou.mean().item()
     
-    # --- CORRECTED PART: Update logging to print all metrics ---
     logging.info(f"--- {mode} Summary ---")
     logging.info(f"  Average Loss: {loss_recorder.avg:.4f}")
     logging.info(f"  OA: {global_acc.item():.4f}, mIoU: {mIoU:.4f}, FWIoU: {fwiou.item():.4f}, Dice: {mDice:.4f}")
@@ -141,10 +137,27 @@ def main():
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=15, T_mult=2, eta_min=1e-6)
 
-    best_mIoU, patience_counter = 0.0, 0
+    start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     best_checkpoint_path = os.path.join(base_exp_path, 'best_checkpoint.pth')
-    
-    for epoch in range(args.epochs):
+    latest_checkpoint_path = os.path.join(base_exp_path, 'latest_checkpoint.pth') # <-- DEFINE LATEST PATH
+
+    # --- ADDED: RESUME LOGIC ---
+    if args.resume and os.path.exists(latest_checkpoint_path):
+        try:
+            ckpt = torch.load(latest_checkpoint_path, map_location=device)
+            net.load_state_dict(ckpt['model_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            start_epoch = ckpt['epoch'] + 1
+            best_mIoU = ckpt.get('best_mIoU', 0.0)
+            patience_counter = ckpt.get('patience_counter', 0)
+            logging.info(f"✅ Resuming training from epoch {start_epoch}. Best mIoU was {best_mIoU:.4f}.")
+        except Exception as e:
+            logging.error(f"Could not load checkpoint for resuming: {e}. Starting from scratch.")
+            start_epoch = 0 # Ensure we start from scratch on failure
+    # ---------------------------
+
+    for epoch in range(start_epoch, args.epochs):
         net.train()
         loss_recorder = AvgMeter()
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
@@ -167,11 +180,22 @@ def main():
             best_mIoU = current_mIoU
             patience_counter = 0
             torch.save(net.state_dict(), best_checkpoint_path)
-            logging.info(f"✅ New best mIoU: {best_mIoU:.4f}. Model saved.")
+            logging.info(f"✅ New best mIoU: {best_mIoU:.4f}. Saving best model.")
         else:
             patience_counter += 1
             logging.info(f"⚠️ mIoU did not improve for {patience_counter} epoch(s). Best: {best_mIoU:.4f}")
         
+        # --- ADDED: SAVE LATEST CHECKPOINT FOR RESUMING ---
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': net.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_mIoU': best_mIoU,
+            'patience_counter': patience_counter
+        }, latest_checkpoint_path)
+        # ----------------------------------------------------
+
         if patience_counter >= args.patience:
             logging.info("Early stopping triggered.")
             break
