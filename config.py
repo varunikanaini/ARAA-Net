@@ -103,6 +103,7 @@ BACKBONE_CHANNELS = {
     'e4': 112,     # From your debug output
     'bottleneck': 1792 # This remains correct as the final stage output
 },
+    'mobilenet_v2': {'e1': 16, 'e2': 24, 'e3': 32, 'e4': 96, 'bottleneck': 1280},
     # --------------------------
 }
 
