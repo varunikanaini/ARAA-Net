@@ -1,6 +1,7 @@
 # /kaggle/working/ARAA-Net/visualize_results.py
 
 import torch
+import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
 from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw
