@@ -1,4 +1,4 @@
-# datasets.py
+# /kaggle/working/ARAA-Net/datasets.py
 
 import os
 import torch
@@ -140,7 +140,7 @@ class ImageFolder(data.Dataset):
             self.mean = [0.5]
             self.std = [0.5]
 
-        # Your transforms compositions remain the same
+        # --- MODIFIED TRANSFORMS FOR TRAINING ---
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
@@ -149,15 +149,18 @@ class ImageFolder(data.Dataset):
                                        min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((args.scale_h, args.scale_w)),
-                # tr.ElasticTransform(alpha=35, sigma=5, p=0.5), 
+                # --- MODIFIED ELASTIC TRANSFORM ---
+                tr.ElasticTransform(alpha=50, sigma=7, p=0.7),
                 tr.RandomGaussianBlur(),
-                tr.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) if hasattr(tr, 'ColorJitter') else lambda x: x,
-                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
-                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x, 
+                # --- MODIFIED COLOR JITTER ---
+                tr.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.15) if hasattr(tr, 'ColorJitter') else lambda x: x,
+                # --- MODIFIED RANDOM AFFINE ---
+                tr.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
+                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x,
                 tr.Normalize(mean=self.mean, std=self.std),
-                tr.ToTensor() 
+                tr.ToTensor()
             ])
-        else:
+        else: # for val/test splits
             self.composed_transforms = transforms.Compose([
                 tr.FixedResize(w=args.scale_w, h=args.scale_h),
                 tr.Normalize(mean=self.mean, std=self.std),
@@ -208,4 +211,4 @@ class ImageFolder(data.Dataset):
         return Image.fromarray(label_index, mode='P')
 
     def __len__(self):
-        return len(self.imgs) 
+        return len(self.imgs)
