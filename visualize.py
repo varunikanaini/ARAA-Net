@@ -25,7 +25,7 @@ from light_lasa_unet import Light_LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter
-
+from torch.utils.data import DataLoader, Dataset
 # ... (rest of your visualize_results.py script) ...
 
 # --- Configuration ---
