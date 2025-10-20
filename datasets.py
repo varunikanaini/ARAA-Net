@@ -150,12 +150,13 @@ class ImageFolder(data.Dataset):
                 tr.RandomHorizontalFlip(),
                 tr.RandomCrop((args.scale_h, args.scale_w)),
                 # --- MODIFIED ELASTIC TRANSFORM ---
-                tr.ElasticTransform(alpha=50, sigma=7, p=0.7),
+                # --- STRONGER ELASTIC TRANSFORM FOR BOUNDARIES ---
+                tr.ElasticTransform(alpha=60, sigma=8, p=0.8),
                 tr.RandomGaussianBlur(),
                 # --- MODIFIED COLOR JITTER ---
                 tr.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.15) if hasattr(tr, 'ColorJitter') else lambda x: x,
                 # --- MODIFIED RANDOM AFFINE ---
-                tr.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
+                tr.RandomAffine(degrees=15, translate=(0.15, 0.15), scale=(0.9, 1.2), shear=10, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
                 tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x,
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor()
