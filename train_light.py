@@ -46,7 +46,6 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train Segmentation Models')
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
     parser.add_argument('--backbone', type=str, default='vgg19', choices=list(config.BACKBONE_CHANNELS.keys()))
-    parser.add_argument('--focal-alpha', type=float, default=0.5, help='Alpha weight for Focal Loss')
     parser.add_argument('--epochs', type=int, default=150)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -230,4 +229,4 @@ def main():
     logging.info("Training finished.")
 
 if __name__ == '__main__':
-    main()
+    main() 
