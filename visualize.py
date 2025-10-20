@@ -1,15 +1,17 @@
 # /kaggle/working/ARAA-Net/visualize_results.py
 
 import torch
-import torchvision.transforms as transforms
-import torchvision.transforms.functional as F
-from torch.utils.data import DataLoader
-from PIL import Image, ImageDraw
+import torchvision.transforms as transforms # <-- IMPORTANT: Ensure this line is present!
+from torchvision.transforms import functional as F
+import torchvision.transforms # <-- Also ensure this is imported if you use 'transforms.Compose' directly later
 import numpy as np
+from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
 import os
 import sys
-import cv2 # For robust image loading and color conversion
+import cv2
+import os
+import sys
 
 # --- Setup Project Path ---
 project_path = '/kaggle/working/ARAA-Net'
@@ -18,10 +20,13 @@ if project_path not in sys.path:
 
 # --- Import your custom modules ---
 # Ensure these paths are correct relative to your project structure
+import custom_transforms as tr # <-- IMPORTANT: Ensure this line is present!
 from light_lasa_unet import Light_LASA_Unet
-from datasets import ImageFolder # Assuming your datasets.py is in the root ARAA-Net folder
-from seg_utils import ConfusionMatrix # If you want to calculate CM too
-from misc import AvgMeter # For potential metrics calculation
+from datasets import ImageFolder
+from seg_utils import ConfusionMatrix
+from misc import AvgMeter
+
+# ... (rest of your visualize_results.py script) ...
 
 # --- Configuration ---
 # You might need to adjust these based on your setup
