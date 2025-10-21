@@ -58,7 +58,7 @@ class Light_LASA_Unet(nn.Module):
             BoundaryModule(in_channels=out_channels, out_channels=out_channels), 
             # ---
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn1.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
 
