@@ -12,7 +12,7 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path: sys.path.insert(0, project_path)
 import config
 from lasa_unet_model import LASA_Unet
-from light_lasa_unet import Light_LASA_Unet
+from light_lasa_unet import Light_LASA_Unet # <-- Import the lightweight model
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
@@ -22,6 +22,7 @@ class FocalLoss(nn.Module):
     def __init__(self, alpha=0.5, gamma=2): super(FocalLoss, self).__init__(); self.alpha, self.gamma = alpha, gamma
     def forward(self, i, t):
         # Ensure target is LongTensor for cross_entropy
+        # Add a check for pred shape and target type if necessary
         ce = F.cross_entropy(i, t.long(), reduction='none'); pt = torch.exp(-ce)
         fl = self.alpha * (1 - pt)**self.gamma * ce; return fl.mean()
 
@@ -29,10 +30,14 @@ class DiceLoss(nn.Module):
     def __init__(self, smooth=1e-6): super(DiceLoss, self).__init__(); self.smooth = smooth
     def forward(self, i, t):
         # Ensure i is probabilities (apply softmax if it's logits) and t is float
-        p = F.softmax(i, dim=1)[:, 1] # Assuming binary segmentation, taking channel 1
-        to = (t == 1).float() # Assuming target is class indices and 1 is the foreground class
+        # Assuming binary segmentation, taking channel 1 for foreground
+        p = F.softmax(i, dim=1)[:, 1] 
+        # Ensure target is float and represents foreground as 1.0
+        to = (t.float() == 1).float() 
+        
         inter = (p * to).sum()
-        return 1 - ((2. * inter + self.smooth) / (p.sum() + to.sum() + self.smooth))
+        denominator = p.sum() + to.sum() + self.smooth
+        return 1 - ((2. * inter + self.smooth) / denominator)
 
 # --- Backbone Freezing ---
 def freeze_backbone(model):
@@ -45,7 +50,7 @@ def unfreeze_backbone(model):
         if 'encoder' in n: p.requires_grad = True
     logging.info("--- Encoder UN-FROZEN ---")
 
-# --- Argument Parsing ---
+# --- Argument Parsing (ALL ARGUMENTS INCLUDED) ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train Segmentation Models')
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
@@ -59,8 +64,7 @@ def get_args():
     parser.add_argument('--deep-supervision-weights', type=float, nargs='+', default=[0.2, 0.4, 0.6, 0.8, 1.0])
     parser.add_argument('--focal-loss-weight', type=float, default=0.5)
     parser.add_argument('--dice-loss-weight', type=float, default=1.5)
-    # Add argument for boundary loss weight if you want to tune it via command line
-    parser.add_argument('--boundary-loss-weight', type=float, default=0.5) # Added this argument
+    parser.add_argument('--boundary-loss-weight', type=float, default=0.5) # Added boundary loss weight
     parser.add_argument('--scheduler-type', type=str, default='CosineAnnealingWarmRestarts', choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'])
     parser.add_argument('--scheduler-T0', type=int, default=15)
     parser.add_argument('--scheduler-T-mult', type=int, default=2)
@@ -74,100 +78,125 @@ def get_args():
     
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
     args.dataset_path, args.num_classes = dataset_info['path'], dataset_info['num_classes']
-    res_h, res_w = config.get_backbone_resolution(args.backbone)
+    # Fetch backbone resolution from config. Ensure config.py has BACKBONE_INPUT_RESOLUTIONS
+    try:
+        res_h, res_w = config.get_backbone_resolution(args.backbone)
+    except AttributeError: # Fallback if get_backbone_resolution is not defined in config
+        res_h, res_w = 224, 224 # Default values
+        logging.warning("config.get_backbone_resolution not found. Using default 224x224.")
+    except Exception as e: # Catch other potential errors during config loading
+        logging.error(f"Error loading backbone resolution from config: {e}. Using default 224x224.")
+        res_h, res_w = 224, 224
+
     args.scale_h, args.scale_w = res_h, res_w
-    for k, v in config.DEFAULT_ARGS.items():
-        if not hasattr(args, k): setattr(args, k, v)
+    
+    # Load default args from config if they are not provided as arguments
+    if hasattr(config, 'DEFAULT_ARGS'):
+        for k, v in config.DEFAULT_ARGS.items():
+            if not hasattr(args, k):
+                setattr(args, k, v)
             
     return args
 
 # --- Logging, Evaluation, Collate ---
 def setup_logging(log_dir, filename='training.log'):
-    for h in logging.root.handlers[:]: logging.root.removeHandler(h)
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
-                        handlers=[logging.FileHandler(os.path.join(log_dir, filename)), logging.StreamHandler()])
+    # Remove existing handlers to prevent duplicate logs
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    
+    # Create log directory if it doesn't exist
+    check_mkdir(log_dir)
+    
+    log_file_path = os.path.join(log_dir, filename)
+    
+    logging.basicConfig(level=logging.INFO, 
+                        format='%(asctime)s [%(levelname)s] %(message)s', 
+                        handlers=[
+                            logging.FileHandler(log_file_path), 
+                            logging.StreamHandler()
+                        ])
 
+# --- Evaluation Function ---
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args, mode="Validating"):
     net.eval()
-    confmat, loss_recorder = ConfusionMatrix(args.num_classes), AvgMeter()
-    
-    # Number of segmentation heads (excluding boundary predictions for loss calculation here)
-    num_seg_heads = (len(net.state_dict()) - sum(1 for name, _ in net.named_modules() if 'boundary_pred' in name)) // 3 # Crude estimate, better to count explicitly
-    # A more robust way: count decoder blocks and add 1 for final output
-    num_decoder_blocks = 4
-    num_seg_outputs = num_decoder_blocks + 1 
+    confmat = ConfusionMatrix(args.num_classes)
+    loss_recorder = AvgMeter() # To record average loss for the epoch
+
+    # Determine the number of segmentation outputs based on the model's structure
+    # Light_LASA_Unet returns: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+    # So, there are 5 segmentation outputs in total.
+    num_seg_outputs = 5 
 
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
-            if data is None: continue
+            if data is None: 
+                continue # Skip if data loading failed for a sample
+
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            outputs = net(inputs) # This tuple now includes segmentation and boundary predictions
+            # Forward pass to get all outputs
+            outputs_tuple = net(inputs)
 
-            total_loss = 0
+            total_loss_batch = 0
+            
+            # --- Loss Calculation for Evaluation ---
+            # We need to calculate the total loss to report an average,
+            # but we'll focus on mIoU for the main evaluation metric.
             seg_output_idx = 0
-            for i in range(0, len(outputs), 2): # Iterate through pairs: seg_pred, boundary_pred
-                if seg_output_idx >= num_seg_outputs: break # Safety break if more outputs than expected
+            for i in range(0, len(outputs_tuple) - 1, 2): # Iterate through pairs: seg_pred, boundary_pred
+                if seg_output_idx >= num_seg_outputs: break
 
-                seg_pred = outputs[i]
-                boundary_pred = outputs[i+1] # The boundary prediction for this stage
+                seg_pred = outputs_tuple[i]
+                boundary_pred = outputs_tuple[i+1] 
 
-                seg_labels = labels.long() # Segmentation ground truth (class indices)
+                seg_labels = labels.long()
 
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
-                
-                # Boundary loss calculation
                 b_loss = boundary_loss_fn(boundary_pred, seg_labels)
 
                 # Get the correct deep supervision weight
                 weight_index = seg_output_idx
-                seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0 # Default to 1.0
+                seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
 
-                # Combine losses
-                segmentation_component = seg_weight * (
+                segmentation_loss_component = seg_weight * (
                     (args.focal_loss_weight * f_loss) + 
                     (args.dice_loss_weight * d_loss)
                 )
-                boundary_component = seg_weight * (args.boundary_loss_weight * b_loss) # Use the new argument for boundary loss weight
+                boundary_loss_component = seg_weight * (args.boundary_loss_weight * b_loss) 
                 
-                total_loss += segmentation_component + boundary_component
+                total_loss_batch += segmentation_loss_component + boundary_loss_component
                 
                 seg_output_idx += 1
 
-            # Handle the final output if it's not part of the pairs (e.g., if boundary pred is only for intermediate stages)
-            # In the current light_lasa_unet.py, final_output is separate.
-            # If your forward returns [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
-            # then the loop above should process all but the last element.
-
-            # For simplicity, let's assume the last output is the final segmentation
-            final_seg_pred = outputs[-1]
+            # Handle the final segmentation output
+            final_seg_pred = outputs_tuple[-1] # The last element is the final segmentation
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
-            # You might decide to apply boundary loss to the final output as well, depending on its structure
-            # For now, we'll stick to boundary loss for intermediate stages.
             
-            final_seg_weight = args.deep_supervision_weights[-1] # Weight for the final output
-            total_loss += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
+            final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
+            total_loss_batch += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
             
-            loss_recorder.update(total_loss.item(), inputs.size(0))
+            loss_recorder.update(total_loss_batch, inputs.size(0))
             
-            # For confmat, use the final segmentation output
+            # Update confusion matrix using the final segmentation output
             confmat.update(labels.flatten(), final_seg_pred.argmax(1).flatten())
             
+    # Compute and log metrics
     acc, _, iou, fwiou, dice = confmat.compute()
-    mIoU = iou.mean().item()
+    mIoU = iou.mean().item() # Calculate mean IoU
+    
     logging.info(f"--- {mode} Summary --- Loss: {loss_recorder.avg:.4f}, OA: {acc.item():.4f}, mIoU: {mIoU:.4f}")
-    if mode == "Validating": net.train()
+    
+    if mode == "Validating": 
+        net.train() # Set model back to training mode
     return mIoU
 
 def custom_collate_fn(batch):
+    # Filter out None items which might occur if a sample failed to load
     batch = [item for item in batch if item is not None]
+    # Use default collate if batch is not empty, otherwise return None
     return torch.utils.data.dataloader.default_collate(batch) if batch else None
-
-# --- Modified train_light.py ---
-
-# ... (all your existing imports and previous code up to main function) ...
 
 # --- Main Function ---
 def main():
@@ -181,47 +210,66 @@ def main():
 
     logging.info(f"Starting experiment: '{exp_name}'\nArguments: {vars(args)}")
 
-    # --- Dataset Loading ---
-    # ... (rest of dataset loading remains the same) ...
-    train_ds = ImageFolder(os.path.join(args.dataset_path, 'train'), args.dataset_name, args, 'train')
-    val_ds = ImageFolder(os.path.join(args.dataset_path, 'val'), args.dataset_name, args, 'val')
-    test_ds = ImageFolder(os.path.join(args.dataset_path, 'test'), args.dataset_name, args, 'test')
+    # --- Load Datasets ---
+    try:
+        train_ds = ImageFolder(os.path.join(args.dataset_path, 'train'), args.dataset_name, args, 'train')
+        val_ds = ImageFolder(os.path.join(args.dataset_path, 'val'), args.dataset_name, args, 'val')
+        test_ds = ImageFolder(os.path.join(args.dataset_path, 'test'), args.dataset_name, args, 'test')
+    except Exception as e:
+        logging.error(f"Failed to load datasets: {e}")
+        return
 
+    # --- Instantiate Model ---
     if args.backbone == 'mobilenet_v2':
+        # Ensure Light_LASA_Unet has the boundary prediction heads implemented
         net = Light_LASA_Unet(num_classes=args.num_classes, lasa_kernels=args.lasa_kernels).to(device)
         logging.info("Instantiated Lightweight MobileNetV2-based model.")
     else:
+        # If you need to use other backbones, ensure they are compatible
         net = LASA_Unet(num_classes=args.num_classes, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
         logging.info(f"Instantiated {args.backbone}-based model.")
     
+    # --- Initialize Losses ---
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
     dice_loss_fn = DiceLoss().to(device)
-    boundary_loss_fn = BoundaryLoss(device=device).to(device) # Boundary loss initialized
+    boundary_loss_fn = BoundaryLoss(device=device).to(device) # Initialize BoundaryLoss
 
-    # ... (rest of test_only block, loader setup, optimizer, scheduler) ...
+    # --- Test-Only Mode ---
     if args.test_only:
         loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn)
         ckpt_path = os.path.join(base_exp_path, 'best_checkpoint.pth')
-        if not os.path.exists(ckpt_path): logging.error(f"Checkpoint not found: {ckpt_path}"); return
-        net.load_state_dict(torch.load(ckpt_path, map_location=device))
-        logging.info(f"Model loaded from {ckpt_path}")
-        # Note: evaluate_model needs boundary_loss_fn too if it calculates total loss for testing summary
+        if not os.path.exists(ckpt_path): 
+            logging.error(f"Checkpoint not found: {ckpt_path}. Cannot run test-only.")
+            return
+        
+        try:
+            net.load_state_dict(torch.load(ckpt_path, map_location=device))
+            logging.info(f"Model loaded from {ckpt_path}")
+        except Exception as e:
+            logging.error(f"Error loading checkpoint {ckpt_path}: {e}")
+            return
+            
+        # Evaluate the loaded model
+        # Pass all loss functions if evaluate_model needs them for its summary
         evaluate_model(net, loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args, mode="Testing")
         return
 
+    # --- DataLoaders for Training and Validation ---
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate_fn)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn)
     
+    # --- Optimizer and Scheduler ---
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     if args.scheduler_type == 'CosineAnnealingWarmRestarts':
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6)
-    else:
+    else: # ReduceLROnPlateau
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=args.scheduler_patience)
 
     start_epoch, best_mIoU, patience_counter = 0, 0.0, 0
     best_ckpt_path = os.path.join(base_exp_path, 'best_checkpoint.pth')
     latest_ckpt_path = os.path.join(base_exp_path, 'latest_checkpoint.pth')
     
+    # --- Resume Training ---
     if args.resume and os.path.exists(latest_ckpt_path):
         try:
             ckpt = torch.load(latest_ckpt_path, map_location=device)
@@ -233,120 +281,121 @@ def main():
             patience_counter = ckpt.get('patience_counter', 0)
             logging.info(f"Resuming from epoch {start_epoch}. Best mIoU: {best_mIoU:.4f}.")
         except Exception as e:
-            logging.error(f"Could not resume: {e}. Starting from scratch.")
+            logging.error(f"Could not resume from {latest_ckpt_path}: {e}. Starting from scratch.")
             start_epoch = 0
 
+    # --- Freeze Backbone ---
     if start_epoch < args.fine_tune_epochs:
         freeze_backbone(net)
     else:
         unfreeze_backbone(net)
 
+    # --- Training Loop ---
     for epoch in range(start_epoch, args.epochs):
+        # Adjust LR and re-initialize scheduler for fine-tuning phase
         if epoch == args.fine_tune_epochs:
             unfreeze_backbone(net)
-            # Adjust LR and scheduler based on the command line arguments
+            # Calculate new LR (e.g., reduce by 10x)
             new_lr = args.lr / 10.0 if args.lr > 1e-5 else args.lr 
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
+            # Re-initialize scheduler if needed (e.g., CosineAnnealingWarmRestarts might benefit from new T0)
             scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6) 
             logging.info(f"--- Switched to Phase 2. New LR: {new_lr} ---")
             
-        net.train()
-        loss_recorder = AvgMeter()
+        net.train() # Set model to training mode
+        loss_recorder = AvgMeter() # Meter for epoch loss
+        
+        # Use tqdm for a progress bar over the training loader
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         
         for data in train_iterator:
-            if data is None: continue
+            if data is None: 
+                continue # Skip if sample loading failed
+
             inputs, labels = data['image'].to(device), data['label'].to(device)
+            
+            # Zero gradients
             optimizer.zero_grad(set_to_none=True)
             
-            # --- Forward pass ---
-            # The model returns a tuple of [seg_d4, bound_d4, seg_d3, bound_d3, ..., final_seg]
-            outputs_tuple = net(inputs) 
+            # Forward pass
+            outputs_tuple = net(inputs) # Model returns multiple outputs: [seg_d4, bound_d4, seg_d3, bound_d3, ..., final_seg]
 
             total_loss = 0
-            
-            # --- Correctly handle segmentation and boundary losses ---
-            # Expected structure: seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg
-            # There are 4 segmentation outputs and 4 boundary outputs, plus 1 final segmentation output.
-            # So, 9 outputs in total.
-            
-            segmentation_outputs_count = 0 # Count only segmentation outputs for deep supervision weights
+            seg_output_idx = 0 # To index deep_supervision_weights correctly
             
             # Iterate through pairs of segmentation and boundary predictions
-            for i in range(0, len(outputs_tuple) - 1, 2): # Loop through seg_d4, bound_d4, seg_d3, bound_d3, ...
-                seg_pred = outputs_tuple[i]
-                boundary_pred = outputs_tuple[i+1] # The boundary prediction for this stage
+            # There are 4 decoder blocks, so 4 pairs of seg/bound outputs.
+            # The last output is the final segmentation.
+            num_intermediate_outputs = len(outputs_tuple) - 1 # All but the final segmentation output
+            num_pairs = num_intermediate_outputs // 2
+            
+            for i in range(num_pairs):
+                seg_pred = outputs_tuple[i * 2]         # Segmentation output (e.g., seg_d4)
+                boundary_pred = outputs_tuple[i * 2 + 1] # Boundary prediction for the same stage
 
                 seg_labels = labels.long()
 
+                # Calculate losses
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
-                b_loss = boundary_loss_fn(boundary_pred, seg_labels) # Use the boundary loss
+                b_loss = boundary_loss_fn(boundary_pred, seg_labels) # Boundary loss
 
-                # Get the corresponding deep supervision weight for the segmentation output
-                # If deep_supervision_weights = [0.2, 0.4, 0.6, 0.8, 1.0], these apply to d4, d3, d2, d1, final_seg
-                # Our structure is [seg_d4, bound_d4, seg_d3, bound_d3, ...]
-                # So, seg_d4 corresponds to weight[0], seg_d3 to weight[1], etc.
-                weight_index = segmentation_outputs_count
-                
-                seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0 # Default to 1.0 if weights list is too short
+                # Get the deep supervision weight for this segmentation stage
+                # Ensure index is within bounds
+                weight_index = seg_output_idx
+                seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
 
-                # Segmentation loss component
+                # Combine losses with their weights
                 segmentation_loss_component = seg_weight * (
                     (args.focal_loss_weight * f_loss) + 
                     (args.dice_loss_weight * d_loss)
                 )
-                
-                # Boundary loss component
                 boundary_loss_component = seg_weight * (args.boundary_loss_weight * b_loss) 
-
+                
                 total_loss += segmentation_loss_component + boundary_loss_component
                 
-                segmentation_outputs_count += 1
+                seg_output_idx += 1
 
-            # Handle the final segmentation output (it's the last one in the tuple)
+            # Handle the final segmentation output (the last one in the tuple)
             final_seg_pred = outputs_tuple[-1]
-            seg_labels = labels.long() # Ensure labels are long for cross_entropy
-            
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             
             # Use the last deep supervision weight for the final output
             final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
-
-            # For the final output, only include segmentation loss (no boundary prediction here)
-            final_segmentation_loss = final_seg_weight * (
-                (args.focal_loss_weight * f_loss_final) +
-                (args.dice_loss_weight * d_loss_final)
-            )
-            total_loss += final_segmentation_loss
             
+            total_loss += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
+            
+            # Backward pass and optimization
             total_loss.backward()
             optimizer.step()
+            
+            # Update loss recorder for epoch average
             loss_recorder.update(total_loss.item(), inputs.size(0))
+            # Update progress bar with current average loss
             train_iterator.set_postfix(loss=loss_recorder.avg)
         
-        # --- Evaluation ---
-        # Pass all loss functions if evaluate_model needs them for its own summary (currently it doesn't use boundary_loss_fn)
-        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating")
+        # --- Validation ---
+        # Evaluate model on validation set
+        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args)
         
         # --- Scheduler Step ---
         if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(current_mIoU)
+            scheduler.step(current_mIoU) # For ReduceLROnPlateau, step based on metric
         else:
-            scheduler.step()
+            scheduler.step() # For CosineAnnealingWarmRestarts, step every epoch
         
         # --- Checkpointing ---
         if current_mIoU > best_mIoU:
             best_mIoU = current_mIoU
-            patience_counter = 0
+            patience_counter = 0 # Reset patience counter
             torch.save(net.state_dict(), best_ckpt_path)
             logging.info(f"✅ New best mIoU: {best_mIoU:.4f}. Model saved.")
         else:
             patience_counter += 1
             logging.info(f"⚠️ mIoU did not improve for {patience_counter} epoch(s). Best: {best_mIoU:.4f}")
         
-        # Save latest checkpoint
+        # Save the latest checkpoint regardless of improvement
         torch.save({
             'epoch': epoch, 'model_state_dict': net.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(),

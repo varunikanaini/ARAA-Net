@@ -12,85 +12,79 @@ class BoundaryLoss(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
 
-    # In boundary_loss.py
+    def get_gradient(self, pred_mask): # Expects pred_mask to be Bx1xHxW
+        """Computes the gradient of a binary mask using Sobel filters."""
+        # Ensure pred_mask is float and on the correct device
+        pred_tensor = pred_mask.float().to(self.device)
 
-# ... (imports and class definition) ...
+        # Define kernels directly as torch tensors with float32 dtype
+        # These kernels are used for Sobel operators (gradient approximation)
+        dx_kernel = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
+        dy_kernel = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
 
-    def get_gradient(self, pred): # pred is expected to be Bx1xHxW (binary mask)
-        """Computes the gradient of a tensor using Sobel filters."""
-        # Ensure pred is float and on the correct device
-        pred_tensor = pred.float().to(self.device)
+        # Calculate horizontal gradient (dx)
+        # Padding=1 ensures output spatial dimensions match input
+        grad_x = torch.abs(F.conv2d(pred_tensor, dx_kernel, padding=1))
+        
+        # Calculate vertical gradient (dy)
+        grad_y = torch.abs(F.conv2d(pred_tensor, dy_kernel, padding=1))
 
-        # Define kernels as float32 tensors on the correct device
-        dx_kernel_right = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
-        dx_kernel_left = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
-        dy_kernel_down = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
-        dy_kernel_up = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(self.device)
-
-        gradients_x = []
-        gradients_y = []
-
-        for i in range(pred_tensor.shape[0]): # Iterate through batch
-            img_tensor = pred_tensor[i].unsqueeze(0) # Shape becomes 1x1xHxW for conv2d
-
-            # Horizontal gradient
-            dx_right = F.conv2d(img_tensor, dx_kernel_right, padding=1)
-            dx_left = F.conv2d(img_tensor, dx_kernel_left, padding=1)
-            dx = torch.abs(dx_right - dx_left)
-
-            # Vertical gradient
-            dy_down = F.conv2d(img_tensor, dy_kernel_down, padding=1)
-            dy_up = F.conv2d(img_tensor, dy_kernel_up, padding=1)
-            dy = torch.abs(dy_down - dy_up)
-            
-            gradients_x.append(dx.squeeze(0)) # Remove batch dim
-            gradients_y.append(dy.squeeze(0))
-
-        gradients_x_stacked = torch.stack(gradients_x, dim=0) # Shape (B, H, W)
-        gradients_y_stacked = torch.stack(gradients_y, dim=0) # Shape (B, H, W)
-
-        # Concatenate for output shape (B, 2, H, W) where 2 is for dx and dy
-        return torch.cat([gradients_x_stacked.unsqueeze(1), gradients_y_stacked.unsqueeze(1)], dim=1)
-
+        # Stack gradients: results in shape (B, 2, H, W) where 2 is for dx and dy
+        gradients = torch.cat([grad_x, grad_y], dim=1)
+        return gradients
 
     def forward(self, pred, target):
         """
         Computes the Boundary Loss.
         Args:
-            pred (torch.Tensor): Predicted segmentation mask (probabilities, shape BxCxHxW, where C=1 for binary prediction).
+            pred (torch.Tensor): Predicted segmentation mask (probabilities, shape BxCxHxW).
             target (torch.Tensor): Ground truth mask (class indices, shape BxHxW).
         Returns:
             torch.Tensor: The computed Boundary Loss.
         """
-        # Ensure pred is Bx1xHxW for get_gradient
+        # --- Prepare Prediction for Gradient Calculation ---
+        # pred is BxCxHxW (e.g., Bx2xHxW from segmentation output)
+        # We need the probability of the foreground class (assuming class 1 is foreground)
         if pred.shape[1] > 1:
-            # If pred is multi-class probabilities (BxCxHxW), select the foreground class (index 1)
-            pred_for_grad = pred[:, 1, :, :].unsqueeze(1) # Shape Bx1xHxW
+            pred_prob = F.softmax(pred, dim=1)
+            pred_for_grad = pred_prob[:, 1, :, :].unsqueeze(1) # Take foreground channel, shape Bx1xHxW
         else:
-            # If pred is already binary (Bx1xHxW), use it directly
+            # If pred is already probabilities (Bx1xHxW), use it directly
             pred_for_grad = pred
-        
-        # Ensure target is float and one-hot encoded if pred was multi-class before softmax,
-        # but since we are focusing on class 1 boundary, let's assume binary target from input.
-        # If target is BxHxW with class indices, and num_classes=2, then F.one_hot will give BxHxWx2.
-        # We need Bx1xHxW for get_gradient.
-        
-        # Correct one-hot encoding for binary target (class 0 and 1)
-        # If your target is already binary (0 or 1), it's fine. If it's like 0/255, it needs thresholding.
-        target_np = target.cpu().numpy() # Convert to numpy to check max value
-        if target_np.max() > 1: # Assuming mask values are 0 or 255
-            target_binary = (target == 1).float() # Convert to 0s and 1s, float
-        else:
-            target_binary = target.float() # Already 0s or 1s, ensure float
 
-        # Ensure target_binary has shape Bx1xHxW for get_gradient
-        target_for_grad = target_binary.unsqueeze(1).to(self.device) # Shape Bx1xHxW
+        # --- Prepare Target for Gradient Calculation ---
+        # target is BxHxW with class indices
+        # Convert to one-hot encoding BxCxHxW, then select foreground channel (index 1)
+        # Ensure target is float for calculations
+        
+        # Find the maximum class index in the target tensor to determine the number of channels
+        num_classes_in_target = int(target.max()) + 1 if target.numel() > 0 else 1
+        
+        # Ensure target_one_hot has at least 2 channels for binary segmentation (background + foreground)
+        # If num_classes is 2, F.one_hot will create BxHxWx2
+        # We need to permute it to Bx2xHxW
+        if num_classes_in_target < 2: # This might happen if a batch only contains background
+             # Create a dummy target with two channels if only background is present
+             target_one_hot = torch.zeros(target.shape[0], 2, target.shape[1], target.shape[2], device=self.device, dtype=torch.float32)
+             # If target is BxHxW, we need to unsqueeze to add channel dim
+             target_one_hot[:, 0, :, :] = (target == 0).float() # Background channel
+             if target.shape[1] == 1: # If target is already Bx1xHxW, we might not need this
+                 pass # Handle cases where target might already be in Bx1xHxW format
+             else:
+                 # Assuming target is BxHxW, convert to Bx1xHxW for gradient calculation
+                 target_for_grad = target_one_hot[:, 1, :, :].unsqueeze(1) # Foreground channel, Bx1xHxW
+
+        else:
+            target_one_hot = F.one_hot(target.long(), num_classes=num_classes_in_target).permute(0, 3, 1, 2).float()
+            target_for_grad = target_one_hot[:, 1, :, :].unsqueeze(1) # Foreground channel, Bx1xHxW
 
         # Compute gradients for target and prediction
-        target_gradients = self.get_gradient(target_for_grad) # Use Bx1xHxW target
-        pred_gradients = self.get_gradient(pred_for_grad)      # Use Bx1xHxW pred
+        # Shape of gradients: (B, 2, H, W)
+        target_gradients = self.get_gradient(target_for_grad) 
+        pred_gradients = self.get_gradient(pred_for_grad)      
 
         # Calculate loss between gradients
+        # L1 loss: sum(|pred_grad - target_grad|)
         # Average over the 2 gradient channels (dx, dy) and spatial dimensions, then batch dimension
         boundary_loss = torch.mean(torch.abs(pred_gradients - target_gradients))
 
