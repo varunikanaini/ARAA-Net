@@ -50,7 +50,7 @@ class Light_LASA_Unet(nn.Module):
         # Each decoder block now includes the BoundaryModule
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn1.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
             # --- Integrate BoundaryModule here ---
             # The BoundaryModule needs to know the in_channels to initialize its layers correctly.
