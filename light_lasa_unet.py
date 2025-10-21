@@ -116,4 +116,4 @@ class Light_LASA_Unet(nn.Module):
         final_output = self.final_conv(d1_out) 
         final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
         
-        return tuple(aux_outputs) # Return all outputs including boundary predictions
+        return tuple(aux_outputs + [final_output_upsampled]) # Return all outputs including boundary predictions
