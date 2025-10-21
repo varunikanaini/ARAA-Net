@@ -3,13 +3,14 @@
 
 import sys, os, logging, argparse, torch, numpy as np
 from torch import nn, optim
-from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data import DataLoader, Dataset # Added Dataset import just in case
 from tqdm import tqdm
 import torch.nn.functional as F
 
 # --- Setup, Imports, Loss Functions ---
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path: sys.path.insert(0, project_path)
+
 import config
 from lasa_unet_model import LASA_Unet
 from light_lasa_unet import Light_LASA_Unet # <-- Import the lightweight model
@@ -19,15 +20,20 @@ from misc import AvgMeter, check_mkdir
 from boundary_loss import BoundaryLoss # <-- Ensure this is imported
 
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.5, gamma=2): super(FocalLoss, self).__init__(); self.alpha, self.gamma = alpha, gamma
+    def __init__(self, alpha=0.5, gamma=2): 
+        super(FocalLoss, self).__init__()
+        self.alpha, self.gamma = alpha, gamma
     def forward(self, i, t):
         # Ensure target is LongTensor for cross_entropy
-        # Add a check for pred shape and target type if necessary
-        ce = F.cross_entropy(i, t.long(), reduction='none'); pt = torch.exp(-ce)
-        fl = self.alpha * (1 - pt)**self.gamma * ce; return fl.mean()
+        ce = F.cross_entropy(i, t.long(), reduction='none')
+        pt = torch.exp(-ce)
+        fl = self.alpha * (1 - pt)**self.gamma * ce
+        return fl.mean()
 
 class DiceLoss(nn.Module):
-    def __init__(self, smooth=1e-6): super(DiceLoss, self).__init__(); self.smooth = smooth
+    def __init__(self, smooth=1e-6): 
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
     def forward(self, i, t):
         # Ensure i is probabilities (apply softmax if it's logits) and t is float
         # Assuming binary segmentation, taking channel 1 for foreground
@@ -50,7 +56,7 @@ def unfreeze_backbone(model):
         if 'encoder' in n: p.requires_grad = True
     logging.info("--- Encoder UN-FROZEN ---")
 
-# --- Argument Parsing (ALL ARGUMENTS INCLUDED) ---
+# --- Argument Parsing ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train Segmentation Models')
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
@@ -78,13 +84,13 @@ def get_args():
     
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
     args.dataset_path, args.num_classes = dataset_info['path'], dataset_info['num_classes']
-    # Fetch backbone resolution from config. Ensure config.py has BACKBONE_INPUT_RESOLUTIONS
+    
     try:
         res_h, res_w = config.get_backbone_resolution(args.backbone)
-    except AttributeError: # Fallback if get_backbone_resolution is not defined in config
+    except AttributeError:
         res_h, res_w = 224, 224 # Default values
         logging.warning("config.get_backbone_resolution not found. Using default 224x224.")
-    except Exception as e: # Catch other potential errors during config loading
+    except Exception as e:
         logging.error(f"Error loading backbone resolution from config: {e}. Using default 224x224.")
         res_h, res_w = 224, 224
 
@@ -100,21 +106,12 @@ def get_args():
 
 # --- Logging, Evaluation, Collate ---
 def setup_logging(log_dir, filename='training.log'):
-    # Remove existing handlers to prevent duplicate logs
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-    
-    # Create log directory if it doesn't exist
+    for h in logging.root.handlers[:]: logging.root.removeHandler(h)
     check_mkdir(log_dir)
-    
     log_file_path = os.path.join(log_dir, filename)
-    
     logging.basicConfig(level=logging.INFO, 
                         format='%(asctime)s [%(levelname)s] %(message)s', 
-                        handlers=[
-                            logging.FileHandler(log_file_path), 
-                            logging.StreamHandler()
-                        ])
+                        handlers=[logging.FileHandler(log_file_path), logging.StreamHandler()])
 
 # --- Evaluation Function ---
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args, mode="Validating"):
@@ -123,14 +120,14 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
     loss_recorder = AvgMeter() # To record average loss for the epoch
 
     # Determine the number of segmentation outputs based on the model's structure
-    # Light_LASA_Unet returns: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
-    # So, there are 5 segmentation outputs in total.
-    num_seg_outputs = 5 
+    # Assuming Light_LASA_Unet returns: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+    num_seg_outputs = 5 # d4, d3, d2, d1, final_seg
+    num_boundary_outputs = 4 # bound_d4, bound_d3, bound_d2, bound_d1
 
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
             if data is None: 
-                continue # Skip if data loading failed for a sample
+                continue # Skip if sample loading failed
 
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
@@ -138,27 +135,28 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
             outputs_tuple = net(inputs)
 
             total_loss_batch = 0
+            seg_output_idx = 0 # Index for deep_supervision_weights
             
-            # --- Loss Calculation for Evaluation ---
-            # We need to calculate the total loss to report an average,
-            # but we'll focus on mIoU for the main evaluation metric.
-            seg_output_idx = 0
-            for i in range(0, len(outputs_tuple) - 1, 2): # Iterate through pairs: seg_pred, boundary_pred
-                if seg_output_idx >= num_seg_outputs: break
-
-                seg_pred = outputs_tuple[i]
-                boundary_pred = outputs_tuple[i+1] 
+            # Iterate through the segmentation and boundary prediction pairs from decoder stages
+            # There are num_decoder_stages (4) such pairs.
+            num_decoder_stages = 4 
+            
+            for i in range(num_decoder_stages):
+                seg_pred = outputs_tuple[i * 2]         # Segmentation output (e.g., seg_d4)
+                boundary_pred = outputs_tuple[i * 2 + 1] # Boundary prediction for the same stage
 
                 seg_labels = labels.long()
 
+                # Calculate losses
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
-                b_loss = boundary_loss_fn(boundary_pred, seg_labels)
+                b_loss = boundary_loss_fn(boundary_pred, seg_labels) 
 
-                # Get the correct deep supervision weight
+                # Get the correct deep supervision weight for this segmentation stage
                 weight_index = seg_output_idx
                 seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
 
+                # Combine losses with their weights
                 segmentation_loss_component = seg_weight * (
                     (args.focal_loss_weight * f_loss) + 
                     (args.dice_loss_weight * d_loss)
@@ -169,12 +167,15 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
                 
                 seg_output_idx += 1
 
-            # Handle the final segmentation output
-            final_seg_pred = outputs_tuple[-1] # The last element is the final segmentation
+            # Handle the final segmentation output (the last one in the tuple)
+            final_seg_pred = outputs_tuple[-1]
+            
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             
             final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
+
+            # For the final output, only include segmentation loss
             total_loss_batch += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
             
             loss_recorder.update(total_loss_batch, inputs.size(0))
@@ -184,7 +185,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
             
     # Compute and log metrics
     acc, _, iou, fwiou, dice = confmat.compute()
-    mIoU = iou.mean().item() # Calculate mean IoU
+    mIoU = iou.mean().item() 
     
     logging.info(f"--- {mode} Summary --- Loss: {loss_recorder.avg:.4f}, OA: {acc.item():.4f}, mIoU: {mIoU:.4f}")
     
@@ -203,9 +204,12 @@ def main():
     args = get_args()
     device = torch.device("cuda")
     
+    # Construct experiment name and directory
     exp_name = f"{args.backbone}_FreezeTune_LASA_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     base_exp_path = os.path.join(config.CKPT_ROOT, exp_name)
-    check_mkdir(base_exp_path)
+    check_mkdir(base_exp_path) # Ensure experiment directory exists
+    
+    # Setup logging for this experiment
     setup_logging(base_exp_path, 'main_training.log')
 
     logging.info(f"Starting experiment: '{exp_name}'\nArguments: {vars(args)}")
@@ -221,18 +225,18 @@ def main():
 
     # --- Instantiate Model ---
     if args.backbone == 'mobilenet_v2':
-        # Ensure Light_LASA_Unet has the boundary prediction heads implemented
+        # Ensure Light_LASA_Unet has the CBAM and BoundaryModule integrated
         net = Light_LASA_Unet(num_classes=args.num_classes, lasa_kernels=args.lasa_kernels).to(device)
         logging.info("Instantiated Lightweight MobileNetV2-based model.")
     else:
-        # If you need to use other backbones, ensure they are compatible
+        # Fallback for other backbones if needed
         net = LASA_Unet(num_classes=args.num_classes, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
         logging.info(f"Instantiated {args.backbone}-based model.")
     
     # --- Initialize Losses ---
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
     dice_loss_fn = DiceLoss().to(device)
-    boundary_loss_fn = BoundaryLoss(device=device).to(device) # Initialize BoundaryLoss
+    boundary_loss_fn = BoundaryLoss(device=device).to(device) # Boundary loss initialized
 
     # --- Test-Only Mode ---
     if args.test_only:
@@ -250,7 +254,6 @@ def main():
             return
             
         # Evaluate the loaded model
-        # Pass all loss functions if evaluate_model needs them for its summary
         evaluate_model(net, loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args, mode="Testing")
         return
 
@@ -295,10 +298,10 @@ def main():
         # Adjust LR and re-initialize scheduler for fine-tuning phase
         if epoch == args.fine_tune_epochs:
             unfreeze_backbone(net)
-            # Calculate new LR (e.g., reduce by 10x)
+            # Calculate new LR (e.g., reduce by 10x or use a base value for this phase)
+            # It's often good to use a smaller base LR for fine-tuning if not specified
             new_lr = args.lr / 10.0 if args.lr > 1e-5 else args.lr 
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
-            # Re-initialize scheduler if needed (e.g., CosineAnnealingWarmRestarts might benefit from new T0)
             scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6) 
             logging.info(f"--- Switched to Phase 2. New LR: {new_lr} ---")
             
@@ -318,30 +321,28 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             
             # Forward pass
-            outputs_tuple = net(inputs) # Model returns multiple outputs: [seg_d4, bound_d4, seg_d3, bound_d3, ..., final_seg]
+            # outputs_tuple = [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+            outputs_tuple = net(inputs) 
 
             total_loss = 0
-            seg_output_idx = 0 # To index deep_supervision_weights correctly
             
-            # Iterate through pairs of segmentation and boundary predictions
-            # There are 4 decoder blocks, so 4 pairs of seg/bound outputs.
-            # The last output is the final segmentation.
-            num_intermediate_outputs = len(outputs_tuple) - 1 # All but the final segmentation output
-            num_pairs = num_intermediate_outputs // 2
+            # --- Correctly handle segmentation and boundary losses ---
+            num_seg_outputs_in_model = 5 # d4, d3, d2, d1, final_seg
+            num_decoder_stages = 4 # d4, d3, d2, d1 (each has seg + bound output)
             
-            for i in range(num_pairs):
-                seg_pred = outputs_tuple[i * 2]         # Segmentation output (e.g., seg_d4)
-                boundary_pred = outputs_tuple[i * 2 + 1] # Boundary prediction for the same stage
+            seg_head_idx = 0 # Index for deep_supervision_weights
+            
+            for i in range(num_decoder_stages):
+                seg_pred = outputs_tuple[i * 2]         # Segmentation output
+                boundary_pred = outputs_tuple[i * 2 + 1] # Boundary prediction
 
-                seg_labels = labels.long()
+                seg_labels = labels.long() # Ensure labels are LongTensor
 
-                # Calculate losses
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
-                b_loss = boundary_loss_fn(boundary_pred, seg_labels) # Boundary loss
+                b_loss = boundary_loss_fn(boundary_pred, seg_labels) 
 
-                # Get the deep supervision weight for this segmentation stage
-                # Ensure index is within bounds
+                # Get the corresponding deep supervision weight
                 weight_index = seg_output_idx
                 seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
 
@@ -358,12 +359,13 @@ def main():
 
             # Handle the final segmentation output (the last one in the tuple)
             final_seg_pred = outputs_tuple[-1]
+            
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             
             # Use the last deep supervision weight for the final output
             final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
-            
+
             total_loss += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
             
             # Backward pass and optimization
@@ -376,14 +378,13 @@ def main():
             train_iterator.set_postfix(loss=loss_recorder.avg)
         
         # --- Validation ---
-        # Evaluate model on validation set
         current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args)
         
         # --- Scheduler Step ---
         if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(current_mIoU) # For ReduceLROnPlateau, step based on metric
+            scheduler.step(current_mIoU) 
         else:
-            scheduler.step() # For CosineAnnealingWarmRestarts, step every epoch
+            scheduler.step() 
         
         # --- Checkpointing ---
         if current_mIoU > best_mIoU:
@@ -395,7 +396,7 @@ def main():
             patience_counter += 1
             logging.info(f"⚠️ mIoU did not improve for {patience_counter} epoch(s). Best: {best_mIoU:.4f}")
         
-        # Save the latest checkpoint regardless of improvement
+        # Save the latest checkpoint
         torch.save({
             'epoch': epoch, 'model_state_dict': net.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict(),
