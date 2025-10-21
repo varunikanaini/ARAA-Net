@@ -58,7 +58,7 @@ class Light_LASA_Unet(nn.Module):
         # Each decoder block includes CBAM after the first convolution
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nnegative_index_error
+            # nnegative_index_error
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
             CBAM(out_channels), # CBAM integrated here
