@@ -33,7 +33,7 @@ class BoundaryLoss(nn.Module):
         gradients = torch.cat([grad_x, grad_y], dim=1)
         return gradients
 
-     def forward(self, pred, target):
+    def forward(self, pred, target):
         """
         Computes the Boundary Loss.
         Args:
