@@ -1,5 +1,5 @@
-# /kaggle/working/ARAA-Net/train.py
-# --- FINAL, COMPLETE & WORKING VERSION with ALL ARGUMENTS & FEATURES ---
+# /kaggle/working/ARAA-Net/train_light.py
+# --- FINAL VERSION: MobileNetV2 + SE Blocks + Deep Supervision + CBAM + Boundary Loss ---
 
 import sys, os, logging, argparse, torch, numpy as np
 from torch import nn, optim
@@ -12,22 +12,25 @@ project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path: sys.path.insert(0, project_path)
 import config
 from lasa_unet_model import LASA_Unet
-from light_lasa_unet import Light_LASA_Unet # <-- Import the lightweight model
+from light_lasa_unet import Light_LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
-from boundary_loss import BoundaryLoss
+from boundary_loss import BoundaryLoss # <-- Ensure this is imported
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.5, gamma=2): super(FocalLoss, self).__init__(); self.alpha, self.gamma = alpha, gamma
     def forward(self, i, t):
-        ce = F.cross_entropy(i, t, reduction='none'); pt = torch.exp(-ce)
+        # Ensure target is LongTensor for cross_entropy
+        ce = F.cross_entropy(i, t.long(), reduction='none'); pt = torch.exp(-ce)
         fl = self.alpha * (1 - pt)**self.gamma * ce; return fl.mean()
 
 class DiceLoss(nn.Module):
     def __init__(self, smooth=1e-6): super(DiceLoss, self).__init__(); self.smooth = smooth
     def forward(self, i, t):
-        p, to = F.softmax(i, dim=1)[:, 1], (t == 1).float()
+        # Ensure i is probabilities (apply softmax if it's logits) and t is float
+        p = F.softmax(i, dim=1)[:, 1] # Assuming binary segmentation, taking channel 1
+        to = (t == 1).float() # Assuming target is class indices and 1 is the foreground class
         inter = (p * to).sum()
         return 1 - ((2. * inter + self.smooth) / (p.sum() + to.sum() + self.smooth))
 
@@ -42,7 +45,7 @@ def unfreeze_backbone(model):
         if 'encoder' in n: p.requires_grad = True
     logging.info("--- Encoder UN-FROZEN ---")
 
-# --- Argument Parsing (ALL ARGUMENTS INCLUDED) ---
+# --- Argument Parsing ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train Segmentation Models')
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
@@ -56,6 +59,8 @@ def get_args():
     parser.add_argument('--deep-supervision-weights', type=float, nargs='+', default=[0.2, 0.4, 0.6, 0.8, 1.0])
     parser.add_argument('--focal-loss-weight', type=float, default=0.5)
     parser.add_argument('--dice-loss-weight', type=float, default=1.5)
+    # Add argument for boundary loss weight if you want to tune it via command line
+    parser.add_argument('--boundary-loss-weight', type=float, default=0.5) # Added this argument
     parser.add_argument('--scheduler-type', type=str, default='CosineAnnealingWarmRestarts', choices=['ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'])
     parser.add_argument('--scheduler-T0', type=int, default=15)
     parser.add_argument('--scheduler-T-mult', type=int, default=2)
@@ -82,20 +87,73 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(os.path.join(log_dir, filename)), logging.StreamHandler()])
 
-def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, mode="Validating"):
+def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args, mode="Validating"):
     net.eval()
     confmat, loss_recorder = ConfusionMatrix(args.num_classes), AvgMeter()
+    
+    # Number of segmentation heads (excluding boundary predictions for loss calculation here)
+    num_seg_heads = (len(net.state_dict()) - sum(1 for name, _ in net.named_modules() if 'boundary_pred' in name)) // 3 # Crude estimate, better to count explicitly
+    # A more robust way: count decoder blocks and add 1 for final output
+    num_decoder_blocks = 4
+    num_seg_outputs = num_decoder_blocks + 1 
+
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
             if data is None: continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            outputs = net(inputs)
+            
+            outputs = net(inputs) # This tuple now includes segmentation and boundary predictions
+
             total_loss = 0
-            for i, pred in enumerate(outputs):
-                f_l, d_l = focal_loss_fn(pred, labels.long()), dice_loss_fn(pred, labels.long())
-                total_loss += args.deep_supervision_weights[i] * ((args.focal_loss_weight*f_l) + (args.dice_loss_weight*d_l))
+            seg_output_idx = 0
+            for i in range(0, len(outputs), 2): # Iterate through pairs: seg_pred, boundary_pred
+                if seg_output_idx >= num_seg_outputs: break # Safety break if more outputs than expected
+
+                seg_pred = outputs[i]
+                boundary_pred = outputs[i+1] # The boundary prediction for this stage
+
+                seg_labels = labels.long() # Segmentation ground truth (class indices)
+
+                f_loss = focal_loss_fn(seg_pred, seg_labels)
+                d_loss = dice_loss_fn(seg_pred, seg_labels)
+                
+                # Boundary loss calculation
+                b_loss = boundary_loss_fn(boundary_pred, seg_labels)
+
+                # Get the correct deep supervision weight
+                weight_index = seg_output_idx
+                seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0 # Default to 1.0
+
+                # Combine losses
+                segmentation_component = seg_weight * (
+                    (args.focal_loss_weight * f_loss) + 
+                    (args.dice_loss_weight * d_loss)
+                )
+                boundary_component = seg_weight * (args.boundary_loss_weight * b_loss) # Use the new argument for boundary loss weight
+                
+                total_loss += segmentation_component + boundary_component
+                
+                seg_output_idx += 1
+
+            # Handle the final output if it's not part of the pairs (e.g., if boundary pred is only for intermediate stages)
+            # In the current light_lasa_unet.py, final_output is separate.
+            # If your forward returns [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+            # then the loop above should process all but the last element.
+
+            # For simplicity, let's assume the last output is the final segmentation
+            final_seg_pred = outputs[-1]
+            f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
+            d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
+            # You might decide to apply boundary loss to the final output as well, depending on its structure
+            # For now, we'll stick to boundary loss for intermediate stages.
+            
+            final_seg_weight = args.deep_supervision_weights[-1] # Weight for the final output
+            total_loss += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
+            
             loss_recorder.update(total_loss.item(), inputs.size(0))
-            confmat.update(labels.flatten(), outputs[-1].argmax(1).flatten())
+            
+            # For confmat, use the final segmentation output
+            confmat.update(labels.flatten(), final_seg_pred.argmax(1).flatten())
             
     acc, _, iou, fwiou, dice = confmat.compute()
     mIoU = iou.mean().item()
@@ -132,7 +190,7 @@ def main():
     
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
     dice_loss_fn = DiceLoss().to(device)
-    boundary_loss_fn = BoundaryLoss(device=device).to(device)
+    boundary_loss_fn = BoundaryLoss(device=device).to(device) # Boundary loss initialized
 
     if args.test_only:
         loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn)
@@ -140,7 +198,8 @@ def main():
         if not os.path.exists(ckpt_path): logging.error(f"Checkpoint not found: {ckpt_path}"); return
         net.load_state_dict(torch.load(ckpt_path, map_location=device))
         logging.info(f"Model loaded from {ckpt_path}")
-        evaluate_model(net, loader, device, focal_loss_fn, dice_loss_fn, args, mode="Testing")
+        # Note: evaluate_model needs boundary_loss_fn too if it calculates total loss for testing summary
+        evaluate_model(net, loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args, mode="Testing")
         return
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=custom_collate_fn)
@@ -178,9 +237,12 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         if epoch == args.fine_tune_epochs:
             unfreeze_backbone(net)
-            new_lr = args.lr / 10.0
+            # Adjust LR and scheduler based on the command line arguments
+            # Make sure this new_lr calculation matches your actual desired behavior
+            new_lr = args.lr / 10.0 if args.lr > 1e-5 else args.lr # Example: reduce LR by 10x, or use a fixed smaller LR
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
-            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6)
+            # Re-initialize scheduler with appropriate T0 for the new phase if needed
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6) 
             logging.info(f"--- Switched to Phase 2. New LR: {new_lr} ---")
             
         net.train()
@@ -191,35 +253,66 @@ def main():
             if data is None: continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
             optimizer.zero_grad(set_to_none=True)
-            outputs = net(inputs)
+            
+            # --- Forward pass ---
+            outputs_tuple = net(inputs) # This tuple contains [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+
             total_loss = 0
-            for head_idx, pred_output in enumerate(outputs):
-                f_loss = focal_loss_fn(pred_output, labels.long())
-                d_loss = dice_loss_fn(pred_output, labels.long())
-                # --- ADDING BOUNDARY LOSS ---
-                # You'll need to decide on a weight for boundary loss (e.g., boundary_loss_weight)
-                # Let's assume you add it to DEFAULT_ARGS in config.py or pass it via command line if needed.
-                # For now, let's assign a placeholder weight. You'll likely need to tune this.
-                boundary_loss_weight = 0.5 # Placeholder: Tune this value!
-                b_loss = boundary_loss_fn(pred_output, labels)
-                
-                total_loss += args.deep_supervision_weights[head_idx] * (
-                    (args.focal_loss_weight * f_loss) + 
-                    (args.dice_loss_weight * d_loss) +
-                    (boundary_loss_weight * b_loss) # Add boundary loss here
+            seg_output_count = 0 # To correctly index deep_supervision_weights
+            
+            # Process segmentation and boundary outputs
+            for i in range(0, len(outputs_tuple), 2): # Iterate through pairs: seg_pred, boundary_pred
+                if seg_output_count >= len(args.deep_supervision_weights): # Safety check for weights
+                    break
+
+                seg_pred = outputs_tuple[i]
+                boundary_pred = outputs_tuple[i+1] # Boundary prediction for this stage
+
+                seg_labels = labels.long()
+
+                f_loss = focal_loss_fn(seg_pred, seg_labels)
+                d_loss = dice_loss_fn(seg_pred, seg_labels)
+                b_loss = boundary_loss_fn(boundary_pred, seg_labels) # Use the boundary loss
+
+                # Get the weight for this stage
+                stage_weight = args.deep_supervision_weights[seg_output_count]
+
+                # Combine losses for this stage
+                segmentation_loss = stage_weight * (
+                    (args.focal_loss_weight * f_loss) +
+                    (args.dice_loss_weight * d_loss)
                 )
+                boundary_loss_component = stage_weight * (args.boundary_loss_weight * b_loss) # Use the new argument
+
+                total_loss += segmentation_loss + boundary_loss_component
+                seg_output_count += 1
+
+            # Handle the final segmentation output separately if it's not paired with a boundary pred
+            # In your light_lasa_unet.py, the final output is separate from the aux outputs
+            final_seg_pred = outputs_tuple[-1] # The last element is the final segmentation output
+            f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
+            d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
+            # Decide if you want to apply boundary loss to the final output.
+            # For now, we'll assume it's just segmentation loss for the final output.
+            final_seg_weight = args.deep_supervision_weights[-1] # Use the last weight
+            total_loss += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
+            
             total_loss.backward()
             optimizer.step()
             loss_recorder.update(total_loss.item(), inputs.size(0))
             train_iterator.set_postfix(loss=loss_recorder.avg)
         
-        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, args)
+        # --- Evaluation ---
+        # Pass all loss functions if evaluate_model needs them for its own summary
+        current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args)
         
+        # --- Scheduler Step ---
         if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
             scheduler.step(current_mIoU)
         else:
             scheduler.step()
         
+        # --- Checkpointing ---
         if current_mIoU > best_mIoU:
             best_mIoU = current_mIoU
             patience_counter = 0
@@ -235,6 +328,7 @@ def main():
             'best_mIoU': best_mIoU, 'patience_counter': patience_counter
         }, latest_ckpt_path)
 
+        # --- Early Stopping ---
         if patience_counter >= args.patience:
             logging.info(f"Early stopping triggered after {patience_counter} epochs.")
             break
@@ -242,4 +336,4 @@ def main():
     logging.info("Training finished.")
 
 if __name__ == '__main__':
-    main() 
+    main()
