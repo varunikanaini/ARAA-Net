@@ -16,6 +16,7 @@ from light_lasa_unet import Light_LASA_Unet # <-- Import the lightweight model
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
+from boundary_loss import BoundaryLoss
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.5, gamma=2): super(FocalLoss, self).__init__(); self.alpha, self.gamma = alpha, gamma
@@ -131,6 +132,7 @@ def main():
     
     focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
     dice_loss_fn = DiceLoss().to(device)
+    boundary_loss_fn = BoundaryLoss(device=device).to(device)
 
     if args.test_only:
         loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=custom_collate_fn)
@@ -194,7 +196,18 @@ def main():
             for head_idx, pred_output in enumerate(outputs):
                 f_loss = focal_loss_fn(pred_output, labels.long())
                 d_loss = dice_loss_fn(pred_output, labels.long())
-                total_loss += args.deep_supervision_weights[head_idx] * ((args.focal_loss_weight * f_loss) + (args.dice_loss_weight * d_loss))
+                # --- ADDING BOUNDARY LOSS ---
+                # You'll need to decide on a weight for boundary loss (e.g., boundary_loss_weight)
+                # Let's assume you add it to DEFAULT_ARGS in config.py or pass it via command line if needed.
+                # For now, let's assign a placeholder weight. You'll likely need to tune this.
+                boundary_loss_weight = 0.5 # Placeholder: Tune this value!
+                b_loss = boundary_loss_fn(pred_output, labels)
+                
+                total_loss += args.deep_supervision_weights[head_idx] * (
+                    (args.focal_loss_weight * f_loss) + 
+                    (args.dice_loss_weight * d_loss) +
+                    (boundary_loss_weight * b_loss) # Add boundary loss here
+                )
             total_loss.backward()
             optimizer.step()
             loss_recorder.update(total_loss.item(), inputs.size(0))
