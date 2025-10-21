@@ -330,7 +330,7 @@ def main():
 
         # --- Early Stopping ---
         if patience_counter >= args.patience:
-            logging.info(f"Early stopping triggered after {patience_counter} epochs.")
+            logging.info(f"Early stopping triggered after {patience_counter} epochss.")
             break
             
     logging.info("Training finished.")
