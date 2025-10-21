@@ -83,7 +83,7 @@ class Light_LASA_Unet(nn.Module):
         # Decoder 4
         d4 = torch.cat([F.interpolate(bottleneck, size=e4.shape[2:], mode='bilinear', align_corners=True), e4], dim=1)
         d4_out = self.decoder4(d4)
-        aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input/w), mode='bilinear', align_corners=True))
+        aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
         # --- Get Boundary Prediction ---
         boundary_d4 = self.boundary_pred_d4(d4_out)
         aux_outputs.append(boundary_d4) # Append boundary prediction
