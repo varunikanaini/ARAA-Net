@@ -1,5 +1,5 @@
 # /kaggle/working/ARAA-Net/train_light.py
-# --- FINAL VERSION: MobileNetV2 + SE Blocks + Deep Supervision + CBAM + Boundary Loss ---
+# --- FINAL VERSION: MobileNetV2 + SE Blocks + Deep Supervision + CBAM + Boundary Loss Integration ---
 
 import sys, os, logging, argparse, torch, numpy as np
 from torch import nn, optim
@@ -13,7 +13,7 @@ if project_path not in sys.path: sys.path.insert(0, project_path)
 
 import config
 from lasa_unet_model import LASA_Unet
-from light_lasa_unet import Light_LASA_Unet # <-- Import the lightweight model
+from light_lasa_unet import Light_LASA_Unet # <-- Model with CBAM and Boundary Module
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
@@ -24,7 +24,6 @@ class FocalLoss(nn.Module):
         super(FocalLoss, self).__init__()
         self.alpha, self.gamma = alpha, gamma
     def forward(self, i, t):
-        # Ensure target is LongTensor for cross_entropy
         ce = F.cross_entropy(i, t.long(), reduction='none')
         pt = torch.exp(-ce)
         fl = self.alpha * (1 - pt)**self.gamma * ce
@@ -82,9 +81,11 @@ def get_args():
     
     args = parser.parse_args()
     
+    # Dataset configuration
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
     args.dataset_path, args.num_classes = dataset_info['path'], dataset_info['num_classes']
     
+    # Fetch backbone resolution from config. Ensure config.py has BACKBONE_INPUT_RESOLUTIONS
     try:
         res_h, res_w = config.get_backbone_resolution(args.backbone)
     except AttributeError:
@@ -106,12 +107,21 @@ def get_args():
 
 # --- Logging, Evaluation, Collate ---
 def setup_logging(log_dir, filename='training.log'):
-    for h in logging.root.handlers[:]: logging.root.removeHandler(h)
+    # Remove existing handlers to prevent duplicate logs
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    
+    # Create log directory if it doesn't exist
     check_mkdir(log_dir)
+    
     log_file_path = os.path.join(log_dir, filename)
+    
     logging.basicConfig(level=logging.INFO, 
                         format='%(asctime)s [%(levelname)s] %(message)s', 
-                        handlers=[logging.FileHandler(log_file_path), logging.StreamHandler()])
+                        handlers=[
+                            logging.FileHandler(log_file_path), 
+                            logging.StreamHandler()
+                        ])
 
 # --- Evaluation Function ---
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, args, mode="Validating"):
@@ -119,10 +129,10 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
     confmat = ConfusionMatrix(args.num_classes)
     loss_recorder = AvgMeter() # To record average loss for the epoch
 
-    # Determine the number of segmentation outputs based on the model's structure
-    # Assuming Light_LASA_Unet returns: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
-    num_seg_outputs = 5 # d4, d3, d2, d1, final_seg
-    num_boundary_outputs = 4 # bound_d4, bound_d3, bound_d2, bound_d1
+    # Determine the number of segmentation outputs
+    # Model returns: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+    # Number of segmentation outputs = 5 (d4, d3, d2, d1, final)
+    num_seg_outputs = 5 
 
     with torch.no_grad():
         for data in tqdm(data_loader, desc=mode, leave=False):
@@ -132,13 +142,13 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
             # Forward pass to get all outputs
-            outputs_tuple = net(inputs)
+            outputs_tuple = net(inputs) # This tuple contains segmentation and boundary predictions
 
             total_loss_batch = 0
             seg_output_idx = 0 # Index for deep_supervision_weights
             
             # Iterate through the segmentation and boundary prediction pairs from decoder stages
-            # There are num_decoder_stages (4) such pairs.
+            # There are 4 decoder stages, so 4 pairs (seg, bound).
             num_decoder_stages = 4 
             
             for i in range(num_decoder_stages):
@@ -150,9 +160,9 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
                 # Calculate losses
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
-                b_loss = boundary_loss_fn(boundary_pred, seg_labels) 
+                b_loss = boundary_loss_fn(boundary_pred, seg_labels) # Boundary loss
 
-                # Get the correct deep supervision weight for this segmentation stage
+                # Get the corresponding deep supervision weight for this segmentation stage
                 weight_index = seg_output_idx
                 seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
 
@@ -173,12 +183,13 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             
+            # Use the last deep supervision weight for the final output
             final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
-
-            # For the final output, only include segmentation loss
+            
             total_loss_batch += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
             
-            loss_recorder.update(total_loss_batch, inputs.size(0))
+            # Update loss recorder for epoch average
+            loss_recorder.update(total_loss_batch.item(), inputs.size(0))
             
             # Update confusion matrix using the final segmentation output
             confmat.update(labels.flatten(), final_seg_pred.argmax(1).flatten())
@@ -247,10 +258,12 @@ def main():
             return
         
         try:
+            # Load state_dict carefully, especially if architecture changed
             net.load_state_dict(torch.load(ckpt_path, map_location=device))
             logging.info(f"Model loaded from {ckpt_path}")
         except Exception as e:
             logging.error(f"Error loading checkpoint {ckpt_path}: {e}")
+            logging.error("Potential issue: Model architecture might have changed since checkpoint was saved.")
             return
             
         # Evaluate the loaded model
@@ -299,16 +312,15 @@ def main():
         if epoch == args.fine_tune_epochs:
             unfreeze_backbone(net)
             # Calculate new LR (e.g., reduce by 10x or use a base value for this phase)
-            # It's often good to use a smaller base LR for fine-tuning if not specified
             new_lr = args.lr / 10.0 if args.lr > 1e-5 else args.lr 
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
+            # Re-initialize scheduler with appropriate T0 for the new phase if needed
             scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6) 
             logging.info(f"--- Switched to Phase 2. New LR: {new_lr} ---")
             
         net.train() # Set model to training mode
         loss_recorder = AvgMeter() # Meter for epoch loss
         
-        # Use tqdm for a progress bar over the training loader
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         
         for data in train_iterator:
@@ -317,11 +329,10 @@ def main():
 
             inputs, labels = data['image'].to(device), data['label'].to(device)
             
-            # Zero gradients
             optimizer.zero_grad(set_to_none=True)
             
             # Forward pass
-            # outputs_tuple = [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+            # Model returns: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
             outputs_tuple = net(inputs) 
 
             total_loss = 0
@@ -330,23 +341,25 @@ def main():
             num_seg_outputs_in_model = 5 # d4, d3, d2, d1, final_seg
             num_decoder_stages = 4 # d4, d3, d2, d1 (each has seg + bound output)
             
-            seg_head_idx = 0 # Index for deep_supervision_weights
+            seg_output_idx = 0 # Index for deep_supervision_weights
             
             for i in range(num_decoder_stages):
                 seg_pred = outputs_tuple[i * 2]         # Segmentation output
                 boundary_pred = outputs_tuple[i * 2 + 1] # Boundary prediction
 
-                seg_labels = labels.long() # Ensure labels are LongTensor
+                seg_labels = labels.long()
 
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
+                
+                # Boundary loss calculation
                 b_loss = boundary_loss_fn(boundary_pred, seg_labels) 
 
                 # Get the corresponding deep supervision weight
                 weight_index = seg_output_idx
                 seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
 
-                # Combine losses with their weights
+                # Combine losses for this stage
                 segmentation_loss_component = seg_weight * (
                     (args.focal_loss_weight * f_loss) + 
                     (args.dice_loss_weight * d_loss)
@@ -355,26 +368,23 @@ def main():
                 
                 total_loss += segmentation_loss_component + boundary_loss_component
                 
-                seg_output_idx += 1
+                seg_output_idx += 1 # Increment for the next segmentation head
 
             # Handle the final segmentation output (the last one in the tuple)
             final_seg_pred = outputs_tuple[-1]
-            
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             
             # Use the last deep supervision weight for the final output
             final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
-
+            
             total_loss += final_seg_weight * ((args.focal_loss_weight * f_loss_final) + (args.dice_loss_weight * d_loss_final))
             
             # Backward pass and optimization
             total_loss.backward()
             optimizer.step()
             
-            # Update loss recorder for epoch average
             loss_recorder.update(total_loss.item(), inputs.size(0))
-            # Update progress bar with current average loss
             train_iterator.set_postfix(loss=loss_recorder.avg)
         
         # --- Validation ---

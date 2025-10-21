@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from lasa import LASA
 from se_block import SEBlock # SE Blocks in encoder
 from cbam import CBAM # CBAM for feature refinement
-from boundary_module import BoundaryModule # <-- ADD THIS IMPORT
+from boundary_module import BoundaryModule # Boundary Module import
 
 class Light_LASA_Unet(nn.Module):
     def __init__(self, num_classes=2, lasa_kernels=[1, 3, 5, 7]):
@@ -16,7 +16,7 @@ class Light_LASA_Unet(nn.Module):
 
         mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
         
-        # --- 1. ENCODER (with SE Blocks) ---
+        # --- 1. ENHANCED MobileNetV2 ENCODER (with SE Blocks) ---
         self.encoder1 = nn.Sequential(*mobilenet.features[0:2], SEBlock(16))
         self.encoder2 = nn.Sequential(*mobilenet.features[2:4], SEBlock(24))
         self.encoder3 = nn.Sequential(*mobilenet.features[4:7], SEBlock(32))
@@ -32,7 +32,7 @@ class Light_LASA_Unet(nn.Module):
         self.decoder4 = self._decoder_block(bottle_ch + e4_ch, 256)
         self.aux_conv_d4 = nn.Conv2d(256, num_classes, kernel_size=1)
         # --- Boundary Prediction Head for Decoder 4 output ---
-        self.boundary_pred_d4 = BoundaryModule(in_channels=256)
+        self.boundary_pred_d4 = BoundaryModule(in_channels=256) # Output 1 channel for boundary
 
         # Decoder 3: Input 256 (from decoder4) + e3_ch, Output 128 channels
         self.decoder3 = self._decoder_block(256 + e3_ch, 128)
@@ -55,18 +55,20 @@ class Light_LASA_Unet(nn.Module):
         self.final_conv = nn.Conv2d(64, num_classes, kernel_size=1)
 
     def _decoder_block(self, in_channels, out_channels):
+        # Each decoder block includes CBAM after the first convolution
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nnegative_index_error
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            CBAM(out_channels), # Keep CBAM for feature refinement
+            CBAM(out_channels), # CBAM integrated here
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
-        input_h, input_w = x.shape[2:]
+        input_h, input_w = x.shape[2:] # Get original spatial dimensions
 
         # --- Encoder Path ---
         e1 = self.encoder1(x)
@@ -83,37 +85,39 @@ class Light_LASA_Unet(nn.Module):
         # Decoder 4
         d4 = torch.cat([F.interpolate(bottleneck, size=e4.shape[2:], mode='bilinear', align_corners=True), e4], dim=1)
         d4_out = self.decoder4(d4)
+        # Segmentation prediction for d4
         aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # --- Get Boundary Prediction ---
+        # Boundary prediction for d4 (resized to match input dimensions)
         boundary_d4 = self.boundary_pred_d4(d4_out)
-        aux_outputs.append(boundary_d4) # Append boundary prediction
+        aux_outputs.append(F.interpolate(boundary_d4, size=(input_h, input_w), mode='bilinear', align_corners=True))
         
         # Decoder 3
         d3 = torch.cat([F.interpolate(d4_out, size=e3.shape[2:], mode='bilinear', align_corners=True), e3], dim=1)
         d3_out = self.decoder3(d3)
         aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # --- Get Boundary Prediction ---
+        # Boundary prediction for d3 (resized)
         boundary_d3 = self.boundary_pred_d3(d3_out)
-        aux_outputs.append(boundary_d3) # Append boundary prediction
+        aux_outputs.append(F.interpolate(boundary_d3, size=(input_h, input_w), mode='bilinear', align_corners=True))
         
         # Decoder 2
         d2 = torch.cat([F.interpolate(d3_out, size=e2.shape[2:], mode='bilinear', align_corners=True), e2], dim=1)
         d2_out = self.decoder2(d2)
         aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # --- Get Boundary Prediction ---
+        # Boundary prediction for d2 (resized)
         boundary_d2 = self.boundary_pred_d2(d2_out)
-        aux_outputs.append(boundary_d2) # Append boundary prediction
+        aux_outputs.append(F.interpolate(boundary_d2, size=(input_h, input_w), mode='bilinear', align_corners=True))
         
         # Decoder 1
         d1 = torch.cat([F.interpolate(d2_out, size=e1.shape[2:], mode='bilinear', align_corners=True), e1], dim=1)
         d1_out = self.decoder1(d1)
         aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # --- Get Boundary Prediction ---
+        # Boundary prediction for d1 (resized)
         boundary_d1 = self.boundary_pred_d1(d1_out)
-        aux_outputs.append(boundary_d1) # Append boundary prediction
+        aux_outputs.append(F.interpolate(boundary_d1, size=(input_h, input_w), mode='bilinear', align_corners=True))
         
         # Final output
         final_output = self.final_conv(d1_out) 
         final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
         
-        return tuple(aux_outputs + [final_output_upsampled]) # Return all outputs including boundary predictions
+        # Return all outputs: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
+        return tuple(aux_outputs + [final_output_upsampled])
