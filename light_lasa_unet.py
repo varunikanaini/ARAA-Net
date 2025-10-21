@@ -40,7 +40,7 @@ class Light_LASA_Unet(nn.Module):
         self.aux_conv_d2 = nn.Conv2d(64, num_classes, kernel_size=1)
 
         # Decoder 1: Input 64 (from decoder2) + e1_ch, Output 64 channels
-        selfS.decoder1 = self._decoder_block(64 + e1_ch, 64)
+        self.decoder1 = self._decoder_block(64 + e1_ch, 64)
         self.aux_conv_d1 = nn.Conv2d(64, num_classes, kernel_size=1)
         
         # Final output layer
