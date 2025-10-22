@@ -13,7 +13,10 @@ if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
 from light_lasa_unet import Light_LASA_Unet
-from datasets import ImageFolder, ProportionalResizePad, Normalize, ToTensor
+from datasets import ImageFolder
+# --- THIS IS THE FIX ---
+# Import ProportionalResizePad, Normalize, and ToTensor from custom_transforms where they actually live.
+from custom_transforms import ProportionalResizePad, Normalize, ToTensor
 import config
 from torchvision import transforms
 
