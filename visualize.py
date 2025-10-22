@@ -14,16 +14,17 @@ if project_path not in sys.path:
 
 from light_lasa_unet import Light_LASA_Unet
 from datasets import ImageFolder
-# --- THIS IS THE FIX ---
-# Import ProportionalResizePad, Normalize, and ToTensor from custom_transforms where they actually live.
 from custom_transforms import ProportionalResizePad, Normalize, ToTensor
 import config
 from torchvision import transforms
 
-def visualize_predictions(model, data_loader, device, num_images=10):
+def visualize_predictions(model, data_loader, device, num_images=10, output_dir='visualization_outputs'):
     model.eval()
     
-    # Custom denormalization function to make images viewable
+    # --- ADDED: Create the output directory if it doesn't exist ---
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving visualization images to: {output_dir}")
+
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
@@ -35,33 +36,39 @@ def visualize_predictions(model, data_loader, device, num_images=10):
             image = sample['image'].to(device)
             gt_mask = sample['label'].squeeze(0).cpu().numpy()
             
-            # Get model prediction
+            # Get the original image name to use in the filename
+            image_name = sample.get('name', [f'image_{i+1}'])[0]
+            
             outputs = model(image)
-            # Use the final output from the tuple
             pred = torch.argmax(outputs[-1], dim=1).squeeze(0).cpu().numpy()
             
-            # Denormalize image for viewing
             image_to_show = image.squeeze(0).cpu() * std + mean
             image_to_show = np.clip(image_to_show.permute(1, 2, 0).numpy(), 0, 1)
             
-            # --- Plotting ---
             fig, axes = plt.subplots(1, 3, figsize=(18, 6))
             
             axes[0].imshow(image_to_show)
-            axes[0].set_title(f"Original Image #{i+1}")
+            axes[0].set_title(f"Original: {image_name}")
             axes[0].axis('off')
             
             axes[1].imshow(gt_mask, cmap='gray')
-            axes[1].set_title("Ground Truth Mask")
+            axes[1].set_title("Ground Truth")
             axes[1].axis('off')
             
             axes[2].imshow(pred, cmap='gray')
-            axes[2].set_title("Model Prediction")
+            axes[2].set_title("Prediction")
             axes[2].axis('off')
             
             plt.tight_layout()
-            plt.show()
+            
+            # --- MODIFIED: Save the figure instead of trying to show it ---
+            save_path = os.path.join(output_dir, f"comparison_{image_name.replace('.jpg', '.png')}")
+            plt.savefig(save_path)
+            plt.close(fig) # Close the figure to free up memory
 
+    print("Visualization complete.")
+
+# --- (The main function remains exactly the same) ---
 def main():
     parser = argparse.ArgumentParser(description='Visualize model predictions')
     parser.add_argument('--dataset-name', type=str, required=True)
@@ -71,7 +78,6 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # --- Load the Model ---
     exp_name = f"{args.backbone}_FreezeTune_LASA_{args.dataset_name.replace('TSRS_RSNA-', '').lower()}"
     model_path = os.path.join(config.CKPT_ROOT, exp_name, 'best_checkpoint.pth')
     
@@ -79,12 +85,9 @@ def main():
     model.load_state_dict(torch.load(model_path, map_location=device))
     print(f"Model loaded from {model_path}")
     
-    # --- Load the Test Dataset ---
-    # We must use the exact same validation/test transforms as in training
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
     dataset_path = dataset_info['path']
     
-    # Create a dummy args object for the dataset
     class DummyArgs:
         scale_h = 224
         scale_w = 224
@@ -96,7 +99,6 @@ def main():
     ])
 
     test_ds = ImageFolder(root=os.path.join(dataset_path, 'test'), dataset_name=args.dataset_name, args=DummyArgs(), split='test')
-    # Manually override the transforms
     test_ds.composed_transforms = test_transforms
     
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False)
