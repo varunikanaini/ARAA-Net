@@ -43,11 +43,24 @@ class CenterLoss(nn.Module):
 
     def forward(self, pred, target):
         from scipy.ndimage import distance_transform_edt
-        # Ensure target is [batch_size, H, W] with integer values
+        # Handle target shape
         if target.dim() == 4:  # [batch_size, num_classes, H, W]
+            logging.debug(f"CenterLoss: target has 4 dims, shape={target.shape}, converting to [batch_size, H, W]")
             target = target.argmax(dim=1)  # Convert to [batch_size, H, W]
         elif target.dim() == 3 and target.shape[1] == 1:  # [batch_size, 1, H, W]
+            logging.debug(f"CenterLoss: target has 3 dims with 1 channel, shape={target.shape}, squeezing")
             target = target.squeeze(1)  # Convert to [batch_size, H, W]
+        elif target.dim() != 3:
+            raise ValueError(f"Unexpected target shape: {target.shape}")
+
+        # Ensure pred is [batch_size, H, W]
+        if pred.dim() == 4:  # [batch_size, 1 or 2, H, W]
+            logging.debug(f"CenterLoss: pred has 4 dims, shape={pred.shape}, squeezing")
+            if pred.shape[1] != 1:
+                logging.warning(f"CenterLoss: pred has {pred.shape[1]} channels, expected 1, taking first channel")
+                pred = pred[:, 0, :, :]  # Take first channel if num_classes=2
+            else:
+                pred = pred.squeeze(1)  # [batch_size, 1, H, W] -> [batch_size, H, W]
 
         target_np = target.cpu().numpy()  # [batch_size, H, W]
         batch_size, height, width = target_np.shape
@@ -59,11 +72,8 @@ class CenterLoss(nn.Module):
             center = (dist == dist.max()).astype(np.float32)
             center_map[b] = torch.tensor(center, device=target.device)
 
-        if pred.dim() == 4:  # [batch_size, 1 or 2, H, W]
-            pred = pred.squeeze(1)  # Ensure [batch_size, H, W]
-        
-        # Debug shapes
-        logging.debug(f"CenterLoss: pred.shape={pred.shape}, center_map.shape={center_map.shape}")
+        logging.debug(f"CenterLoss: pred.shape={pred.shape}, center_map.shape={center_map.shape}, target.shape={target.shape}")
+        logging.debug(f"CenterLoss: target unique values={np.unique(target_np)}")
 
         inter = (pred * center_map).sum()
         denominator = pred.sum() + center_map.sum() + self.smooth
@@ -86,7 +96,7 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=600)
     parser.add_argument('--batch-size', type=int, default=12)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--weight-decay', type=float, default=1e-4)
+    parser.add_argument('--weight-decay', type=float, default=0.0005)
     parser.add_argument('--patience', type=int, default=40)
     parser.add_argument('--lasa-kernels', type=int, nargs='+', default=[1, 3, 5, 7])
     parser.add_argument('--deep-supervision-weights', type=float, nargs='+', default=[0.1, 0.3, 0.5, 0.7, 1.0])
@@ -125,7 +135,7 @@ def setup_logging(log_dir, filename='training.log'):
     for h in logging.root.handlers[:]: logging.root.removeHandler(h)
     check_mkdir(log_dir)
     log_file_path = os.path.join(log_dir, filename)
-    logging.basicConfig(level=logging.INFO, 
+    logging.basicConfig(level=logging.DEBUG, 
                         format='%(asctime)s [%(levelname)s] %(message)s', 
                         handlers=[logging.FileHandler(log_file_path), logging.StreamHandler()])
 
@@ -143,6 +153,8 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
                 continue 
 
             inputs, labels = data['image'].to(device), data['label'].to(device)
+            logging.debug(f"Evaluate: inputs.shape={inputs.shape}, labels.shape={labels.shape}")
+
             outputs_tuple = net(inputs)
 
             total_loss_batch = 0
@@ -154,6 +166,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
                 center_pred = outputs_tuple[i * 3 + 2]
 
                 seg_labels = labels.long()
+                logging.debug(f"Evaluate Decoder {i}: seg_pred.shape={seg_pred.shape}, boundary_pred.shape={boundary_pred.shape}, center_pred.shape={center_pred.shape}, seg_labels.shape={seg_labels.shape}")
 
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
@@ -179,6 +192,8 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
 
             final_seg_pred = outputs_tuple[-2]
             final_center_pred = outputs_tuple[-1]
+            logging.debug(f"Evaluate Final: final_seg_pred.shape={final_seg_pred.shape}, final_center_pred.shape={final_center_pred.shape}, seg_labels.shape={seg_labels.shape}")
+
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             c_loss_final = center_loss_fn(final_center_pred, seg_labels)
@@ -317,7 +332,8 @@ def main():
                 continue
 
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            
+            logging.debug(f"Train: inputs.shape={inputs.shape}, labels.shape={labels.shape}, labels.unique={torch.unique(labels)}")
+
             optimizer.zero_grad(set_to_none=True)
             
             outputs_tuple = net(inputs)
@@ -332,9 +348,7 @@ def main():
                 center_pred = outputs_tuple[i * 3 + 2]
 
                 seg_labels = labels.long()
-
-                # Debug shapes
-                logging.debug(f"Decoder {i}: seg_pred.shape={seg_pred.shape}, boundary_pred.shape={boundary_pred.shape}, center_pred.shape={center_pred.shape}, seg_labels.shape={seg_labels.shape}")
+                logging.debug(f"Decoder {i}: seg_pred.shape={seg_pred.shape}, boundary_pred.shape={boundary_pred.shape}, center_pred.shape={center_pred.shape}, seg_labels.shape={seg_labels.shape}, seg_labels.unique={torch.unique(seg_labels)}")
 
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
@@ -360,9 +374,7 @@ def main():
 
             final_seg_pred = outputs_tuple[-2]
             final_center_pred = outputs_tuple[-1]
-
-            # Debug shapes for final predictions
-            logging.debug(f"Final: final_seg_pred.shape={final_seg_pred.shape}, final_center_pred.shape={final_center_pred.shape}, seg_labels.shape={seg_labels.shape}")
+            logging.debug(f"Final: final_seg_pred.shape={final_seg_pred.shape}, final_center_pred.shape={final_center_pred.shape}, seg_labels.shape={seg_labels.shape}, seg_labels.unique={torch.unique(seg_labels)}")
 
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
