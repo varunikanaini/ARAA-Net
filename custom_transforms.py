@@ -11,9 +11,40 @@ from scipy.ndimage import gaussian_filter
 # Add this import at the top of custom_transforms.py
 import cv2
 
-# ... (keep all your other existing transform classes) ...
 
-# --- ADD THIS NEW CLASS AT THE END OF THE FILE ---
+class ProportionalResizePad(object):
+    """
+    Resizes an image and its label to a target size while maintaining aspect ratio,
+    padding the shorter side to create a square image.
+    """
+    def __init__(self, output_size):
+        self.output_size = output_size
+
+    def __call__(self, sample):
+        img, label = sample['image'], sample['label']
+
+        w, h = img.size
+        long_side = max(w, h)
+        
+        # Calculate new dimensions while preserving aspect ratio
+        new_w = int(w / long_side * self.output_size)
+        new_h = int(h / long_side * self.output_size)
+
+        # Resize using a high-quality filter for the image and nearest for the mask
+        # Note: Image.LANCZOS is the modern replacement for the deprecated Image.ANTIALIAS
+        img = img.resize((new_w, new_h), Image.LANCZOS) 
+        label = label.resize((new_w, new_h), Image.NEAREST)
+
+        # Calculate padding
+        delta_w = self.output_size - new_w
+        delta_h = self.output_size - new_h
+        padding = (delta_w // 2, delta_h // 2, delta_w - (delta_w // 2), delta_h - (delta_h // 2))
+
+        # Apply padding (fill=0 makes the padding black, which is correct for background)
+        img = ImageOps.expand(img, padding, fill=0)
+        label = ImageOps.expand(label, padding, fill=0)
+
+        return {'image': img, 'label': label}
 
 class GridDistortion(object):
     """

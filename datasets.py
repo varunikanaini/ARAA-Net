@@ -143,7 +143,8 @@ class ImageFolder(data.Dataset):
         # Your transforms compositions remain the same
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(w=args.scale_w, h=args.scale_h),
+                # tr.FixedResize(w=args.scale_w, h=args.scale_h),
+                tr.ProportionalResizePad(output_size=args.scale_h),
                 tr.CenterAmplification(min_lesion_area_pixels=args.min_lesion_area_pixels,
                                        expansion_factor=args.expansion_factor,
                                        min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
@@ -163,7 +164,8 @@ class ImageFolder(data.Dataset):
             ])
         else:
             self.composed_transforms = transforms.Compose([
-                tr.FixedResize(w=args.scale_w, h=args.scale_h),
+                # tr.FixedResize(w=args.scale_w, h=args.scale_h),
+                tr.ProportionalResizePad(output_size=args.scale_h),
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor()
             ])
