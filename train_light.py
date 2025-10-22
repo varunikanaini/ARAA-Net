@@ -40,15 +40,22 @@ class CenterLoss(nn.Module):
     def __init__(self, smooth=1e-6):
         super(CenterLoss, self).__init__()
         self.smooth = smooth
+
     def forward(self, pred, target):
         from scipy.ndimage import distance_transform_edt
-        target_np = target.cpu().numpy()
-        center_map = torch.zeros_like(target, dtype=torch.float32, device=target.device)
-        for b in range(target_np.shape[0]):
-            dist = distance_transform_edt(target_np[b] > 0)
+        target_np = target.cpu().numpy()  # [batch_size, H, W]
+        batch_size, height, width = target_np.shape
+        center_map = torch.zeros(batch_size, height, width, dtype=torch.float32, device=target.device)
+
+        for b in range(batch_size):
+            # Ensure binary mask (0 or 1)
+            binary_mask = (target_np[b] > 0).astype(np.float32)
+            dist = distance_transform_edt(binary_mask)
+            # Identify center as the pixel with max distance
             center = (dist == dist.max()).astype(np.float32)
             center_map[b] = torch.tensor(center, device=target.device)
-        pred = pred.squeeze(1)
+
+        pred = pred.squeeze(1)  # [batch_size, 1, H, W] -> [batch_size, H, W]
         inter = (pred * center_map).sum()
         denominator = pred.sum() + center_map.sum() + self.smooth
         return 1 - ((2. * inter + self.smooth) / denominator)
@@ -68,7 +75,7 @@ def get_args():
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
     parser.add_argument('--backbone', type=str, default='mobilenet_v2', choices=list(config.BACKBONE_CHANNELS.keys()))
     parser.add_argument('--epochs', type=int, default=600)
-    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--batch-size', type=int, default=12)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--patience', type=int, default=40)
@@ -119,7 +126,6 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
     loss_recorder = AvgMeter()
     focal_losses, dice_losses, boundary_losses, center_losses = [], [], [], []
 
-    num_seg_outputs = 5
     num_decoder_stages = 4
 
     with torch.no_grad():
@@ -166,7 +172,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
             final_center_pred = outputs_tuple[-1]
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
-            c_loss_final = center_loss_fn(final_seg_pred, seg_labels)
+            c_loss_final = center_loss_fn(final_center_pred, seg_labels)
             
             focal_losses.append(f_loss_final.item())
             dice_losses.append(d_loss_final.item())
