@@ -8,6 +8,32 @@ from torchvision.transforms import functional as TF
 # Add these imports at the top of custom_transforms.py if they aren't there
 from scipy.ndimage import map_coordinates
 from scipy.ndimage import gaussian_filter
+import cv2
+
+class SimulateOverlap:
+    def __init__(self, p=0.5):
+        self.p = p
+
+    def __call__(self, sample):
+        if random.random() > self.p:
+            return sample
+
+        image, label = sample['image'], sample['label']
+        image_np = np.array(image)
+        label_np = np.array(label)
+
+        # Simulate overlap by blending with a random transformation of the same image
+        shift_x = random.randint(-20, 20)
+        shift_y = random.randint(-20, 20)
+        image_shifted = cv2.warpAffine(image_np, np.float32([[1, 0, shift_x], [0, 1, shift_y]]), image_np.shape[:2][::-1])
+        label_shifted = cv2.warpAffine(label_np, np.float32([[1, 0, shift_x], [0, 1, shift_y]]), label_np.shape[::-1], flags=cv2.INTER_NEAREST)
+
+        # Blend images and masks
+        alpha = random.uniform(0.3, 0.7)
+        image_np = (1 - alpha) * image_np + alpha * image_shifted
+        label_np = np.maximum(label_np, label_shifted)
+
+        return {'image': Image.fromarray(image_np.astype(np.uint8)), 'label': Image.fromarray(label_np.astype(np.uint8))}
 
 # --- REPLACE THE OLD ElasticTransform WITH THIS NEW ONE ---
 class ElasticTransform(object):
