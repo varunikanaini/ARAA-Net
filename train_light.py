@@ -43,19 +43,28 @@ class CenterLoss(nn.Module):
 
     def forward(self, pred, target):
         from scipy.ndimage import distance_transform_edt
+        # Ensure target is [batch_size, H, W] with integer values
+        if target.dim() == 4:  # [batch_size, num_classes, H, W]
+            target = target.argmax(dim=1)  # Convert to [batch_size, H, W]
+        elif target.dim() == 3 and target.shape[1] == 1:  # [batch_size, 1, H, W]
+            target = target.squeeze(1)  # Convert to [batch_size, H, W]
+
         target_np = target.cpu().numpy()  # [batch_size, H, W]
         batch_size, height, width = target_np.shape
         center_map = torch.zeros(batch_size, height, width, dtype=torch.float32, device=target.device)
 
         for b in range(batch_size):
-            # Ensure binary mask (0 or 1)
             binary_mask = (target_np[b] > 0).astype(np.float32)
             dist = distance_transform_edt(binary_mask)
-            # Identify center as the pixel with max distance
             center = (dist == dist.max()).astype(np.float32)
             center_map[b] = torch.tensor(center, device=target.device)
 
-        pred = pred.squeeze(1)  # [batch_size, 1, H, W] -> [batch_size, H, W]
+        if pred.dim() == 4:  # [batch_size, 1 or 2, H, W]
+            pred = pred.squeeze(1)  # Ensure [batch_size, H, W]
+        
+        # Debug shapes
+        logging.debug(f"CenterLoss: pred.shape={pred.shape}, center_map.shape={center_map.shape}")
+
         inter = (pred * center_map).sum()
         denominator = pred.sum() + center_map.sum() + self.smooth
         return 1 - ((2. * inter + self.smooth) / denominator)
@@ -324,6 +333,9 @@ def main():
 
                 seg_labels = labels.long()
 
+                # Debug shapes
+                logging.debug(f"Decoder {i}: seg_pred.shape={seg_pred.shape}, boundary_pred.shape={boundary_pred.shape}, center_pred.shape={center_pred.shape}, seg_labels.shape={seg_labels.shape}")
+
                 f_loss = focal_loss_fn(seg_pred, seg_labels)
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
                 b_loss = boundary_loss_fn(boundary_pred, seg_labels)
@@ -348,6 +360,10 @@ def main():
 
             final_seg_pred = outputs_tuple[-2]
             final_center_pred = outputs_tuple[-1]
+
+            # Debug shapes for final predictions
+            logging.debug(f"Final: final_seg_pred.shape={final_seg_pred.shape}, final_center_pred.shape={final_center_pred.shape}, seg_labels.shape={seg_labels.shape}")
+
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             c_loss_final = center_loss_fn(final_center_pred, seg_labels)
