@@ -139,36 +139,61 @@ class ImageFolder(data.Dataset):
         if dataset_name in ['JSRT', 'COVID19_Radiography']: 
             self.mean = [0.5]
             self.std = [0.5]
-
-        # Your transforms compositions remain the same
+            
         if self.split == 'train':
             self.composed_transforms = transforms.Compose([
-                # tr.FixedResize(w=args.scale_w, h=args.scale_h),
-                tr.ProportionalResizePad(output_size=args.scale_h),
-                tr.CenterAmplification(min_lesion_area_pixels=args.min_lesion_area_pixels,
-                                       expansion_factor=args.expansion_factor,
-                                       min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
+                # This one transform handles resizing, cropping, and aspect ratio augmentation.
+                # It replaces ProportionalResizePad AND RandomCrop.
+                tr.RandomResizedCrop(size=(args.scale_h, args.scale_w), scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+                
                 tr.RandomHorizontalFlip(),
-                tr.RandomCrop((args.scale_h, args.scale_w)),
-                
-                # --- ADD THE NEW AUGMENTATIONS HERE ---
-                tr.ElasticTransform(alpha=35, sigma=5, p=0.5), # Your existing powerful augmentation
-                tr.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), # The new one you just added
-                
+                # We can still use the advanced augmentations
+                tr.ElasticTransform(alpha=35, sigma=5, p=0.4), # Slightly lower probability
+                tr.GridDistortion(num_steps=5, distort_limit=0.2, p=0.4), # Slightly lower probability
                 tr.RandomGaussianBlur(),
-                tr.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) if hasattr(tr, 'ColorJitter') else lambda x: x,
-                tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
-                tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x, 
+                tr.ColorJitter(brightness=0.2, contrast=0.2), # Simplified
+                tr.RandomAffine(degrees=7, translate=(0.05, 0.05), shear=5), # Reduced intensity
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor() 
             ])
         else:
+            # For validation/testing, we STILL use ProportionalResizePad because we want
+            # a deterministic, centered, non-distorted image. NO random cropping.
             self.composed_transforms = transforms.Compose([
-                # tr.FixedResize(w=args.scale_w, h=args.scale_h),
                 tr.ProportionalResizePad(output_size=args.scale_h),
                 tr.Normalize(mean=self.mean, std=self.std),
                 tr.ToTensor()
             ])
+
+        # Your transforms compositions remain the same
+        # if self.split == 'train':
+        #     self.composed_transforms = transforms.Compose([
+        #         # tr.FixedResize(w=args.scale_w, h=args.scale_h),
+        #         tr.ProportionalResizePad(output_size=args.scale_h),
+        #         tr.CenterAmplification(min_lesion_area_pixels=args.min_lesion_area_pixels,
+        #                                expansion_factor=args.expansion_factor,
+        #                                min_bbox_size=(args.min_bbox_h, args.min_bbox_w)) if args.min_lesion_area_pixels > 0 else lambda x: x,
+        #         tr.RandomHorizontalFlip(),
+        #         tr.RandomCrop((args.scale_h, args.scale_w)),
+                
+        #         # --- ADD THE NEW AUGMENTATIONS HERE ---
+        #         tr.ElasticTransform(alpha=35, sigma=5, p=0.5), # Your existing powerful augmentation
+        #         tr.GridDistortion(num_steps=5, distort_limit=0.3, p=0.5), # The new one you just added
+                
+        #         tr.RandomGaussianBlur(),
+        #         tr.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1) if hasattr(tr, 'ColorJitter') else lambda x: x,
+        #         tr.RandomAffine(degrees=7, translate=(0.07, 0.07), scale=(0.95, 1.05), shear=7, mask_fill_value=0) if hasattr(tr, 'RandomAffine') else lambda x: x,
+        #         tr.RandomCutout(num_holes_range=(1, 4), max_h_size=48, max_w_size=48, fill_value=0, p=0.6) if hasattr(tr, 'RandomCutout') else lambda x: x, 
+        #         tr.Normalize(mean=self.mean, std=self.std),
+        #         tr.ToTensor() 
+        #     ])
+        # else:
+        #     self.composed_transforms = transforms.Compose([
+        #         # tr.FixedResize(w=args.scale_w, h=args.scale_h),
+        #         tr.ProportionalResizePad(output_size=args.scale_h),
+        #         tr.Normalize(mean=self.mean, std=self.std),
+        #         tr.ToTensor()
+        #     ])
 
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]

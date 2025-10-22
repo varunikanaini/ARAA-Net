@@ -11,7 +11,23 @@ from scipy.ndimage import gaussian_filter
 # Add this import at the top of custom_transforms.py
 import cv2
 
+class RandomResizedCrop(object):
+    def __init__(self, size, scale=(0.8, 1.0), ratio=(3./4., 4./3.)):
+        self.transform = transforms.RandomResizedCrop(size, scale, ratio, interpolation=transforms.InterpolationMode.LANCZOS)
+        self.transform_label = transforms.RandomResizedCrop(size, scale, ratio, interpolation=transforms.InterpolationMode.NEAREST)
 
+    def __call__(self, sample):
+        img, label = sample['image'], sample['label']
+        
+        # Get parameters for the random crop
+        i, j, h, w = self.transform.get_params(img, self.transform.scale, self.transform.ratio)
+        
+        # Apply the same crop to both image and label
+        img = TF.resized_crop(img, i, j, h, w, self.transform.size, self.transform.interpolation)
+        label = TF.resized_crop(label, i, j, h, w, self.transform.size, self.transform_label.interpolation)
+        
+        return {'image': img, 'label': label}
+    
 class ProportionalResizePad(object):
     """
     Resizes an image and its label to a target size while maintaining aspect ratio,
