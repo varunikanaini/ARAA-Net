@@ -10,6 +10,28 @@ from scipy.ndimage import map_coordinates
 from scipy.ndimage import gaussian_filter
 import cv2
 
+class RandomGaussianBlur:
+    def __init__(self, kernel_size=(3, 7), sigma=(0.5, 2.0), p=0.5):
+        self.kernel_size = kernel_size
+        self.sigma = sigma
+        self.p = p
+
+    def __call__(self, sample):
+        if random.random() > self.p:
+            return sample
+
+        image, label = sample['image'], sample['label']
+        image_np = np.array(image)
+
+        # Select random kernel size (must be odd) and sigma
+        kernel_size = random.randrange(self.kernel_size[0], self.kernel_size[1] + 1, 2)
+        sigma = random.uniform(self.sigma[0], self.sigma[1])
+
+        # Apply Gaussian blur
+        image_blurred = cv2.GaussianBlur(image_np, (kernel_size, kernel_size), sigma)
+
+        return {'image': Image.fromarray(image_blurred.astype(np.uint8)), 'label': label}
+
 class SimulateOverlap:
     def __init__(self, p=0.5):
         self.p = p
@@ -22,20 +44,17 @@ class SimulateOverlap:
         image_np = np.array(image)
         label_np = np.array(label)
 
-        # Simulate overlap by blending with a random transformation of the same image
         shift_x = random.randint(-20, 20)
         shift_y = random.randint(-20, 20)
         image_shifted = cv2.warpAffine(image_np, np.float32([[1, 0, shift_x], [0, 1, shift_y]]), image_np.shape[:2][::-1])
         label_shifted = cv2.warpAffine(label_np, np.float32([[1, 0, shift_x], [0, 1, shift_y]]), label_np.shape[::-1], flags=cv2.INTER_NEAREST)
 
-        # Blend images and masks
         alpha = random.uniform(0.3, 0.7)
         image_np = (1 - alpha) * image_np + alpha * image_shifted
         label_np = np.maximum(label_np, label_shifted)
 
         return {'image': Image.fromarray(image_np.astype(np.uint8)), 'label': Image.fromarray(label_np.astype(np.uint8))}
-
-# --- REPLACE THE OLD ElasticTransform WITH THIS NEW ONE ---
+    
 class ElasticTransform(object):
     """
     Apply elastic deformation on a PIL image and its corresponding mask.
@@ -127,16 +146,6 @@ class RandomCrop(object):
         label = label.crop((j, i, j + tw, i + th))
         return {'image': img, 'label': label}
 
-class RandomGaussianBlur(object):
-    def __init__(self, radius_range=(0.1, 2.0)):
-        self.radius_range = radius_range
-
-    def __call__(self, sample):
-        img, label = sample['image'], sample['label']
-        if np.random.rand() < 0.5:
-            radius = np.random.uniform(self.radius_range[0], self.radius_range[1])
-            img = img.filter(ImageFilter.GaussianBlur(radius=radius))
-        return {'image': img, 'label': label}
 
 class Normalize(object):
     def __init__(self, mean, std):

@@ -1,6 +1,6 @@
 import sys, os, logging, argparse, torch, numpy as np
 from torch import nn, optim
-from torch.utils.data import DataLoader, Dataset 
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 import torch.nn.functional as F
 
@@ -11,7 +11,7 @@ import config
 from lasa_unet_model import LASA_Unet
 from light_lasa_unet import Light_LASA_Unet
 from datasets import ImageFolder
-from seg_utils import ConfusionMatrix
+from seg_utils import ConfusionMatrix, get_boundary_mask
 from misc import AvgMeter, check_mkdir
 from boundary_loss import BoundaryLoss
 
@@ -41,7 +41,6 @@ class CenterLoss(nn.Module):
         super(CenterLoss, self).__init__()
         self.smooth = smooth
     def forward(self, pred, target):
-        # Create a center map from target: approximate centers using distance transform
         from scipy.ndimage import distance_transform_edt
         target_np = target.cpu().numpy()
         center_map = torch.zeros_like(target, dtype=torch.float32, device=target.device)
@@ -49,7 +48,7 @@ class CenterLoss(nn.Module):
             dist = distance_transform_edt(target_np[b] > 0)
             center = (dist == dist.max()).astype(np.float32)
             center_map[b] = torch.tensor(center, device=target.device)
-        pred = pred.squeeze(1)  # Bx1xHxW -> BxHxW
+        pred = pred.squeeze(1)
         inter = (pred * center_map).sum()
         denominator = pred.sum() + center_map.sum() + self.smooth
         return 1 - ((2. * inter + self.smooth) / denominator)
@@ -68,11 +67,11 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train Segmentation Models')
     parser.add_argument('--dataset-name', type=str, required=True, choices=list(config.DATASET_CONFIG.keys()))
     parser.add_argument('--backbone', type=str, default='mobilenet_v2', choices=list(config.BACKBONE_CHANNELS.keys()))
-    parser.add_argument('--epochs', type=int, default=550)
+    parser.add_argument('--epochs', type=int, default=600)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
-    parser.add_argument('--patience', type=int, default=30)
+    parser.add_argument('--patience', type=int, default=40)
     parser.add_argument('--lasa-kernels', type=int, nargs='+', default=[1, 3, 5, 7])
     parser.add_argument('--deep-supervision-weights', type=float, nargs='+', default=[0.1, 0.3, 0.5, 0.7, 1.0])
     parser.add_argument('--focal-loss-weight', type=float, default=0.5)
@@ -86,7 +85,7 @@ def get_args():
     parser.add_argument('--test-only', action='store_true')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--num-workers', type=int, default=4)
-    parser.add_argument('--fine-tune-epochs', type=int, default=120)
+    parser.add_argument('--fine-tune-epochs', type=int, default=150)
     
     args = parser.parse_args()
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
@@ -96,7 +95,7 @@ def get_args():
         res_h, res_w = config.get_backbone_resolution(args.backbone)
     except AttributeError:
         res_h, res_w = 224, 224 
-        logging.warning("config.get_backbone_resolution not found. Using default 224x224.")
+        logging.warning("Resolution for backbone '%s' not found in BACKBONE_INPUT_RESOLUTIONS. Using default 224x224.", args.backbone)
     args.scale_h, args.scale_w = res_h, res_w
     
     if hasattr(config, 'DEFAULT_ARGS'):
@@ -117,7 +116,8 @@ def setup_logging(log_dir, filename='training.log'):
 def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, center_loss_fn, args, mode="Validating"):
     net.eval()
     confmat = ConfusionMatrix(args.num_classes)
-    loss_recorder = AvgMeter() 
+    loss_recorder = AvgMeter()
+    focal_losses, dice_losses, boundary_losses, center_losses = [], [], [], []
 
     num_seg_outputs = 5
     num_decoder_stages = 4
@@ -128,16 +128,15 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
                 continue 
 
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            
             outputs_tuple = net(inputs)
 
             total_loss_batch = 0
             seg_output_idx = 0
             
             for i in range(num_decoder_stages):
-                seg_pred = outputs_tuple[i * 3]         # Segmentation output
-                boundary_pred = outputs_tuple[i * 3 + 1] # Boundary prediction
-                center_pred = outputs_tuple[i * 3 + 2]   # Center prediction
+                seg_pred = outputs_tuple[i * 3]
+                boundary_pred = outputs_tuple[i * 3 + 1]
+                center_pred = outputs_tuple[i * 3 + 2]
 
                 seg_labels = labels.long()
 
@@ -145,6 +144,11 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
                 d_loss = dice_loss_fn(seg_pred, seg_labels)
                 b_loss = boundary_loss_fn(boundary_pred, seg_labels)
                 c_loss = center_loss_fn(center_pred, seg_labels)
+
+                focal_losses.append(f_loss.item())
+                dice_losses.append(d_loss.item())
+                boundary_losses.append(b_loss.item())
+                center_losses.append(c_loss.item())
 
                 weight_index = seg_output_idx
                 seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
@@ -162,8 +166,12 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
             final_center_pred = outputs_tuple[-1]
             f_loss_final = focal_loss_fn(final_seg_pred, seg_labels)
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
-            c_loss_final = center_loss_fn(final_center_pred, seg_labels)
+            c_loss_final = center_loss_fn(final_seg_pred, seg_labels)
             
+            focal_losses.append(f_loss_final.item())
+            dice_losses.append(d_loss_final.item())
+            center_losses.append(c_loss_final.item())
+
             final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
             total_loss_batch += final_seg_weight * (
                 (args.focal_loss_weight * f_loss_final) + 
@@ -172,12 +180,24 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, bounda
             )
             
             loss_recorder.update(total_loss_batch.item(), inputs.size(0))
-            confmat.update(labels.flatten(), final_seg_pred.argmax(1).flatten())
             
-    acc, _, iou, fwiou, dice = confmat.compute()
-    mIoU = iou.mean().item() 
+            target_boundary = get_boundary_mask(labels)
+            pred_boundary = get_boundary_mask(final_seg_pred.argmax(1))
+            confmat.update(labels.flatten(), final_seg_pred.argmax(1).flatten(), 
+                         target_boundary.flatten(), pred_boundary.flatten())
+            
+    acc, _, iou, fwiou, dice, boundary_iou = confmat.compute()
+    mIoU = iou.mean().item()
     
-    logging.info(f"--- {mode} Summary --- Loss: {loss_recorder.avg:.4f}, OA: {acc.item():.4f}, mIoU: {mIoU:.4f}")
+    logging.info(f"--- {mode} Summary ---")
+    logging.info(f"Total Loss: {loss_recorder.avg:.4f}")
+    logging.info(f"Focal Loss (avg): {np.mean(focal_losses):.4f}")
+    logging.info(f"Dice Loss (avg): {np.mean(dice_losses):.4f}")
+    logging.info(f"Boundary Loss (avg): {np.mean(boundary_losses):.4f}")
+    logging.info(f"Center Loss (avg): {np.mean(center_losses):.4f}")
+    logging.info(f"OA: {acc.item():.4f}")
+    logging.info(f"mIoU: {mIoU:.4f}")
+    logging.info(f"Boundary IoU: {boundary_iou:.4f}")
     
     if mode == "Validating": 
         net.train() 
@@ -213,8 +233,7 @@ def main():
         net = LASA_Unet(num_classes=args.num_classes, backbone_name=args.backbone, lasa_kernels=args.lasa_kernels).to(device)
         logging.info(f"Instantiated {args.backbone}-based model.")
     
-    focal_loss_fn = FocalLoss(alpha=args.focal_alpha if hasattr(args, 'focal_alpha') else 0.5, 
-                            gamma=args.focal_gamma if hasattr(args, 'focal_gamma') else 2).to(device)
+    focal_loss_fn = FocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma).to(device)
     dice_loss_fn = DiceLoss().to(device)
     boundary_loss_fn = BoundaryLoss(device=device, hausdorff_weight=0.3).to(device)
     center_loss_fn = CenterLoss().to(device)
@@ -274,6 +293,7 @@ def main():
             
         net.train()
         loss_recorder = AvgMeter()
+        focal_losses, dice_losses, boundary_losses, center_losses = [], [], [], []
         
         train_iterator = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
         
@@ -303,6 +323,11 @@ def main():
                 b_loss = boundary_loss_fn(boundary_pred, seg_labels)
                 c_loss = center_loss_fn(center_pred, seg_labels)
 
+                focal_losses.append(f_loss.item())
+                dice_losses.append(d_loss.item())
+                boundary_losses.append(b_loss.item())
+                center_losses.append(c_loss.item())
+
                 weight_index = seg_output_idx
                 seg_weight = args.deep_supervision_weights[weight_index] if weight_index < len(args.deep_supervision_weights) else 1.0
 
@@ -321,6 +346,10 @@ def main():
             d_loss_final = dice_loss_fn(final_seg_pred, seg_labels)
             c_loss_final = center_loss_fn(final_center_pred, seg_labels)
             
+            focal_losses.append(f_loss_final.item())
+            dice_losses.append(d_loss_final.item())
+            center_losses.append(c_loss_final.item())
+
             final_seg_weight = args.deep_supervision_weights[-1] if args.deep_supervision_weights else 1.0
             total_loss += final_seg_weight * (
                 (args.focal_loss_weight * f_loss_final) + 
@@ -332,7 +361,20 @@ def main():
             optimizer.step()
             
             loss_recorder.update(total_loss.item(), inputs.size(0))
-            train_iterator.set_postfix(loss=loss_recorder.avg)
+            train_iterator.set_postfix({
+                'total_loss': f'{loss_recorder.avg:.4f}',
+                'focal': f'{np.mean(focal_losses[-10:]):.4f}',
+                'dice': f'{np.mean(dice_losses[-10:]):.4f}',
+                'boundary': f'{np.mean(boundary_losses[-10:]):.4f}',
+                'center': f'{np.mean(center_losses[-10:]):.4f}'
+            })
+        
+        logging.info(f"--- Epoch {epoch+1}/{args.epochs} Training Summary ---")
+        logging.info(f"Total Loss: {loss_recorder.avg:.4f}")
+        logging.info(f"Focal Loss (avg): {np.mean(focal_losses):.4f}")
+        logging.info(f"Dice Loss (avg): {np.mean(dice_losses):.4f}")
+        logging.info(f"Boundary Loss (avg): {np.mean(boundary_losses):.4f}")
+        logging.info(f"Center Loss (avg): {np.mean(center_losses):.4f}")
         
         current_mIoU = evaluate_model(net, val_loader, device, focal_loss_fn, dice_loss_fn, boundary_loss_fn, center_loss_fn, args)
         
