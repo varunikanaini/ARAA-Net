@@ -1,123 +1,47 @@
-# /kaggle/working/ARAA-Net/light_lasa_unet.py
-# --- FINAL VERSION: MobileNetV2 + SE Blocks + Deep Supervision + CBAM + Boundary Module ---
-
 import torch
 import torch.nn as nn
 import torchvision.models as models
-import torch.nn.functional as F
-from lasa import LASA
-from se_block import SEBlock # SE Blocks in encoder
-from cbam import CBAM # CBAM for feature refinement
-from boundary_module import BoundaryModule # Boundary Module import
 
 class Light_LASA_Unet(nn.Module):
     def __init__(self, num_classes=2, lasa_kernels=[1, 3, 5, 7]):
         super(Light_LASA_Unet, self).__init__()
-
-        mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
+        self.num_classes = num_classes
+        self.lasa_kernels = lasa_kernels
         
-        # --- 1. ENHANCED MobileNetV2 ENCODER (with SE Blocks) ---
-        self.encoder1 = nn.Sequential(*mobilenet.features[0:2], SEBlock(16))
-        self.encoder2 = nn.Sequential(*mobilenet.features[2:4], SEBlock(24))
-        self.encoder3 = nn.Sequential(*mobilenet.features[4:7], SEBlock(32))
-        self.encoder4 = nn.Sequential(*mobilenet.features[7:14], SEBlock(96))
-        self.bottleneck_layer = nn.Sequential(*mobilenet.features[14:]) # Standard bottleneck
-
-        e1_ch, e2_ch, e3_ch, e4_ch, bottle_ch = 16, 24, 32, 96, 1280
-
-        self.lasa_module = LASA(in_channels=e4_ch, L_list=lasa_kernels)
-
-        # --- 2. DECODER with DEEP SUPERVISION and BOUNDARY MODULE ---
-        # Decoder 4: Input bottle_ch + e4_ch, Output 256 channels
-        self.decoder4 = self._decoder_block(bottle_ch + e4_ch, 256)
-        self.aux_conv_d4 = nn.Conv2d(256, num_classes, kernel_size=1)
-        # --- Boundary Prediction Head for Decoder 4 output ---
-        self.boundary_pred_d4 = BoundaryModule(in_channels=256) # Output 1 channel for boundary
-
-        # Decoder 3: Input 256 (from decoder4) + e3_ch, Output 128 channels
-        self.decoder3 = self._decoder_block(256 + e3_ch, 128)
-        self.aux_conv_d3 = nn.Conv2d(128, num_classes, kernel_size=1)
-        # --- Boundary Prediction Head for Decoder 3 output ---
-        self.boundary_pred_d3 = BoundaryModule(in_channels=128)
-
-        # Decoder 2: Input 128 (from decoder3) + e2_ch, Output 64 channels
-        self.decoder2 = self._decoder_block(128 + e2_ch, 64)
-        self.aux_conv_d2 = nn.Conv2d(64, num_classes, kernel_size=1)
-        # --- Boundary Prediction Head for Decoder 2 output ---
-        self.boundary_pred_d2 = BoundaryModule(in_channels=64)
+        self.encoder = models.mobilenet_v2(weights='MobileNet_V2_Weights.IMAGENET1K_V1').features
+        self.encoder_channels = [32, 16, 24, 32, 64, 96, 160, 320, 1280]
         
-        # Decoder 1: Input 64 (from decoder2) + e1_ch, Output 64 channels
-        self.decoder1 = self._decoder_block(64 + e1_ch, 64)
-        self.aux_conv_d1 = nn.Conv2d(64, num_classes, kernel_size=1)
-        # --- Boundary Prediction Head for Decoder 1 output ---
-        self.boundary_pred_d1 = BoundaryModule(in_channels=64)
+        self.decoder = nn.ModuleList()
+        self.boundary_heads = nn.ModuleList()
+        self.center_heads = nn.ModuleList()
         
-        self.final_conv = nn.Conv2d(64, num_classes, kernel_size=1)
+        for i in range(4):
+            in_channels = self.encoder_channels[-i-2] if i < 3 else self.encoder_channels[-1]
+            out_channels = self.encoder_channels[-i-3] if i < 3 else 32
+            self.decoder.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1))
+            self.boundary_heads.append(nn.Conv2d(out_channels, num_classes, kernel_size=1))
+            self.center_heads.append(nn.Conv2d(out_channels, 1, kernel_size=1))
 
-    def _decoder_block(self, in_channels, out_channels):
-        # Each decoder block includes CBAM after the first convolution
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            # nnegative_index_error
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            CBAM(out_channels), # CBAM integrated here
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
+        self.final_seg_head = nn.Conv2d(32, num_classes, kernel_size=1)
+        self.final_center_head = nn.Conv2d(32, 1, kernel_size=1)
 
     def forward(self, x):
-        input_h, input_w = x.shape[2:] # Get original spatial dimensions
-
-        # --- Encoder Path ---
-        e1 = self.encoder1(x)
-        e2 = self.encoder2(e1)
-        e3 = self.encoder3(e2)
-        e4 = self.encoder4(e3)
+        features = []
+        for i, layer in enumerate(self.encoder):
+            x = layer(x)
+            if i in [1, 3, 6, 13, 17]:
+                features.append(x)
         
-        e4_enhanced = self.lasa_module(e4)
-        bottleneck = self.bottleneck_layer(e4_enhanced)
-
-        # --- Decoder Path with Deep Supervision ---
-        aux_outputs = []
-
-        # Decoder 4
-        d4 = torch.cat([F.interpolate(bottleneck, size=e4.shape[2:], mode='bilinear', align_corners=True), e4], dim=1)
-        d4_out = self.decoder4(d4)
-        # Segmentation prediction for d4
-        aux_outputs.append(F.interpolate(self.aux_conv_d4(d4_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # Boundary prediction for d4 (resized to match input dimensions)
-        boundary_d4 = self.boundary_pred_d4(d4_out)
-        aux_outputs.append(F.interpolate(boundary_d4, size=(input_h, input_w), mode='bilinear', align_corners=True))
+        outputs = []
+        for i in range(4):
+            x = self.decoder[i](features[-i-2] if i < 3 else features[-1])
+            seg_out = self.boundary_heads[i](x)
+            center_out = self.center_heads[i](x)
+            outputs.extend([seg_out, seg_out, center_out])
         
-        # Decoder 3
-        d3 = torch.cat([F.interpolate(d4_out, size=e3.shape[2:], mode='bilinear', align_corners=True), e3], dim=1)
-        d3_out = self.decoder3(d3)
-        aux_outputs.append(F.interpolate(self.aux_conv_d3(d3_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # Boundary prediction for d3 (resized)
-        boundary_d3 = self.boundary_pred_d3(d3_out)
-        aux_outputs.append(F.interpolate(boundary_d3, size=(input_h, input_w), mode='bilinear', align_corners=True))
+        x = self.decoder[-1](features[0])
+        final_seg = self.final_seg_head(x)
+        final_center = self.final_center_head(x)
+        outputs.extend([final_seg, final_center])
         
-        # Decoder 2
-        d2 = torch.cat([F.interpolate(d3_out, size=e2.shape[2:], mode='bilinear', align_corners=True), e2], dim=1)
-        d2_out = self.decoder2(d2)
-        aux_outputs.append(F.interpolate(self.aux_conv_d2(d2_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # Boundary prediction for d2 (resized)
-        boundary_d2 = self.boundary_pred_d2(d2_out)
-        aux_outputs.append(F.interpolate(boundary_d2, size=(input_h, input_w), mode='bilinear', align_corners=True))
-        
-        # Decoder 1
-        d1 = torch.cat([F.interpolate(d2_out, size=e1.shape[2:], mode='bilinear', align_corners=True), e1], dim=1)
-        d1_out = self.decoder1(d1)
-        aux_outputs.append(F.interpolate(self.aux_conv_d1(d1_out), size=(input_h, input_w), mode='bilinear', align_corners=True))
-        # Boundary prediction for d1 (resized)
-        boundary_d1 = self.boundary_pred_d1(d1_out)
-        aux_outputs.append(F.interpolate(boundary_d1, size=(input_h, input_w), mode='bilinear', align_corners=True))
-        
-        # Final output
-        final_output = self.final_conv(d1_out) 
-        final_output_upsampled = F.interpolate(final_output, size=(input_h, input_w), mode='bilinear', align_corners=True)
-        
-        # Return all outputs: [seg_d4, bound_d4, seg_d3, bound_d3, seg_d2, bound_d2, seg_d1, bound_d1, final_seg]
-        return tuple(aux_outputs + [final_output_upsampled])
+        return outputs
