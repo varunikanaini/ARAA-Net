@@ -84,6 +84,7 @@ BACKBONE_INPUT_RESOLUTIONS = {
     'efficientnet_b0': (224, 224),
     'efficientnet_b3': (300, 300), 
     'vgg19': (224, 224),
+    'mobilenet_v2': (224, 224),
 }
 
 # In /kaggle/working/ARAA-Net/config.py
