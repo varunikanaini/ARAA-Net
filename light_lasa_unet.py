@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from lasa import LASA
 from se_block import SEBlock # SE Blocks in encoder
 from boundary_module import BoundaryModule # <-- IMPORT THIS NEW MODULE
+from spatial_attn import BoundarySpatialAttention 
 
 class Light_LASA_Unet(nn.Module):
     def __init__(self, num_classes=2, lasa_kernels=[1, 3, 5, 7]):
@@ -47,16 +48,18 @@ class Light_LASA_Unet(nn.Module):
         self.final_conv = nn.Conv2d(64, num_classes, kernel_size=1)
 
     def _decoder_block(self, in_channels, out_channels):
-        # Each decoder block now includes the BoundaryModule
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            # --- Integrate BoundaryModule here ---
-            # The BoundaryModule needs to know the in_channels to initialize its layers correctly.
-            # So, pass 'out_channels' as both in_channels and out_channels for simplicity.
-            BoundaryModule(in_channels=out_channels, out_channels=out_channels), 
-            # ---
+            
+            # First, capture multi-scale context for boundaries
+            BoundaryModule(in_channels=out_channels, out_channels=out_channels),
+            
+            # Second, apply spatial attention to focus on important regions
+            BoundarySpatialAttention(kernel_size=7), # <-- INTEGRATE THE ATTENTION MODULE HERE
+            
+            # Final refinement convolution in the block
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
