@@ -176,7 +176,7 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         if epoch == args.fine_tune_epochs:
             unfreeze_backbone(net)
-            new_lr = args.lr / 10.0
+            new_lr = args.lr / 5.0
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6)
             logging.info(f"--- Switched to Phase 2. New LR: {new_lr} ---")

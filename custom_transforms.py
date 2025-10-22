@@ -8,7 +8,111 @@ from torchvision.transforms import functional as TF
 # Add these imports at the top of custom_transforms.py if they aren't there
 from scipy.ndimage import map_coordinates
 from scipy.ndimage import gaussian_filter
+# Add this import at the top of custom_transforms.py
+import cv2
 
+# ... (keep all your other existing transform classes) ...
+
+# --- ADD THIS NEW CLASS AT THE END OF THE FILE ---
+
+class GridDistortion(object):
+    """
+    Applies grid distortion on a PIL image and its corresponding mask.
+    This augmentation is effective at simulating lens and perspective distortions.
+    
+    Args:
+        num_steps (int): The number of grid steps on each side.
+        distort_limit (float): The maximum distortion limit. 0.0 means no distortion.
+        p (float): The probability of applying the transform.
+    """
+    def __init__(self, num_steps=5, distort_limit=0.3, p=0.5):
+        self.num_steps = num_steps
+        self.distort_limit = distort_limit
+        self.p = p
+
+    def __call__(self, sample):
+        if np.random.rand() > self.p:
+            return sample
+
+        img, label = sample['image'], sample['label']
+        
+        # Convert PIL to numpy (OpenCV format)
+        img_np = np.array(img)
+        label_np = np.array(label)
+
+        h, w = img_np.shape[:2]
+
+        # Create the grid
+        x_steps = np.linspace(0, w, self.num_steps + 1)
+        y_steps = np.linspace(0, h, self.num_steps + 1)
+
+        # Generate random distortions
+        dx = np.random.uniform(-self.distort_limit, self.distort_limit, (self.num_steps + 1, self.num_steps + 1))
+        dy = np.random.uniform(-self.distort_limit, self.distort_limit, (self.num_steps + 1, self.num_steps + 1))
+        
+        # Scale distortions by grid cell size
+        dx *= w / self.num_steps
+        dy *= h / self.num_steps
+
+        # Create the distorted grid points
+        xx, yy = np.meshgrid(x_steps, y_steps)
+        xx_distorted = xx + dx
+        yy_distorted = yy + dy
+
+        # Build the map for cv2.remap
+        map_x = np.zeros_like(img_np, dtype=np.float32)
+        map_y = np.zeros_like(img_np, dtype=np.float32)
+
+        # Interpolate the distorted grid to the full image size
+        for i in range(self.num_steps):
+            for j in range(self.num_steps):
+                src_rect = np.array([
+                    [yy[i, j], xx[i, j]],
+                    [yy[i, j+1], xx[i, j+1]],
+                    [yy[i+1, j], xx[i+1, j]],
+                    [yy[i+1, j+1], xx[i+1, j+1]]
+                ], dtype=np.float32)
+                
+                dst_rect = np.array([
+                    [yy_distorted[i, j], xx_distorted[i, j]],
+                    [yy_distorted[i, j+1], xx_distorted[i, j+1]],
+                    [yy_distorted[i+1, j], xx_distorted[i+1, j]],
+                    [yy_distorted[i+1, j+1], xx_distorted[i+1, j+1]]
+                ], dtype=np.float32)
+
+                # This part is complex; a simpler cv2-based approach is better
+        
+        # --- A simpler and more standard implementation using cv2.resize ---
+        # Create a coarse displacement map and resize it
+        
+        # Generate random displacements for the grid
+        dx = (np.random.rand(self.num_steps + 1, self.num_steps + 1) * 2 - 1) * self.distort_limit
+        dy = (np.random.rand(self.num_steps + 1, self.num_steps + 1) * 2 - 1) * self.distort_limit
+
+        # Resize the coarse displacement maps to the full image size
+        map_dx = cv2.resize(dx, (w, h), interpolation=cv2.INTER_LINEAR)
+        map_dy = cv2.resize(dy, (w, h), interpolation=cv2.INTER_LINEAR)
+        
+        # Scale the displacement maps
+        map_dx *= w / self.num_steps
+        map_dy *= h / self.num_steps
+
+        # Create the final remapping grids
+        grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
+        map_x = (grid_x + map_dx).astype(np.float32)
+        map_y = (grid_y + map_dy).astype(np.float32)
+
+        # Apply the remapping
+        # Use BILINEAR for the image for smooth results
+        transformed_img_np = cv2.remap(img_np, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+        # Use NEAREST for the mask to preserve discrete label values
+        transformed_label_np = cv2.remap(label_np, map_x, map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        
+        # Convert back to PIL
+        img = Image.fromarray(transformed_img_np)
+        label = Image.fromarray(transformed_label_np)
+        
+        return {'image': img, 'label': label}
 # --- REPLACE THE OLD ElasticTransform WITH THIS NEW ONE ---
 class ElasticTransform(object):
     """
