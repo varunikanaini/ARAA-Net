@@ -1,18 +1,20 @@
-# /kaggle/working/ARAA-Net/train.py
-# --- FINAL, COMPLETE & WORKING VERSION with ALL ARGUMENTS & FEATURES ---
+# /kaggle/working/ARAA-Net/train_light.py
+# --- FINAL VERSION with BOUNDARY LOSS ---
 
 import sys, os, logging, argparse, torch, numpy as np
 from torch import nn, optim
-from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 import torch.nn.functional as F
+# --- ADDED: Import for boundary mask calculation ---
+from scipy.ndimage import binary_erosion, binary_dilation
 
 # --- Setup, Imports, Loss Functions ---
 project_path = '/kaggle/working/ARAA-Net'
 if project_path not in sys.path: sys.path.insert(0, project_path)
 import config
 from lasa_unet_model import LASA_Unet
-from light_lasa_unet import Light_LASA_Unet # <-- Import the lightweight model
+from light_lasa_unet import Light_LASA_Unet
 from datasets import ImageFolder
 from seg_utils import ConfusionMatrix
 from misc import AvgMeter, check_mkdir
@@ -41,6 +43,31 @@ def unfreeze_backbone(model):
         if 'encoder' in n: p.requires_grad = True
     logging.info("--- Encoder UN-FROZEN ---")
 
+# --- NEW: Helper function to create boundary masks ---
+def create_boundary_mask(labels):
+    """
+    Dynamically creates a boundary mask from a batch of segmentation labels.
+    The boundary is the area between the dilated and eroded ground truth.
+    Args:
+        labels (Tensor): The ground truth labels tensor of shape (N, 1, H, W), float type.
+    Returns:
+        Tensor: The boundary mask tensor of shape (N, 1, H, W).
+    """
+    labels_np = labels.clone().cpu().numpy()
+    boundary_masks = []
+    
+    for i in range(labels_np.shape[0]):
+        single_mask = labels_np[i, 0, :, :]
+        
+        dilated = binary_dilation(single_mask, iterations=1)
+        eroded = binary_erosion(single_mask, iterations=1)
+        
+        boundary = np.logical_xor(dilated, eroded)
+        boundary_masks.append(boundary)
+
+    return torch.from_numpy(np.array(boundary_masks)).float().unsqueeze(1).to(labels.device)
+
+
 # --- Argument Parsing (ALL ARGUMENTS INCLUDED) ---
 def get_args():
     parser = argparse.ArgumentParser(description='Train Segmentation Models')
@@ -64,6 +91,9 @@ def get_args():
     parser.add_argument('--num-workers', type=int, default=2)
     parser.add_argument('--fine-tune-epochs', type=int, default=40)
     
+    # --- ADDED: Argument for boundary loss weight ---
+    parser.add_argument('--boundary-loss-weight', type=float, default=1.5, help='Weight for the dedicated boundary loss.')
+
     args = parser.parse_args()
     
     dataset_info = config.DATASET_CONFIG[args.dataset_name]
@@ -90,6 +120,7 @@ def evaluate_model(net, data_loader, device, focal_loss_fn, dice_loss_fn, args, 
             inputs, labels = data['image'].to(device), data['label'].to(device)
             outputs = net(inputs)
             total_loss = 0
+            # Evaluation uses the standard main loss only for consistent comparison
             for i, pred in enumerate(outputs):
                 f_l, d_l = focal_loss_fn(pred, labels.long()), dice_loss_fn(pred, labels.long())
                 total_loss += args.deep_supervision_weights[i] * ((args.focal_loss_weight*f_l) + (args.dice_loss_weight*d_l))
@@ -176,7 +207,7 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         if epoch == args.fine_tune_epochs:
             unfreeze_backbone(net)
-            new_lr = args.lr / 5.0
+            new_lr = args.lr / 5.0 # Using the adjusted fine-tuning LR
             optimizer = optim.Adam(net.parameters(), lr=new_lr, weight_decay=args.weight_decay)
             scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=args.scheduler_T0, T_mult=2, eta_min=1e-6)
             logging.info(f"--- Switched to Phase 2. New LR: {new_lr} ---")
@@ -187,14 +218,37 @@ def main():
         
         for data in train_iterator:
             if data is None: continue
+            
+            # --- MODIFIED: Boundary Loss Implementation ---
             inputs, labels = data['image'].to(device), data['label'].to(device)
+            
+            # Prepare labels for different loss functions
+            labels_float_unsqueezed = labels.unsqueeze(1).float()
+
             optimizer.zero_grad(set_to_none=True)
             outputs = net(inputs)
-            total_loss = 0
+            
+            # 1. Calculate the standard main loss (Focal + Dice) across all heads
+            main_loss = 0
             for head_idx, pred_output in enumerate(outputs):
                 f_loss = focal_loss_fn(pred_output, labels.long())
                 d_loss = dice_loss_fn(pred_output, labels.long())
-                total_loss += args.deep_supervision_weights[head_idx] * ((args.focal_loss_weight * f_loss) + (args.dice_loss_weight * d_loss))
+                main_loss += args.deep_supervision_weights[head_idx] * ((args.focal_loss_weight * f_loss) + (args.dice_loss_weight * d_loss))
+
+            # 2. Calculate the dedicated boundary loss
+            boundary_mask = create_boundary_mask(labels_float_unsqueezed)
+            
+            # Get the final model output (logits) for the positive class
+            final_pred_logits = outputs[-1][:, 1, :, :].unsqueeze(1)
+
+            # Calculate BCE loss only on the boundary pixels
+            # We multiply by the mask to zero out non-boundary pixels before taking the mean
+            boundary_bce_loss = F.binary_cross_entropy_with_logits(final_pred_logits, boundary_mask, reduction='none')
+            boundary_loss = (boundary_bce_loss * boundary_mask).mean()
+
+            # 3. Combine the losses
+            total_loss = main_loss + (args.boundary_loss_weight * boundary_loss)
+            
             total_loss.backward()
             optimizer.step()
             loss_recorder.update(total_loss.item(), inputs.size(0))
@@ -229,4 +283,4 @@ def main():
     logging.info("Training finished.")
 
 if __name__ == '__main__':
-    main() 
+    main()
