@@ -30,7 +30,6 @@ from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import numpy as np
 
-# --- UNCHANGED IMPORTS ---
 from config import backbone_path, DATASET_PATHS 
 from datasets import ImageFolder, make_dataset
 from misc import AvgMeter, check_mkdir
@@ -42,24 +41,11 @@ cudnn.benchmark = True
 torch.manual_seed(2021)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# =========================================================================================
-# --- ADDED: Definition for setup_logging ---
-# This function was called but not defined in the previous version. This corrects the error.
-# =========================================================================================
 def setup_logging(log_dir, filename='training.log'):
-    """Configures the logging for a specific fold."""
-    # Clear any existing handlers to prevent duplicate logs in different files
-    for h in logging.root.handlers[:]:
-        logging.root.removeHandler(h)
-    
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s [%(levelname)s] %(message)s',
-                        handlers=[
-                            logging.FileHandler(os.path.join(log_dir, filename)),
-                            logging.StreamHandler(sys.stdout) # Log to console as well
-                        ])
+    for h in logging.root.handlers[:]: logging.root.removeHandler(h)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
+                        handlers=[logging.FileHandler(os.path.join(log_dir, filename)), logging.StreamHandler(sys.stdout)])
 
-# --- UNCHANGED: Loss Functions and Collate ---
 structure_loss = loss.structure_loss().to(device)
 bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
@@ -68,20 +54,17 @@ last_criterion = nn.CrossEntropyLoss(ignore_index=255)
 def bce_iou_loss(pred, target):
     bce_out = bce_loss(pred, target)
     iou_out = iou_loss(pred, target)
-    loss = bce_out + iou_out
-    return loss
+    return bce_out + iou_out
 
 def custom_collate_fn(batch):
     batch = [item for item in batch if item is not None]
     if not batch: return None
     return torch.utils.data.dataloader.default_collate(batch)
 
-# --- ORIGINAL `validate` FUNCTION (LOGIC UNCHANGED) ---
 def validate(net, val_loader, epoch): 
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     val_iterator = tqdm(val_loader, total=len(val_loader), desc=f"Epoch {epoch} (Val)")
-    
     with torch.no_grad():
         for data in val_iterator:
             if data is None: continue
@@ -89,14 +72,12 @@ def validate(net, val_loader, epoch):
             inputs, labels = inputs.to(device), labels.to(device)
             *_, predict0 = net(inputs)
             confmat.update(labels.flatten(), predict0.argmax(1).flatten())
-        
     _, _, class_iou, _, mDice = confmat.compute()
     val_miou = np.mean(class_iou.cpu().numpy())
     logging.info(f'--- Validation Results (Epoch {epoch}) --- Mean IoU: {val_miou:.4f}, Mean Dice: {mDice:.4f}') 
     net.train() 
     return val_miou
 
-# --- ORIGINAL `train` FUNCTION (LOGIC UNCHANGED) ---
 def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, initial_best_miou, initial_patience):
     writer = SummaryWriter(log_dir=os.path.join(fold_exp_path, 'log'))
     total_iterations = args['epoch_num'] * len(train_loader)
@@ -110,12 +91,15 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
         for data in train_iterator:
             if data is None: continue
             
-            # Your Original Poly LR Schedule
             base_lr = args['lr'] * (1 - float(curr_iter) / float(total_iterations)) ** args['lr_decay']
             optimizer.param_groups[0]['lr'] = 2 * base_lr
             optimizer.param_groups[1]['lr'] = 1 * base_lr
 
-            # Your Original Forward/Backward Pass
+            # ================================================================= #
+            # === CRITICAL FIX: The following line was missing and is now restored. === #
+            inputs, labels = data['image'], data['label']
+            # ================================================================= #
+
             inputs, labels = Variable(inputs).to(device), Variable(labels).to(device)
             optimizer.zero_grad()
             predict_1, predict_2, predict_3, predict_4, predict0 = net(inputs)
@@ -127,16 +111,16 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
             loss = 1 * loss_1 + 1 * loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
             loss.backward()
             optimizer.step()
+
             loss_record.update(loss.item(), inputs.size(0))
+            train_iterator.set_description(f"Epoch: {epoch}, LR: {base_lr:.6f}, Total_Loss: {loss_record.avg:.5f}")
             curr_iter += 1
         
-        # Your Original Validation and Checkpointing Logic
         current_val_mIoU = validate(net, val_loader, epoch) 
         writer.add_scalar('val/miou', current_val_mIoU, epoch)
 
         if current_val_mIoU > best_mIoU:
-            best_mIoU = current_val_mIoU
-            patience_counter = 0 
+            best_mIoU, patience_counter = current_val_mIoU, 0 
             torch.save(net.module.state_dict(), os.path.join(fold_exp_path, 'best.pth'))
             logging.info(f"Epoch {epoch}: Saved best model with mIoU: {best_mIoU:.5f}")
         else:
@@ -155,7 +139,6 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
     writer.close()
     return best_mIoU
 
-# --- ORIGINAL `main` FUNCTION (Now `run_training_process`) ---
 def run_training_process(args, train_loader, val_loader, fold_exp_path):
     net = daseg(backbone_path).train().to(device)
     optimizer = optim.Adam([
@@ -183,7 +166,6 @@ def run_training_process(args, train_loader, val_loader, fold_exp_path):
     net = nn.DataParallel(net) 
     return train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, best_mIoU, patience_counter)
 
-# --- NEW: K-Fold Orchestration Block ---
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='DANet Training with K-Fold')
     parser.add_argument('--dataset', type=str, default='TSRS_RSNA-Epiphysis')
@@ -244,3 +226,5 @@ if __name__ == '__main__':
         train_loader = DataLoader(ImageFolder(DATASET_PATHS[f"{args['dataset']}_train"], f"{args['dataset']}_train", split='train'), batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
         val_loader = DataLoader(ImageFolder(DATASET_PATHS[f"{args['dataset']}_test"], f"{args['dataset']}_test", split='val'), batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
         run_training_process(args, train_loader, val_loader, fold_exp_path)
+
+    logging.info("Training process completed.")
