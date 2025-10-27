@@ -147,7 +147,6 @@ class ImageFolder(data.Dataset):
                 tr.RandomResizedCrop(size=(args.scale_h, args.scale_w), scale=(0.8, 1.0), ratio=(0.9, 1.1)),
                 
                 tr.RandomHorizontalFlip(),
-                # We can still use the advanced augmentations
                 tr.ElasticTransform(alpha=35, sigma=5, p=0.4), # Slightly lower probability
                 tr.GridDistortion(num_steps=5, distort_limit=0.2, p=0.4), # Slightly lower probability
                 tr.RandomGaussianBlur(),
