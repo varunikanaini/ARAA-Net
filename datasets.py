@@ -164,32 +164,34 @@ def make_dataset(root, dataset_name):
 
 
 class ImageFolder(data.Dataset):
-    def __init__(self, root, dataset_name, joint_transform=None, transform=None, target_transform=None, split='train'):
+    # MODIFIED: Added 'imgs=None' to the constructor
+    def __init__(self, root, dataset_name, joint_transform=None, transform=None, target_transform=None, split='train', imgs=None):
         self.root = root
         self.dataset_name = dataset_name
         self.split = split
         self.label_mapping = {val: 1 if val > 0 else 0 for val in range(-1, 31)} 
 
-        if 'TSRS_RSNA-Epiphysis' in dataset_name: 
-            self.imgs = make_dataset(root, dataset_name)
-        else: # For datasets that need programmatic splitting
-            all_imgs = make_dataset(root, dataset_name)
-            
-            random.seed(42) # For reproducibility
-            random.shuffle(all_imgs)
-            
-            total_size = len(all_imgs)
-            train_size = int(0.8 * total_size)
-            val_size = int(0.1 * total_size)
-            
-            if split == 'train':
-                self.imgs = all_imgs[:train_size]
-            elif split == 'val':
-                self.imgs = all_imgs[train_size : train_size + val_size]
-            elif split == 'test':
-                self.imgs = all_imgs[train_size + val_size :]
-            else:
-                raise ValueError(f"Invalid split '{split}'. Must be 'train', 'val', or 'test'.")
+        if imgs is not None:
+            self.imgs = imgs
+        else:
+            if 'TSRS_RSNA-Epiphysis' in dataset_name: 
+                self.imgs = make_dataset(root, dataset_name)
+            else: # For datasets that need programmatic splitting
+                all_imgs = make_dataset(root, dataset_name)
+                random.seed(42) # For reproducibility
+                random.shuffle(all_imgs)
+                total_size = len(all_imgs)
+                train_size = int(0.8 * total_size)
+                val_size = int(0.1 * total_size)
+                
+                if split == 'train':
+                    self.imgs = all_imgs[:train_size]
+                elif split == 'val':
+                    self.imgs = all_imgs[train_size : train_size + val_size]
+                elif split == 'test':
+                    self.imgs = all_imgs[train_size + val_size :]
+                else:
+                    raise ValueError(f"Invalid split '{split}'. Must be 'train', 'val', or 'test'.")
 
         if not self.imgs:
             print(f"Warning: {self.split} split for {self.dataset_name} is empty. Check dataset path and contents.")
