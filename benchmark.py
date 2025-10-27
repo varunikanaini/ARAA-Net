@@ -1,108 +1,97 @@
+
+
 import torch
+import argparse
 import time
 import os
-import argparse
+import sys
+import logging
+from thop import profile, clever_format
 from collections import OrderedDict
-import logging 
-import sys # ADDED: Import sys for stdout flushing
 
-# Ensure these imports match your project structure
-from daseg import daseg
+# --- Setup Project Path and Imports ---
+project_path = os.path.dirname(os.path.abspath(__file__))
+if project_path not in sys.path:
+    sys.path.insert(0, project_path)
+
 from config import backbone_path
+from daseg import daseg
+from misc import check_mkdir
 
+# --- Logging Setup ---
+def setup_logging(log_dir, filename='benchmark.log'):
+    log_file = os.path.join(log_dir, filename)
+    for handler in logging.root.handlers[:]: logging.root.removeHandler(handler)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
+                        handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)])
+
+# --- Model Wrapper for FLOPs Calculation ---
+class ModelWrapperForThop(torch.nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        # The daseg model returns 5 outputs, we only need the last one for FLOPs
+        *_, final_output = self.model(x)
+        return final_output
+
+# --- Main Benchmark Function ---
 def main():
-    parser = argparse.ArgumentParser(description='Model Benchmarking (FPS and Trainable Parameters)')
-    parser.add_argument('--input_size_w', type=int, default=896, help='Input image width for benchmarking')
-    parser.add_argument('--input_size_h', type=int, default=576, help='Input image height for benchmarking')
-    parser.add_argument('--batch_size', type=int, default=5, help='Batch size for FPS calculation') 
-    parser.add_argument('--num_warmup', type=int, default=10, help='Number of warm-up runs for FPS')
-    parser.add_argument('--num_runs', type=int, default=100, help='Number of actual runs for FPS calculation')
-    parser.add_argument('--snapshot', type=str, default='',
-                        help='Optional: Path to a trained model snapshot (e.g., ckpt/DANet_JSRT/best.pth) to load weights.')
-    
+    parser = argparse.ArgumentParser(description='Benchmark DANet Model')
+    parser.add_argument('--input-h', type=int, default=576)
+    parser.add_argument('--input-w', type=int, default=576)
     args = parser.parse_args()
 
-    # Configure basic logging for benchmark script
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s - %(levelname)s - %(message)s',
-                        handlers=[logging.StreamHandler()]) 
-    logger = logging.getLogger()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == 'cpu':
+        print("ERROR: A GPU is required for FPS benchmarking.")
+        return
 
-    # Set up device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    benchmark_log_dir = os.path.join('./ckpt', 'benchmark_logs')
+    check_mkdir(benchmark_log_dir)
+    log_filename = f'benchmark_DANet_{args.input_h}x{args.input_w}.log'
+    setup_logging(benchmark_log_dir, filename=log_filename)
 
-    # 1. Instantiate the model
-    model = daseg(backbone_path=backbone_path)
-    model.to(device)
-    model.eval() # Set model to evaluation mode
+    logging.info("=" * 50)
+    logging.info("Benchmarking DANet (daseg model)")
+    logging.info(f"Input Resolution: {args.input_h}x{args.input_w}")
+    logging.info("=" * 50)
 
-    # Load snapshot if provided
-    if args.snapshot:
-        if not os.path.exists(args.snapshot):
-            logger.warning(f"Model snapshot not found at {args.snapshot}. Skipping loading weights.")
-        else:
-            logger.info(f"Loading model weights from: {args.snapshot}")
-            state_dict = torch.load(args.snapshot, map_location=device)
-            # Remove 'module.' prefix if the model was saved from DataParallel
-            new_state_dict = OrderedDict()
-            for k, v in state_dict.items():
-                name = k[7:] if k.startswith('module.') else k
-                new_state_dict[name] = v
-            model.load_state_dict(new_state_dict)
-            logger.info("Model weights loaded successfully.")
-    else:
-        logger.info("No snapshot provided, using randomly initialized model for benchmarking.")
-
-    # 2. Calculate Total Trainable Parameters
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"\nTotal Trainable Parameters: {total_params:,}")
-    print(f"\nTotal Trainable Parameters: {total_params:,}") # Explicit print
-    sys.stdout.flush() # ADDED: Force flush stdout
-
-    # 3. Calculate FPS
-    logger.info(f"\n--- FPS Calculation ({args.batch_size}x3x{args.input_size_h}x{args.input_size_w}) ---")
-    print(f"\n--- FPS Calculation ({args.batch_size}x3x{args.input_size_h}x{args.input_size_w}) ---") # Explicit print
-    sys.stdout.flush() # ADDED: Force flush stdout
+    # --- Instantiate Model ---
+    model = daseg(backbone_path).to(device).eval()
     
-    # Create dummy input
-    dummy_input = torch.randn(args.batch_size, 3, args.input_size_h, args.input_size_w).to(device)
+    # --- Calculate Parameters and FLOPs ---
+    dummy_input = torch.randn(1, 3, args.input_h, args.input_w).to(device)
+    model_for_thop = ModelWrapperForThop(model)
+    
+    logging.info("Calculating model parameters and FLOPs...")
+    macs, params = profile(model_for_thop, inputs=(dummy_input,), verbose=False)
+    macs_formatted, params_formatted = clever_format([macs, params], "%.3f")
 
-    # Warm-up runs
-    logger.info(f"Performing {args.num_warmup} warm-up runs...")
-    print(f"Performing {args.num_warmup} warm-up runs...") # Explicit print
-    sys.stdout.flush() # ADDED: Force flush stdout
+    logging.info("\n--- Model Complexity ---")
+    logging.info(f"Total Parameters: {params_formatted}")
+    logging.info(f"FLOPs (GFLOPs): {macs_formatted}")
+    logging.info("------------------------\n")
+
+    # --- Benchmark FPS ---
     with torch.no_grad():
-        for _ in range(args.num_warmup):
-            _ = model(dummy_input)
-    if device.type == 'cuda':
-        torch.cuda.synchronize()
-
-    # Measure actual inference time
-    logger.info(f"Performing {args.num_runs} actual runs for measurement...")
-    print(f"Performing {args.num_runs} actual runs for measurement...") # Explicit print
-    sys.stdout.flush() # ADDED: Force flush stdout
-    start_time = time.perf_counter()
+        for _ in range(50): _ = model(dummy_input) # Warm-up
+        
+    torch.cuda.synchronize(device)
+    start_time = time.time()
     with torch.no_grad():
-        for _ in range(args.num_runs):
-            _ = model(dummy_input)
-    if device.type == 'cuda':
-        torch.cuda.synchronize()
-    end_time = time.perf_counter()
-
-    # Calculate FPS
-    total_time = end_time - start_time
-    avg_inference_time = total_time / args.num_runs
-    fps = args.batch_size / avg_inference_time if avg_inference_time > 0 else float('inf')
-
-    final_benchmark_str = (
-        f"Total inference time for {args.num_runs} runs: {total_time:.4f} seconds\n"
-        f"Average inference time per batch: {avg_inference_time:.4f} seconds\n"
-        f"Frames Per Second (FPS) with batch size {args.batch_size}: {fps:.2f}\n"
-    )
-    logger.info(final_benchmark_str)
-    print(final_benchmark_str) # Explicit print
-    sys.stdout.flush() # ADDED: Force flush stdout
+        for _ in range(200): _ = model(dummy_input)
+    torch.cuda.synchronize(device)
+    end_time = time.time()
+    
+    fps = 200 / (end_time - start_time)
+    
+    logging.info(f"--- Performance on {torch.cuda.get_device_name(0)} ---")
+    logging.info(f"Frames Per Second (FPS): {fps:.2f}")
+    logging.info(f"Avg. Inference Time:     {(1000/fps):.2f} ms")
+    logging.info("----------------------------------------")
+    logging.info("✅ Benchmark completed successfully.")
 
 if __name__ == '__main__':
     main()
