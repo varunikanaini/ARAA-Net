@@ -14,13 +14,18 @@ from tqdm import tqdm
 import numpy as np
 from PIL import Image
 
-# --- UNCHANGED IMPORTS ---
+# ================================================================= #
+# === FIX: Added the missing import for cudnn ===                   #
+from torch.backends import cudnn
+# ================================================================= #
+
 from config import backbone_path, DATASET_PATHS
 from datasets import ImageFolder
 from misc import check_mkdir
 from daseg import daseg
 from seg_utils import ConfusionMatrix
 
+# --- UNCHANGED SETUP ---
 cudnn.benchmark = True
 torch.manual_seed(2021)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -30,19 +35,15 @@ def custom_collate_fn(batch):
     if not batch: return None
     return torch.utils.data.dataloader.default_collate(batch)
 
-# =========================================================================================
-# --- NEW: `evaluate_fold` FUNCTION ---
-# This function evaluates a single model on the test set.
-# =========================================================================================
 def evaluate_fold(net, test_loader, fold_idx):
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     test_iterator = tqdm(test_loader, total=len(test_loader), desc=f"Testing Fold {fold_idx}")
-    for data in test_iterator:
-        if data is None: continue
-        inputs, labels, _ = data['image'], data['label'], data['name']
-        inputs, labels = inputs.to(device), labels.to(device)
-        with torch.no_grad():
+    with torch.no_grad():
+        for data in test_iterator:
+            if data is None: continue
+            inputs, labels, _ = data['image'], data['label'], data['name']
+            inputs, labels = inputs.to(device), labels.to(device)
             *_, predict0 = net(inputs)
             pred_mask = predict0.argmax(1)
             confmat.update(labels.flatten(), pred_mask.flatten())
@@ -52,9 +53,6 @@ def evaluate_fold(net, test_loader, fold_idx):
     logging.info(f"Fold {fold_idx} Results -> mIoU: {miou:.4f}, Dice: {mDice:.4f}, OA: {global_acc.item():.4f}")
     return {'miou': miou, 'dice': mDice, 'oa': global_acc.item(), 'fwiou': FWIoU.item()}
 
-# =========================================================================================
-# --- MAIN TESTING ORCHESTRATION ---
-# =========================================================================================
 def main():
     parser = argparse.ArgumentParser(description='DANet K-Fold Testing')
     parser.add_argument('--exp-name', type=str, required=True, help='e.g., DANet_TSRS_RSNA-Epiphysis')
@@ -69,14 +67,13 @@ def main():
 
     logging.info(f"Starting final testing for experiment: {args.exp_name}")
     
-    # --- Load Test Dataset (used for all folds) ---
     test_root_path = DATASET_PATHS[f"{args.dataset}_test"]
     test_set = ImageFolder(test_root_path, f"{args.dataset}_test", split='test')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
     
     all_metrics = {'miou': [], 'dice': [], 'oa': [], 'fwiou': []}
     
-    for fold_idx in range(args.k_folds):
+    for fold_idx in range(args.k-folds):
         logging.info("-" * 50)
         net = daseg(backbone_path).to(device)
         model_path = os.path.join(base_exp_path, f"fold_{fold_idx}", 'best.pth')
@@ -94,9 +91,8 @@ def main():
         for key in all_metrics:
             all_metrics[key].append(fold_metrics[key])
 
-    # --- Final Summary ---
     logging.info("\n" + "=" * 50)
-    logging.info(f"Final K-Fold Test Summary ({args.k_folds} folds)")
+    logging.info(f"Final K-Fold Test Summary ({args.k-folds} folds)")
     logging.info(f"Mean IoU (mIoU): {np.mean(all_metrics['miou']):.4f} ± {np.std(all_metrics['miou']):.4f}")
     logging.info(f"Dice Score:      {np.mean(all_metrics['dice']):.4f} ± {np.std(all_metrics['dice']):.4f}")
     logging.info(f"Overall Acc (OA):{np.mean(all_metrics['oa']):.4f} ± {np.std(all_metrics['oa']):.4f}")
