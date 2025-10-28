@@ -6,37 +6,26 @@ Created on 2022-12-13 09:54:12
 @author: XuWang
 
 """
-import datetime
-import time
-import os
-import argparse 
-import logging 
-from collections import OrderedDict 
-import torch.utils.data.dataloader 
-import sys
-import json
+import datetime, time, os, argparse, logging, sys, json
+from collections import OrderedDict
 from sklearn.model_selection import KFold
-
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
-
 import torch
-from torch import nn
-from torch import optim
+from torch import nn, optim
 from torch.autograd import Variable
 from torch.backends import cudnn
 from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import numpy as np
 
-from config import backbone_path, DATASET_PATHS 
+# --- UNCHANGED IMPORTS (TensorBoard is removed) ---
+from config import backbone_path, DATASET_PATHS
 from datasets import ImageFolder, make_dataset
 from misc import AvgMeter, check_mkdir
 from daseg import daseg
 import loss
 from seg_utils import ConfusionMatrix
 
+# --- UNCHANGED SETUP ---
 cudnn.benchmark = True
 torch.manual_seed(2021)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -46,10 +35,11 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                         handlers=[logging.FileHandler(os.path.join(log_dir, filename)), logging.StreamHandler(sys.stdout)])
 
+# --- UNCHANGED LOSS & HELPERS ---
 structure_loss = loss.structure_loss().to(device)
 bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
-last_criterion = nn.CrossEntropyLoss(ignore_index=255) 
+last_criterion = nn.CrossEntropyLoss(ignore_index=255)
 
 def bce_iou_loss(pred, target):
     bce_out = bce_loss(pred, target)
@@ -78,8 +68,9 @@ def validate(net, val_loader, epoch):
     net.train() 
     return val_miou
 
+# --- train FUNCTION (MODIFIED: TensorBoard removed, Checkpointing updated) ---
 def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, initial_best_miou, initial_patience):
-    writer = SummaryWriter(log_dir=os.path.join(fold_exp_path, 'log'))
+    # REMOVED: writer = SummaryWriter(...)
     total_iterations = args['epoch_num'] * len(train_loader)
     best_mIoU, patience_counter = initial_best_miou, initial_patience
     curr_iter = (start_epoch - 1) * len(train_loader) + 1
@@ -95,11 +86,7 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
             optimizer.param_groups[0]['lr'] = 2 * base_lr
             optimizer.param_groups[1]['lr'] = 1 * base_lr
 
-            # ================================================================= #
-            # === CRITICAL FIX: The following line was missing and is now restored. === #
             inputs, labels = data['image'], data['label']
-            # ================================================================= #
-
             inputs, labels = Variable(inputs).to(device), Variable(labels).to(device)
             optimizer.zero_grad()
             predict_1, predict_2, predict_3, predict_4, predict0 = net(inputs)
@@ -111,34 +98,43 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
             loss = 1 * loss_1 + 1 * loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
             loss.backward()
             optimizer.step()
-
             loss_record.update(loss.item(), inputs.size(0))
-            train_iterator.set_description(f"Epoch: {epoch}, LR: {base_lr:.6f}, Total_Loss: {loss_record.avg:.5f}")
+            # REMOVED: All writer.add_scalar(...) calls
             curr_iter += 1
         
         current_val_mIoU = validate(net, val_loader, epoch) 
-        writer.add_scalar('val/miou', current_val_mIoU, epoch)
+        # REMOVED: writer.add_scalar('val/miou', ...)
 
+        # --- MODIFIED: Checkpointing logic now matches the LMU-Net example ---
         if current_val_mIoU > best_mIoU:
-            best_mIoU, patience_counter = current_val_mIoU, 0 
+            best_mIoU, patience_counter = current_val_mIoU, 0
+            # Save best.pth with model weights only
             torch.save(net.module.state_dict(), os.path.join(fold_exp_path, 'best.pth'))
-            logging.info(f"Epoch {epoch}: Saved best model with mIoU: {best_mIoU:.5f}")
+            logging.info(f"✅ Epoch {epoch}: Saved new best model with mIoU: {best_mIoU:.5f}")
         else:
             patience_counter += 1
-        
+            logging.info(f"⚠️ mIoU did not improve for {patience_counter} epoch(s). Best: {best_mIoU:.5f}")
+
+        # Save latest_checkpoint.pth with full state for robust resuming
+        latest_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth')
+        temp_ckpt_path = latest_ckpt_path + ".tmp"
         torch.save({
-            'epoch': epoch, 'model_state_dict': net.module.state_dict(),
+            'epoch': epoch,
+            'model_state_dict': net.module.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'best_mIoU': best_mIoU, 'patience_counter': patience_counter
-        }, os.path.join(fold_exp_path, 'latest_checkpoint.pth'))
+            'best_mIoU': best_mIoU,
+            'patience_counter': patience_counter
+        }, temp_ckpt_path)
+        os.rename(temp_ckpt_path, latest_ckpt_path)
         
         if patience_counter >= args['patience']:
             logging.info("Early stopping triggered.")
             break
-            
-    writer.close()
+    
+    # REMOVED: writer.close()
     return best_mIoU
 
+# --- run_training_process and main orchestration remain the same as they correctly handle the logic ---
 def run_training_process(args, train_loader, val_loader, fold_exp_path):
     net = daseg(backbone_path).train().to(device)
     optimizer = optim.Adam([
