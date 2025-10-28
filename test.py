@@ -69,10 +69,7 @@ def main():
     
     all_metrics = {'miou': [], 'dice': [], 'oa': [], 'fwiou': []}
     
-    # ================================================================= #
-    # === CRITICAL FIX: Changed `args.k-folds` to `args.k_folds`      === #
     for fold_idx in range(args.k_folds):
-    # ================================================================= #
         logging.info("-" * 50)
         net = daseg(backbone_path).to(device)
         model_path = os.path.join(base_exp_path, f"fold_{fold_idx}", 'best.pth')
@@ -90,18 +87,29 @@ def main():
         for key in all_metrics:
             all_metrics[key].append(fold_metrics[key])
 
-    # --- Final Summary ---
+    # --- MODIFIED: Final Summary Block ---
+    # This block now uses both logging.info() and print() to ensure
+    # results are saved to the log file AND displayed on the screen.
     if not all_metrics['miou']:
-        logging.error("No models were tested. Cannot compute final metrics.")
+        error_msg = "No models were tested. Cannot compute final metrics."
+        logging.error(error_msg)
+        print(error_msg)
         return
 
-    logging.info("\n" + "=" * 50)
-    logging.info(f"Final K-Fold Test Summary ({len(all_metrics['miou'])} folds)")
-    logging.info(f"Mean IoU (mIoU): {np.mean(all_metrics['miou']):.4f} ± {np.std(all_metrics['miou']):.4f}")
-    logging.info(f"Dice Score:      {np.mean(all_metrics['dice']):.4f} ± {np.std(all_metrics['dice']):.4f}")
-    logging.info(f"Overall Acc (OA):{np.mean(all_metrics['oa']):.4f} ± {np.std(all_metrics['oa']):.4f}")
-    logging.info(f"FW-IoU:          {np.mean(all_metrics['fwiou']):.4f} ± {np.std(all_metrics['fwiou']):.4f}")
-    logging.info("=" * 50)
+    # Create a list of lines for the report to avoid repetition
+    summary_lines = []
+    summary_lines.append("\n" + "=" * 50)
+    summary_lines.append(f"Final K-Fold Test Summary ({len(all_metrics['miou'])} folds)")
+    summary_lines.append(f"Mean IoU (mIoU): {np.mean(all_metrics['miou']):.4f} ± {np.std(all_metrics['miou']):.4f}")
+    summary_lines.append(f"Dice Score:      {np.mean(all_metrics['dice']):.4f} ± {np.std(all_metrics['dice']):.4f}")
+    summary_lines.append(f"Overall Acc (OA):{np.mean(all_metrics['oa']):.4f} ± {np.std(all_metrics['oa']):.4f}")
+    summary_lines.append(f"FW-IoU:          {np.mean(all_metrics['fwiou']):.4f} ± {np.std(all_metrics['fwiou']):.4f}")
+    summary_lines.append("=" * 50)
+
+    # Log and print the entire report
+    for line in summary_lines:
+        logging.info(line)
+        print(line)
 
 if __name__ == '__main__':
     main()
