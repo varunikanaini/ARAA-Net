@@ -13,11 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 from PIL import Image
-
-# ================================================================= #
-# === FIX: Added the missing import for cudnn ===                   #
 from torch.backends import cudnn
-# ================================================================= #
 
 from config import backbone_path, DATASET_PATHS
 from datasets import ImageFolder
@@ -73,7 +69,10 @@ def main():
     
     all_metrics = {'miou': [], 'dice': [], 'oa': [], 'fwiou': []}
     
-    for fold_idx in range(args.k-folds):
+    # ================================================================= #
+    # === CRITICAL FIX: Changed `args.k-folds` to `args.k_folds`      === #
+    for fold_idx in range(args.k_folds):
+    # ================================================================= #
         logging.info("-" * 50)
         net = daseg(backbone_path).to(device)
         model_path = os.path.join(base_exp_path, f"fold_{fold_idx}", 'best.pth')
@@ -91,8 +90,13 @@ def main():
         for key in all_metrics:
             all_metrics[key].append(fold_metrics[key])
 
+    # --- Final Summary ---
+    if not all_metrics['miou']:
+        logging.error("No models were tested. Cannot compute final metrics.")
+        return
+
     logging.info("\n" + "=" * 50)
-    logging.info(f"Final K-Fold Test Summary ({args.k-folds} folds)")
+    logging.info(f"Final K-Fold Test Summary ({len(all_metrics['miou'])} folds)")
     logging.info(f"Mean IoU (mIoU): {np.mean(all_metrics['miou']):.4f} ± {np.std(all_metrics['miou']):.4f}")
     logging.info(f"Dice Score:      {np.mean(all_metrics['dice']):.4f} ± {np.std(all_metrics['dice']):.4f}")
     logging.info(f"Overall Acc (OA):{np.mean(all_metrics['oa']):.4f} ± {np.std(all_metrics['oa']):.4f}")
