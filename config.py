@@ -7,58 +7,51 @@ Created on 2022-12-13 09:54:12
 
 """
 import os
-# import kagglehub # DISABLED: Commented out to prevent automatic downloads and errors.
 
 # Base directory for all datasets
 data_root = './data'
 os.makedirs(data_root, exist_ok=True)
 
-# Original dataset (TSRS_RSNA-Epiphysis) - Paths are preserved and correct.
+# --- Original dataset (TSRS_RSNA-Epiphysis) ---
 tsrs_rsna_epiphysis_base = os.path.join(data_root, 'TSRS_RSNA-Epiphysis')
-cod_training_root = os.path.join(tsrs_rsna_epiphysis_base, 'train')
-chameleon_path = os.path.join(tsrs_rsna_epiphysis_base, 'test')
+epiphysis_train_path = os.path.join(tsrs_rsna_epiphysis_base, 'train')
+epiphysis_test_path = os.path.join(tsrs_rsna_epiphysis_base, 'test')
+
+# =========================================================================
+# === FIX: Added paths for the Articular-Surface dataset ===
+# This mirrors the structure of the Epiphysis dataset as requested.
+# =========================================================================
+tsrs_rsna_articular_base = os.path.join(data_root, 'TSRS_RSNA-Articular-Surface')
+articular_train_path = os.path.join(tsrs_rsna_articular_base, 'train')
+articular_test_path = os.path.join(tsrs_rsna_articular_base, 'test')
+# =========================================================================
 
 # Backbone path - keep as is
 backbone_path = './backbone/resnet/resnet50-19c8e357.pth'
 
-
-# --- JSRT dataset DOWNLOAD DISABLED ---
-jsrt_dataset_name_kaggle = "abduzzami/jsrt-247-image-lung-segmentation-mask-dataset"
-jsrt_dataset_base = os.path.join(data_root, os.path.basename(jsrt_dataset_name_kaggle))
-# The following block is commented out to prevent the download error.
-# if not os.path.exists(jsrt_dataset_base) or not os.listdir(jsrt_dataset_base):
-#     print(f"Downloading JSRT dataset to {data_root}...")
-#     kagglehub.dataset_download(jsrt_dataset_name_kaggle, path=data_root)
-#     print("JSRT dataset downloaded.")
-
-# --- COVID-19 Radiography Database dataset DOWNLOAD DISABLED ---
-covid_dataset_name_kaggle = "tawsifurrahman/covid19-radiography-database"
-covid_dataset_base = os.path.join(data_root, os.path.basename(covid_dataset_name_kaggle))
-# The following block is commented out to prevent the download error.
-# if not os.path.exists(covid_dataset_base) or not os.listdir(covid_dataset_base):
-#     print(f"Downloading COVID-19 Radiography Database dataset to {data_root}...")
-#     kagglehub.dataset_download(covid_dataset_name_kaggle, path=data_root)
-#     print("COVID-19 Radiography Database dataset downloaded.")
-
-# --- Manual Dataset Paths (Unchanged) ---
-# CVC-ClinicDB dataset (user manually copies)
+# --- Paths for other potential datasets (downloads are disabled) ---
+jsrt_dataset_base = os.path.join(data_root, 'jsrt-247-image-lung-segmentation-mask-dataset')
+covid_dataset_base = os.path.join(data_root, 'covid19-radiography-database')
 cvc_clinicdb_base = os.path.join(data_root, 'CVC-ClinicDB')
-# print(f"For CVC-ClinicDB: Please ensure your 'CVC-ClinicDB' folder is placed at: {cvc_clinicdb_base}")
-
-# New: Panoramic Dental X-rays With Segmented Mandibles
 dental_panoramic_base = os.path.join(data_root, 'dental_panoramic_xrays')
-# print(f"For DentalPanoramic: Please ensure the dataset content is placed at: {dental_panoramic_base}")
-
-# New: 6-Diseases Chest X-Ray Dataset with Masks
 six_diseases_base = os.path.join(data_root, 'Dataset')
-# print(f"For SixDiseasesChestXRay: Please ensure the dataset content is placed at: {six_diseases_base}")
 
 
-# Dictionary to map dataset names to their root paths. This remains unchanged.
-# The train script will only use the paths for the dataset specified in the command line.
+# Dictionary to map dataset names to their root paths
 DATASET_PATHS = {
-    'TSRS_RSNA-Epiphysis_train': cod_training_root,
-    'TSRS_RSNA-Epiphysis_test': chameleon_path,
+    # Epiphysis Paths
+    'TSRS_RSNA-Epiphysis_train': epiphysis_train_path,
+    'TSRS_RSNA-Epiphysis_test': epiphysis_test_path,
+
+    # =========================================================================
+    # === FIX: Added dictionary keys for the Articular-Surface dataset ===
+    # This resolves the KeyError.
+    # =========================================================================
+    'TSRS_RSNA-Articular-Surface_train': articular_train_path,
+    'TSRS_RSNA-Articular-Surface_test': articular_test_path,
+    # =========================================================================
+
+    # Other Dataset Paths
     'JSRT': jsrt_dataset_base,
     'COVID19_Radiography': covid_dataset_base,
     'CVC-ClinicDB': cvc_clinicdb_base,
