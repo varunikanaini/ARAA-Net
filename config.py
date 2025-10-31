@@ -3,15 +3,13 @@
 import os
 
 # --- Base Directories ---
-data_root = './data' # Local data root
+data_root = './data'
 os.makedirs(data_root, exist_ok=True)
 backbone_path = './backbone/resnet/resnet50-19c8e357.pth'
 
 # =========================================================================
-# === KAGGLE-AWARE PATHING (THE FINAL FIX) ===
-# This logic checks if the standard Kaggle input directory exists.
-# If it does, it uses that path. Otherwise, it falls back to the local path.
-# This makes the script work both locally and on Kaggle without changes.
+# === KAGGLE-AWARE PATHING (FINAL, CORRECTED VERSION) ===
+# This logic now correctly points to the subdirectory where the data actually resides.
 # =========================================================================
 
 # --- TSRS Datasets (Assumed to be in the local ./data directory) ---
@@ -19,10 +17,16 @@ tsrs_epiphysis_path = os.path.join(data_root, 'TSRS_RSNA-Epiphysis')
 tsrs_articular_path = os.path.join(data_root, 'TSRS_RSNA-Articular-Surface')
 
 # --- JSRT Dataset ---
-kaggle_jsrt_path = '/kaggle/input/jsrt-247-image-lung-segmentation-mask-dataset'
-local_jsrt_path = os.path.join(data_root, 'jsrt-247-image-lung-segmentation-mask-dataset')
-# Use the Kaggle path if it exists, otherwise use the local path
-jsrt_path = kaggle_jsrt_path if os.path.exists(kaggle_jsrt_path) else local_jsrt_path
+# 1. Define the top-level Kaggle and local directories
+kaggle_jsrt_toplevel_path = '/kaggle/input/jsrt-247-image-lung-segmentation-mask-dataset'
+local_jsrt_toplevel_path = os.path.join(data_root, 'jsrt-247-image-lung-segmentation-mask-dataset')
+
+# 2. Determine which top-level directory exists
+base_jsrt_path = kaggle_jsrt_toplevel_path if os.path.exists(kaggle_jsrt_toplevel_path) else local_jsrt_toplevel_path
+
+# 3. CRITICAL FIX: Point to the actual data subfolder, which is often named 'jsrt'
+#    The `datasets.py` script will now look for 'cxr' inside this final path.
+jsrt_path = os.path.join(base_jsrt_path, 'jsrt')
 
 # --- CVC-ClinicDB Dataset ---
 kaggle_cvc_path = '/kaggle/input/cvcclinicdb' # Example Kaggle path, adjust if needed
@@ -41,16 +45,15 @@ DATASET_CONFIG = {
         'structure': 'PRE_SPLIT',
     },
     'JSRT': {
-        'path': jsrt_path,  # Use the dynamically determined path
+        'path': jsrt_path,  # Use the final, corrected path
         'structure': 'FLAT_SPLIT',
     },
     'CVC-ClinicDB': {
-        'path': cvc_path, # Use the dynamically determined path
+        'path': cvc_path,
         'structure': 'FLAT_SPLIT',
     },
-    # Add any other datasets here following the same pattern
 }
 
 print("--- Resolved Dataset Paths ---")
-print(f"JSRT Path: {DATASET_CONFIG['JSRT']['path']}")
+print(f"JSRT Path is now pointing to: {DATASET_CONFIG['JSRT']['path']}")
 print("------------------------------")
