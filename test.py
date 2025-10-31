@@ -4,7 +4,6 @@
 Created on 2022-12-13 09:54:12
 
 @author: XuWang
-
 """
 import time, datetime, os, argparse, logging, sys
 from collections import OrderedDict
@@ -15,7 +14,8 @@ import numpy as np
 from PIL import Image
 from torch.backends import cudnn
 
-from config import backbone_path, DATASET_PATHS
+# Import the new, robust config and datasets
+import config
 from datasets import ImageFolder
 from misc import check_mkdir
 from daseg import daseg
@@ -63,15 +63,18 @@ def main():
 
     logging.info(f"Starting final testing for experiment: {args.exp_name}")
     
-    test_root_path = DATASET_PATHS[f"{args.dataset}_test"]
-    test_set = ImageFolder(test_root_path, f"{args.dataset}_test", split='test')
+    # === Use the new robust data loading method ===
+    dataset_cfg = config.DATASET_CONFIG[args.dataset]
+    test_root_path = dataset_cfg['path']
+    test_set = ImageFolder(root=test_root_path, dataset_name=args.dataset, split='test')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
     
     all_metrics = {'miou': [], 'dice': [], 'oa': [], 'fwiou': []}
     
     for fold_idx in range(args.k_folds):
         logging.info("-" * 50)
-        net = daseg(backbone_path).to(device)
+        # Use config.backbone_path
+        net = daseg(config.backbone_path).to(device)
         model_path = os.path.join(base_exp_path, f"fold_{fold_idx}", 'best.pth')
         
         if not os.path.exists(model_path):
@@ -87,16 +90,13 @@ def main():
         for key in all_metrics:
             all_metrics[key].append(fold_metrics[key])
 
-    # --- MODIFIED: Final Summary Block ---
-    # This block now uses both logging.info() and print() to ensure
-    # results are saved to the log file AND displayed on the screen.
+    # --- Final Summary Block ---
     if not all_metrics['miou']:
         error_msg = "No models were tested. Cannot compute final metrics."
         logging.error(error_msg)
         print(error_msg)
         return
 
-    # Create a list of lines for the report to avoid repetition
     summary_lines = []
     summary_lines.append("\n" + "=" * 50)
     summary_lines.append(f"Final K-Fold Test Summary ({len(all_metrics['miou'])} folds)")
@@ -106,7 +106,6 @@ def main():
     summary_lines.append(f"FW-IoU:          {np.mean(all_metrics['fwiou']):.4f} ± {np.std(all_metrics['fwiou']):.4f}")
     summary_lines.append("=" * 50)
 
-    # Log and print the entire report
     for line in summary_lines:
         logging.info(line)
         print(line)

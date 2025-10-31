@@ -14,7 +14,7 @@ project_path = os.path.dirname(os.path.abspath(__file__))
 if project_path not in sys.path:
     sys.path.insert(0, project_path)
 
-from config import backbone_path, DATASET_PATHS
+import config
 from daseg import daseg
 from datasets import ImageFolder
 from misc import check_mkdir
@@ -22,7 +22,6 @@ from misc import check_mkdir
 # --- Helper Functions ---
 def denormalize(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
     """Denormalizes a tensor image with mean and standard deviation."""
-    # Create a copy to avoid modifying the original tensor
     tensor = tensor.clone()
     for t, m, s in zip(tensor, mean, std):
         t.mul_(s).add_(m)
@@ -49,7 +48,7 @@ def main():
     COLOR_MAP = np.array([[0, 0, 0], [255, 0, 0]]) # Black for BG, Red for class 1
 
     # --- Load Model ---
-    model = daseg(backbone_path).to(device)
+    model = daseg(config.backbone_path).to(device)
     checkpoint_path = os.path.join('./ckpt', args.exp_name, f"fold_{args.fold}", 'best.pth')
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
@@ -60,9 +59,10 @@ def main():
     model.eval()
     print(f"Model loaded successfully from {checkpoint_path}")
 
-    # --- Load Dataset (it will apply its own transforms) ---
-    test_data_path = DATASET_PATHS[f"{args.dataset}_test"]
-    test_dataset = ImageFolder(test_data_path, f"{args.dataset}_test", split='test')
+    # === Use the new robust data loading method ===
+    dataset_cfg = config.DATASET_CONFIG[args.dataset]
+    test_data_path = dataset_cfg['path']
+    test_dataset = ImageFolder(root=test_data_path, dataset_name=args.dataset, split='test')
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=0)
 
     # --- Run Visualization ---
@@ -75,7 +75,6 @@ def main():
             if i >= args.num_images: break
             if sample is None: continue
 
-            # The loader already returns a transformed tensor.
             image_tensor = sample['image'].to(device)
             label_tensor = sample['label']
             image_name = os.path.basename(sample['name'][0][0])
@@ -85,25 +84,19 @@ def main():
             prediction_tensor = prediction_output.argmax(1).squeeze(0).cpu()
 
             # --- Prepare Images for Plotting ---
-            # 1. Original Image (denormalize the tensor from the loader)
             original_img_tensor = denormalize(image_tensor.squeeze(0).cpu())
             original_img_np = np.transpose(original_img_tensor.numpy(), (1, 2, 0))
             original_img_np = np.clip(original_img_np * 255, 0, 255).astype(np.uint8)
 
-            # 2. Ground Truth Mask (from loader)
             gt_mask_np = label_tensor.squeeze(0).numpy().astype(np.uint8)
-            # Resize GT mask to match original image dimensions for correct display
             h, w, _ = original_img_np.shape
             gt_mask_resized = cv2.resize(gt_mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
             gt_colored = apply_color_map(gt_mask_resized, COLOR_MAP)
 
-            # 3. Predicted Mask (from model output)
             prediction_np = prediction_tensor.numpy().astype(np.uint8)
-            # Resize prediction to match original image dimensions for correct display
             pred_mask_resized = cv2.resize(prediction_np, (w, h), interpolation=cv2.INTER_NEAREST)
             pred_colored = apply_color_map(pred_mask_resized, COLOR_MAP)
             
-            # 4. Blended Overlay
             overlay = cv2.addWeighted(original_img_np, 0.6, pred_colored, 0.4, 0)
             
             # --- Plotting ---
