@@ -4,7 +4,6 @@
 Created on 2022-12-13 09:54:12
 
 @author: XuWang
-
 """
 import datetime, time, os, argparse, logging, sys, json
 from collections import OrderedDict
@@ -34,7 +33,6 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                         handlers=[logging.FileHandler(os.path.join(log_dir, filename)), logging.StreamHandler(sys.stdout)])
 
-# --- UNCHANGED LOSS & HELPERS ---
 structure_loss = loss.structure_loss().to(device)
 bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
@@ -50,100 +48,69 @@ def custom_collate_fn(batch):
     if not batch: return None
     return torch.utils.data.dataloader.default_collate(batch)
 
-def validate(net, val_loader, epoch): 
+def validate(net, val_loader, epoch):
     net.eval()
     confmat = ConfusionMatrix(num_classes=2)
     val_iterator = tqdm(val_loader, total=len(val_loader), desc=f"Epoch {epoch} (Val)")
     with torch.no_grad():
         for data in val_iterator:
             if data is None: continue
-            inputs, labels, _ = data['image'], data['label'], data['name'] 
+            inputs, labels, _ = data['image'], data['label'], data['name']
             inputs, labels = inputs.to(device), labels.to(device)
             *_, predict0 = net(inputs)
             confmat.update(labels.flatten(), predict0.argmax(1).flatten())
     _, _, class_iou, _, mDice = confmat.compute()
     val_miou = np.mean(class_iou.cpu().numpy())
-    logging.info(f'--- Validation Results (Epoch {epoch}) --- Mean IoU: {val_miou:.4f}, Mean Dice: {mDice:.4f}') 
-    net.train() 
+    logging.info(f'--- Validation Results (Epoch {epoch}) --- Mean IoU: {val_miou:.4f}, Mean Dice: {mDice:.4f}')
+    net.train()
     return val_miou
 
-# --- train FUNCTION (MODIFIED: TensorBoard removed, Checkpointing updated) ---
 def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, initial_best_miou, initial_patience):
-    # REMOVED: writer = SummaryWriter(...)
     total_iterations = args['epoch_num'] * len(train_loader)
     best_mIoU, patience_counter = initial_best_miou, initial_patience
     curr_iter = (start_epoch - 1) * len(train_loader) + 1
-
     for epoch in range(start_epoch, args['epoch_num'] + 1):
         loss_record = AvgMeter()
         train_iterator = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Train)")
-        
         for data in train_iterator:
             if data is None: continue
-            
             base_lr = args['lr'] * (1 - float(curr_iter) / float(total_iterations)) ** args['lr_decay']
             optimizer.param_groups[0]['lr'] = 2 * base_lr
             optimizer.param_groups[1]['lr'] = 1 * base_lr
-
             inputs, labels = data['image'], data['label']
             inputs, labels = Variable(inputs).to(device), Variable(labels).to(device)
             optimizer.zero_grad()
             predict_1, predict_2, predict_3, predict_4, predict0 = net(inputs)
-            loss_1 = bce_iou_loss(predict_1, labels.unsqueeze(1))
-            loss_2 = structure_loss(predict_2, labels.unsqueeze(1))
-            loss_3 = structure_loss(predict_3, labels.unsqueeze(1))
-            loss_4 = structure_loss(predict_4, labels.unsqueeze(1))       
+            loss_1, loss_2, loss_3, loss_4 = bce_iou_loss(predict_1, labels.unsqueeze(1)), structure_loss(predict_2, labels.unsqueeze(1)), structure_loss(predict_3, labels.unsqueeze(1)), structure_loss(predict_4, labels.unsqueeze(1))
             loss_0 = last_criterion(predict0, labels.long())
             loss = 1 * loss_1 + 1 * loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
             loss.backward()
             optimizer.step()
             loss_record.update(loss.item(), inputs.size(0))
-            # REMOVED: All writer.add_scalar(...) calls
             curr_iter += 1
-        
-        current_val_mIoU = validate(net, val_loader, epoch) 
-        # REMOVED: writer.add_scalar('val/miou', ...)
-
-        # --- MODIFIED: Checkpointing logic now matches the LMU-Net example ---
+        current_val_mIoU = validate(net, val_loader, epoch)
         if current_val_mIoU > best_mIoU:
             best_mIoU, patience_counter = current_val_mIoU, 0
-            # Save best.pth with model weights only
             torch.save(net.module.state_dict(), os.path.join(fold_exp_path, 'best.pth'))
             logging.info(f"✅ Epoch {epoch}: Saved new best model with mIoU: {best_mIoU:.5f}")
         else:
             patience_counter += 1
             logging.info(f"⚠️ mIoU did not improve for {patience_counter} epoch(s). Best: {best_mIoU:.5f}")
-
-        # Save latest_checkpoint.pth with full state for robust resuming
-        latest_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth')
-        temp_ckpt_path = latest_ckpt_path + ".tmp"
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': net.module.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'best_mIoU': best_mIoU,
-            'patience_counter': patience_counter
-        }, temp_ckpt_path)
+        latest_ckpt_path, temp_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth'), os.path.join(fold_exp_path, 'latest_checkpoint.pth.tmp')
+        torch.save({'epoch': epoch, 'model_state_dict': net.module.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU, 'patience_counter': patience_counter}, temp_ckpt_path)
         os.rename(temp_ckpt_path, latest_ckpt_path)
-        
         if patience_counter >= args['patience']:
             logging.info("Early stopping triggered.")
             break
-    
-    # REMOVED: writer.close()
     return best_mIoU
 
-# --- run_training_process and main orchestration remain the same as they correctly handle the logic ---
 def run_training_process(args, train_loader, val_loader, fold_exp_path):
-    net = daseg(backbone_path).train().to(device)
-    optimizer = optim.Adam([
-        {'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']},
-        {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}
-    ]) if args['optimizer'] == 'Adam' else optim.SGD([
-        {'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']},
-        {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}
-    ], momentum=args['momentum'])
-
+    # ================================================================= #
+    # === CRITICAL FIX: Added `config.` prefix to `backbone_path`     === #
+    net = daseg(config.backbone_path).train().to(device)
+    # ================================================================= #
+    
+    optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}]) if args['optimizer'] == 'Adam' else optim.SGD([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}], momentum=args['momentum'])
     start_epoch, best_mIoU, patience_counter = 1, 0.0, 0
     latest_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth')
     if args['resume'] and os.path.exists(latest_ckpt_path):
@@ -151,14 +118,11 @@ def run_training_process(args, train_loader, val_loader, fold_exp_path):
             ckpt = torch.load(latest_ckpt_path, map_location=device)
             net.load_state_dict(ckpt['model_state_dict'])
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-            start_epoch = ckpt['epoch'] + 1
-            best_mIoU = ckpt.get('best_mIoU', 0.0)
-            patience_counter = ckpt.get('patience_counter', 0)
+            start_epoch, best_mIoU, patience_counter = ckpt['epoch'] + 1, ckpt.get('best_mIoU', 0.0), ckpt.get('patience_counter', 0)
             logging.info(f"Resumed from epoch {start_epoch}. Best mIoU: {best_mIoU:.4f}.")
         except Exception as e:
             logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
-    
-    net = nn.DataParallel(net) 
+    net = nn.DataParallel(net)
     return train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, best_mIoU, patience_counter)
 
 if __name__ == '__main__':
@@ -182,36 +146,39 @@ if __name__ == '__main__':
     check_mkdir(base_exp_path)
     setup_logging(base_exp_path, 'main_training_log.log')
     logging.info(f"Starting experiment: '{exp_name}' with arguments: {args}")
-
-    # Get the dataset's root path and config from the new config file
+    
     dataset_cfg = config.DATASET_CONFIG[args['dataset']]
     dataset_path = dataset_cfg['path']
-
     if args['k_folds'] > 1:
-        # --- K-Fold Logic ---
         logging.info(f"Setting up {args['k_folds']}-fold cross-validation...")
-        # Get all data pairs for k-folding. This now works for all dataset types.
-        all_imgs_pairs = get_all_image_mask_pairs(dataset_path, args['dataset'])
-        all_imgs = np.array(all_imgs_pairs)
-        
+        all_imgs = np.array(get_all_image_mask_pairs(dataset_path, args['dataset']))
         kf = KFold(n_splits=args['k_folds'], shuffle=True, random_state=args['random_state'])
         kfold_state_path = os.path.join(base_exp_path, 'kfold_state.json')
-        # ... (rest of the k-fold orchestration logic is the same and correct)
-    
+        start_fold, all_fold_metrics = 0, {}
+        if args['resume'] and os.path.exists(kfold_state_path):
+            with open(kfold_state_path, 'r') as f:
+                state = json.load(f)
+                start_fold, all_fold_metrics = state.get('next_fold_to_run', 0), state.get('all_fold_metrics', {})
+            logging.info(f"Resuming k-fold process from fold {start_fold}.")
+        for fold_idx, (train_indices, val_indices) in enumerate(kf.split(all_imgs)):
+            if fold_idx < start_fold: continue
+            fold_exp_path = os.path.join(base_exp_path, f"fold_{fold_idx}")
+            check_mkdir(fold_exp_path)
+            setup_logging(fold_exp_path, f'fold_{fold_idx}_training.log')
+            with open(kfold_state_path, 'w') as f: json.dump({'next_fold_to_run': fold_idx, 'all_fold_metrics': all_fold_metrics}, f)
+            train_loader = DataLoader(ImageFolder(root=None, dataset_name=args['dataset'], split='train', imgs=all_imgs[train_indices].tolist()), batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
+            val_loader = DataLoader(ImageFolder(root=None, dataset_name=args['dataset'], split='val', imgs=all_imgs[val_indices].tolist()), batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
+            best_fold_mIoU = run_training_process(args, train_loader, val_loader, fold_exp_path)
+            all_fold_metrics[f'fold_{fold_idx}'] = best_fold_mIoU
+            with open(kfold_state_path, 'w') as f: json.dump({'next_fold_to_run': fold_idx + 1, 'all_fold_metrics': all_fold_metrics}, f)
+        logging.info(f"K-Fold training finished. Avg Val mIoU: {np.mean(list(all_fold_metrics.values())):.4f}")
     else:
-        # --- Standard (No K-Fold) Logic ---
         logging.info("Running a single train/validation split (k_folds=1).")
         fold_exp_path = os.path.join(base_exp_path, "fold_0")
         check_mkdir(fold_exp_path)
         setup_logging(fold_exp_path, 'fold_0_training.log')
-        
-        # This now works for BOTH JSRT and TSRS_RSNA correctly without any KeyError
-        train_set = ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='train')
-        val_set = ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='val')
-        
+        train_set, val_set = ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='train'), ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='val')
         train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
         val_loader = DataLoader(val_set, batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
-        
         run_training_process(args, train_loader, val_loader, fold_exp_path)
-
     logging.info("Training process completed.")
