@@ -44,6 +44,3 @@ DATASET_CONFIG = {
     },
 }
 
-print("--- Resolved Dataset Paths ---")
-print(f"JSRT Path is now pointing to: {DATASET_CONFIG['JSRT']['path']}")
-print("------------------------------")
