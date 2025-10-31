@@ -28,13 +28,12 @@ def make_dataset(root, dataset_name):
     img_list = []
     
     # Handling predefined split for TSRS_RSNA-Epiphysis
-    if dataset_name == 'TSRS_RSNA-Epiphysis_train' or dataset_name == 'TSRS_RSNA-Epiphysis_test':
+    if dataset_name.startswith('TSRS_RSNA'):
         image_path = root
+        # Assumes the mask folder is named like 'train_labels' for the 'train' folder.
         mask_path = root + '_labels'
         if not os.path.exists(image_path) or not os.path.exists(mask_path):
-            print(f"DEBUG: Checking TSRS_RSNA-Epiphysis_train/test. Image path: {image_path}, exists: {os.path.exists(image_path)}")
-            print(f"DEBUG: Mask path: {mask_path}, exists: {os.path.exists(mask_path)}")
-            print(f"Warning: {dataset_name} paths not found: {image_path}, {mask_path}. Returning empty dataset.")
+            print(f"Warning: {dataset_name} paths not found: {image_path} or {mask_path}. Returning empty dataset.")
             return []
         img_names = [os.path.splitext(f)[0] for f in os.listdir(image_path) if f.lower().endswith('.jpg')]
         return [(os.path.join(image_path, img_name + '.jpg'), os.path.join(mask_path, img_name + '.png')) for img_name in img_names]
