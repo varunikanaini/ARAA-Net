@@ -1,98 +1,90 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on 2022-12-13 09:54:12
-
-@author: XuWang
-"""
-
 import os
-import os.path
 import torch.utils.data as data
-from PIL import Image, UnidentifiedImageError 
+from PIL import Image, UnidentifiedImageError
 import numpy as np
-import random 
-import cv2 
-
-from torch.utils.data import Dataset
+import cv2
+from sklearn.model_selection import train_test_split
 from torchvision import transforms
 import custom_transforms as tr
-from sklearn.model_selection import train_test_split # Make sure this is imported
 import config
 
-# Define common image and mask extensions for robustness
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.gif')
 
-def get_all_image_mask_pairs(root_path, dataset_name):
-    """Finds all (image, mask) pairs based on the dataset's specific folder names."""
+def make_dataset(root, dataset_name, split='train', val_size=0.1, test_size=0.1, random_state=42):
+    """
+    Creates a list of (image_path, mask_path) tuples for a given dataset and split.
+    This function now correctly handles both pre-split and flat datasets.
+    """
+    dataset_config = config.DATASET_CONFIG[dataset_name]
+    structure = dataset_config.get('structure')
     all_pairs = []
-    
-    if dataset_name.startswith('TSRS_RSNA'):
-        for split_folder in ['train', 'test']:
-            image_dir = os.path.join(root_path, split_folder)
-            mask_dir = os.path.join(root_path, f"{split_folder}_labels")
-            if not (os.path.exists(image_dir) and os.path.exists(mask_dir)): continue
-            img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.jpg')]
-            for name in img_names:
-                all_pairs.append((os.path.join(image_dir, name + '.jpg'), os.path.join(mask_dir, name + '.png')))
 
-    # =========================================================================
-    # === FIX: Corrected the hardcoded paths for the JSRT dataset ===
-    # It no longer looks for a non-existent 'content/jsrt/' subdirectory.
-    # =========================================================================
-    elif dataset_name == 'JSRT':
-        # This path is more standard and likely correct for your environment
-        image_dir = os.path.join(root_path, 'cxr')
-        mask_dir = os.path.join(root_path, 'masks')
-        if os.path.exists(image_dir) and os.path.exists(mask_dir):
-            img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.png')]
-            for name in img_names:
-                all_pairs.append((os.path.join(image_dir, name + '.png'), os.path.join(mask_dir, name + '.png')))
-    
-    elif dataset_name == 'CVC-ClinicDB':
-        image_dir = os.path.join(root_path, 'Original')
-        mask_dir = os.path.join(root_path, 'Ground Truth')
-        if os.path.exists(image_dir) and os.path.exists(mask_dir):
-             img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.tif')]
-             for name in img_names:
-                all_pairs.append((os.path.join(image_dir, name + '.tif'), os.path.join(mask_dir, name + '.tif')))
+    if structure == 'PRE_SPLIT':
+        # This logic is for datasets like TSRS_RSNA
+        split_root = os.path.join(root, split)
+        mask_dir = os.path.join(root, f"{split}_labels")
+        if not (os.path.exists(split_root) and os.path.exists(mask_dir)):
+            print(f"Warning: Directory not found for pre-split dataset: {split_root} or {mask_dir}")
+            return []
+        img_names = [os.path.splitext(f)[0] for f in os.listdir(split_root) if f.lower().endswith('.jpg')]
+        for name in img_names:
+            img_path = os.path.join(split_root, name + '.jpg')
+            mask_path = os.path.join(mask_dir, name + '.png')
+            if os.path.exists(img_path) and os.path.exists(mask_path):
+                all_pairs.append((img_path, mask_path))
+        return all_pairs
 
-    if not all_pairs:
-        print(f"Warning: Found 0 image-mask pairs for '{dataset_name}' at root '{root_path}'. Check paths.")
-    return all_pairs
+    elif structure == 'FLAT_SPLIT':
+        # This logic is for datasets like JSRT
+        if dataset_name == 'JSRT':
+            image_dir = os.path.join(root, 'cxr') # Corrected path
+            mask_dir = os.path.join(root, 'masks') # Corrected path
+            if os.path.exists(image_dir) and os.path.exists(mask_dir):
+                img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.png')]
+                for name in img_names:
+                    all_pairs.append((os.path.join(image_dir, name + '.png'), os.path.join(mask_dir, name + '.png')))
+        # Add other FLAT_SPLIT datasets here
+        elif dataset_name == 'CVC-ClinicDB':
+             image_dir = os.path.join(root, 'Original')
+             mask_dir = os.path.join(root, 'Ground Truth')
+             if os.path.exists(image_dir) and os.path.exists(mask_dir):
+                  img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.tif')]
+                  for name in img_names:
+                     all_pairs.append((os.path.join(image_dir, name + '.tif'), os.path.join(mask_dir, name + '.tif')))
+
+        if not all_pairs:
+            print(f"Warning: Found 0 image-mask pairs for '{dataset_name}' at root '{root}'. Check paths.")
+            return []
+        
+        # Split all found pairs into train, val, and test sets
+        train_val_pairs, test_pairs = train_test_split(all_pairs, test_size=test_size, random_state=random_state)
+        val_proportion = val_size / (1 - test_size)
+        train_pairs, val_pairs = train_test_split(train_val_pairs, test_size=val_proportion, random_state=random_state)
+
+        if split == 'train': return train_pairs
+        elif split == 'val': return val_pairs
+        elif split == 'test': return test_pairs
+        elif split == 'all': return all_pairs # Needed for K-Fold setup
+        else: return []
+    else:
+        raise ValueError(f"Unknown dataset structure '{structure}' for dataset '{dataset_name}'.")
 
 class ImageFolder(data.Dataset):
-    def __init__(self, root, dataset_name, split='train', imgs=None, val_size=0.1, test_size=0.1, random_state=42):
+    def __init__(self, root, dataset_name, split='train', imgs=None):
         self.split = split
-        dataset_cfg = config.DATASET_CONFIG[dataset_name]
-
         if imgs is not None:
+            # For K-Fold, the image list is passed in directly
             self.imgs = imgs
         else:
-            structure = dataset_cfg['structure']
-            if structure == 'PRE_SPLIT':
-                image_dir = os.path.join(root, split)
-                mask_dir = os.path.join(root, f"{split}_labels")
-                if not (os.path.exists(image_dir) and os.path.exists(mask_dir)):
-                    self.imgs = []
-                else:
-                    img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.jpg')]
-                    self.imgs = [(os.path.join(image_dir, n + '.jpg'), os.path.join(mask_dir, n + '.png')) for n in img_names]
-            elif structure == 'FLAT_SPLIT':
-                all_pairs = get_all_image_mask_pairs(root, dataset_name)
-                if not all_pairs:
-                    self.imgs = []
-                    return
-                train_val_pairs, test_pairs = train_test_split(all_pairs, test_size=test_size, random_state=random_state)
-                val_proportion = val_size / (1 - test_size)
-                train_pairs, val_pairs = train_test_split(train_val_pairs, test_size=val_proportion, random_state=random_state)
-                if split == 'train': self.imgs = train_pairs
-                elif split == 'val': self.imgs = val_pairs
-                elif split == 'test': self.imgs = test_pairs
-                else: raise ValueError(f"Invalid split '{split}' for FLAT_SPLIT dataset.")
+            # For standard runs, call the new robust make_dataset function
+            self.imgs = make_dataset(root, dataset_name, split=split)
+
         if not self.imgs:
             print(f"Warning: The '{self.split}' split for '{dataset_name}' is empty.")
 
+    # --- The rest of your ImageFolder class (getitem, transforms, etc.) remains UNCHANGED ---
     def __getitem__(self, index):
         img_path, gt_path = self.imgs[index]
         try:

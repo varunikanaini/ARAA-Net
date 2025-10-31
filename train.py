@@ -16,14 +16,14 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 
-import config  # Import the new config
-from datasets import ImageFolder, get_all_image_mask_pairs # Import the new helper
+import config
+from datasets import ImageFolder, make_dataset # Import the new make_dataset
 from misc import AvgMeter, check_mkdir
 from daseg import daseg
 import loss
 from seg_utils import ConfusionMatrix
 
-# --- UNCHANGED SETUP AND HELPERS ---
+# --- UNCHANGED SETUP ---
 cudnn.benchmark = True
 torch.manual_seed(2021)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -33,6 +33,7 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                         handlers=[logging.FileHandler(os.path.join(log_dir, filename)), logging.StreamHandler(sys.stdout)])
 
+# --- UNCHANGED LOSS & HELPERS ---
 structure_loss = loss.structure_loss().to(device)
 bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
@@ -105,11 +106,7 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
     return best_mIoU
 
 def run_training_process(args, train_loader, val_loader, fold_exp_path):
-    # ================================================================= #
-    # === CRITICAL FIX: Added `config.` prefix to `backbone_path`     === #
     net = daseg(config.backbone_path).train().to(device)
-    # ================================================================= #
-    
     optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}]) if args['optimizer'] == 'Adam' else optim.SGD([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}], momentum=args['momentum'])
     start_epoch, best_mIoU, patience_counter = 1, 0.0, 0
     latest_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth')
@@ -151,7 +148,11 @@ if __name__ == '__main__':
     dataset_path = dataset_cfg['path']
     if args['k_folds'] > 1:
         logging.info(f"Setting up {args['k_folds']}-fold cross-validation...")
-        all_imgs = np.array(get_all_image_mask_pairs(dataset_path, args['dataset']))
+        # === FIX: Call make_dataset with split='all' to gather all images for k-fold ===
+        all_imgs = np.array(make_dataset(dataset_path, args['dataset'], split='all'))
+        if len(all_imgs) == 0:
+            raise ValueError("No images found for K-Fold splitting. Check dataset path and `make_dataset` logic.")
+
         kf = KFold(n_splits=args['k_folds'], shuffle=True, random_state=args['random_state'])
         kfold_state_path = os.path.join(base_exp_path, 'kfold_state.json')
         start_fold, all_fold_metrics = 0, {}
