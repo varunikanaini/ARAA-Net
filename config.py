@@ -4,57 +4,36 @@
 Created on 2022-12-13 09:54:12
 
 @author: XuWang
-
 """
 import os
 
-# Base directory for all datasets
+# --- Base Directories ---
 data_root = './data'
 os.makedirs(data_root, exist_ok=True)
-
-# --- Original dataset (TSRS_RSNA-Epiphysis) ---
-tsrs_rsna_epiphysis_base = os.path.join(data_root, 'TSRS_RSNA-Epiphysis')
-epiphysis_train_path = os.path.join(tsrs_rsna_epiphysis_base, 'train')
-epiphysis_test_path = os.path.join(tsrs_rsna_epiphysis_base, 'test')
-
-# =========================================================================
-# === FIX: Added paths for the Articular-Surface dataset ===
-# This mirrors the structure of the Epiphysis dataset as requested.
-# =========================================================================
-tsrs_rsna_articular_base = os.path.join(data_root, 'TSRS_RSNA-Articular-Surface')
-articular_train_path = os.path.join(tsrs_rsna_articular_base, 'train')
-articular_test_path = os.path.join(tsrs_rsna_articular_base, 'test')
-# =========================================================================
-
-# Backbone path - keep as is
 backbone_path = './backbone/resnet/resnet50-19c8e357.pth'
 
-# --- Paths for other potential datasets (downloads are disabled) ---
-jsrt_dataset_base = os.path.join(data_root, 'jsrt-247-image-lung-segmentation-mask-dataset')
-covid_dataset_base = os.path.join(data_root, 'covid19-radiography-database')
-cvc_clinicdb_base = os.path.join(data_root, 'CVC-ClinicDB')
-dental_panoramic_base = os.path.join(data_root, 'dental_panoramic_xrays')
-six_diseases_base = os.path.join(data_root, 'Dataset')
-
-
-# Dictionary to map dataset names to their root paths
-DATASET_PATHS = {
-    # Epiphysis Paths
-    'TSRS_RSNA-Epiphysis_train': epiphysis_train_path,
-    'TSRS_RSNA-Epiphysis_test': epiphysis_test_path,
-
-    # =========================================================================
-    # === FIX: Added dictionary keys for the Articular-Surface dataset ===
-    # This resolves the KeyError.
-    # =========================================================================
-    'TSRS_RSNA-Articular-Surface_train': articular_train_path,
-    'TSRS_RSNA-Articular-Surface_test': articular_test_path,
-    # =========================================================================
-
-    # Other Dataset Paths
-    'JSRT': jsrt_dataset_base,
-    'COVID19_Radiography': covid_dataset_base,
-    'CVC-ClinicDB': cvc_clinicdb_base,
-    'DentalPanoramic': dental_panoramic_base,
-    'SixDiseasesChestXRay': six_diseases_base,
+# =========================================================================
+# === NEW: Centralized Dataset Configuration (The Correct Approach) ===
+# This dictionary is now the single source of truth for dataset paths and types.
+# 'PRE_SPLIT':  The script will look for 'train' and 'test' subfolders inside the path.
+# 'FLAT_SPLIT': The script will load all images from the root and split them 80/10/10.
+# =========================================================================
+DATASET_CONFIG = {
+    'TSRS_RSNA-Epiphysis': {
+        'path': os.path.join(data_root, 'TSRS_RSNA-Epiphysis'),
+        'structure': 'PRE_SPLIT',
+    },
+    'TSRS_RSNA-Articular-Surface': {
+        'path': os.path.join(data_root, 'TSRS_RSNA-Articular-Surface'),
+        'structure': 'PRE_SPLIT',
+    },
+    'JSRT': {
+        'path': os.path.join(data_root, 'jsrt-247-image-lung-segmentation-mask-dataset'),
+        'structure': 'FLAT_SPLIT',
+    },
+    'CVC-ClinicDB': {
+        'path': os.path.join(data_root, 'CVC-ClinicDB'),
+        'structure': 'FLAT_SPLIT',
+    },
+    # Add any other datasets here following the same pattern
 }
