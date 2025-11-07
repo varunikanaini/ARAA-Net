@@ -70,26 +70,54 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
     total_iterations = args['epoch_num'] * len(train_loader)
     best_mIoU, patience_counter = initial_best_miou, initial_patience
     curr_iter = (start_epoch - 1) * len(train_loader) + 1
+    
     for epoch in range(start_epoch, args['epoch_num'] + 1):
         loss_record = AvgMeter()
+        # --- 1. ADDITION: Initialize a confusion matrix for the training epoch ---
+        train_confmat = ConfusionMatrix(num_classes=2)
+        # ----------------------------------------------------------------------
         train_iterator = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Train)")
+        
         for data in train_iterator:
             if data is None: continue
+            
             base_lr = args['lr'] * (1 - float(curr_iter) / float(total_iterations)) ** args['lr_decay']
             optimizer.param_groups[0]['lr'] = 2 * base_lr
             optimizer.param_groups[1]['lr'] = 1 * base_lr
+            
             inputs, labels = data['image'], data['label']
             inputs, labels = Variable(inputs).to(device), Variable(labels).to(device)
+            
             optimizer.zero_grad()
+            
             predict_1, predict_2, predict_3, predict_4, predict0 = net(inputs)
-            loss_1, loss_2, loss_3, loss_4 = bce_iou_loss(predict_1, labels.unsqueeze(1)), structure_loss(predict_2, labels.unsqueeze(1)), structure_loss(predict_3, labels.unsqueeze(1)), structure_loss(predict_4, labels.unsqueeze(1))
+            
+            # --- 2. ADDITION: Update training confusion matrix with the final prediction ---
+            with torch.no_grad():
+                train_confmat.update(labels.flatten(), predict0.argmax(1).flatten())
+            # -------------------------------------------------------------------------
+
+            loss_1 = bce_iou_loss(predict_1, labels.unsqueeze(1))
+            loss_2 = structure_loss(predict_2, labels.unsqueeze(1))
+            loss_3 = structure_loss(predict_3, labels.unsqueeze(1))
+            loss_4 = structure_loss(predict_4, labels.unsqueeze(1))
             loss_0 = last_criterion(predict0, labels.long())
+            
             loss = 1 * loss_1 + 1 * loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
             loss.backward()
             optimizer.step()
+            
             loss_record.update(loss.item(), inputs.size(0))
             curr_iter += 1
+
+        # --- 3. ADDITION: Compute and log training metrics after the epoch ---
+        train_acc_global, _, train_iu, _, train_mDice = train_confmat.compute()
+        train_miou = np.mean(train_iu.cpu().numpy())
+        logging.info(f'--- Train Summary (Epoch {epoch}) --- Loss: {loss_record.avg:.4f}, OA: {train_acc_global.item():.4f}, mIoU: {train_miou:.4f}, Dice: {train_mDice:.4f}')
+        # -------------------------------------------------------------------
+
         current_val_mIoU = validate(net, val_loader, epoch)
+        
         if current_val_mIoU > best_mIoU:
             best_mIoU, patience_counter = current_val_mIoU, 0
             torch.save(net.module.state_dict(), os.path.join(fold_exp_path, 'best.pth'))
@@ -97,14 +125,17 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
         else:
             patience_counter += 1
             logging.info(f"⚠️ mIoU did not improve for {patience_counter} epoch(s). Best: {best_mIoU:.5f}")
-        latest_ckpt_path, temp_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth'), os.path.join(fold_exp_path, 'latest_checkpoint.pth.tmp')
-        torch.save({'epoch': epoch, 'model_state_dict': net.module.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU, 'patience_counter': patience_counter}, temp_ckpt_path)
-        os.rename(temp_ckpt_path, latest_ckpt_path)
+            
+        latest_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth')
+        torch.save({'epoch': epoch, 'model_state_dict': net.module.state_dict(), 'optimizer_state_dict': optimizer.state_dict(), 'best_mIoU': best_mIoU, 'patience_counter': patience_counter}, latest_ckpt_path)
+        
         if patience_counter >= args['patience']:
             logging.info("Early stopping triggered.")
             break
+            
     return best_mIoU
 
+# --- (The rest of the file, run_training_process and main, is unchanged) ---
 def run_training_process(args, train_loader, val_loader, fold_exp_path):
     net = daseg(config.backbone_path).train().to(device)
     optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}]) if args['optimizer'] == 'Adam' else optim.SGD([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}], momentum=args['momentum'])
@@ -148,11 +179,9 @@ if __name__ == '__main__':
     dataset_path = dataset_cfg['path']
     if args['k_folds'] > 1:
         logging.info(f"Setting up {args['k_folds']}-fold cross-validation...")
-        # === FIX: Call make_dataset with split='all' to gather all images for k-fold ===
         all_imgs = np.array(make_dataset(dataset_path, args['dataset'], split='all'))
         if len(all_imgs) == 0:
             raise ValueError("No images found for K-Fold splitting. Check dataset path and `make_dataset` logic.")
-
         kf = KFold(n_splits=args['k_folds'], shuffle=True, random_state=args['random_state'])
         kfold_state_path = os.path.join(base_exp_path, 'kfold_state.json')
         start_fold, all_fold_metrics = 0, {}
@@ -178,7 +207,8 @@ if __name__ == '__main__':
         fold_exp_path = os.path.join(base_exp_path, "fold_0")
         check_mkdir(fold_exp_path)
         setup_logging(fold_exp_path, 'fold_0_training.log')
-        train_set, val_set = ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='train'), ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='val')
+        train_set = ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='train')
+        val_set = ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='val')
         train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
         val_loader = DataLoader(val_set, batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
         run_training_process(args, train_loader, val_loader, fold_exp_path)
