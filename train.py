@@ -69,6 +69,13 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
     best_mIoU, patience_counter = initial_best_miou, initial_patience
     curr_iter = (start_epoch - 1) * len(train_loader) + 1
     
+    # --- Adaptive Loss Strategy ---
+    is_multiclass = num_classes > 2
+    if is_multiclass:
+        logging.info(f"Using CrossEntropyLoss for Multi-Class ({num_classes} classes)")
+    else:
+        logging.info("Using BCE + IoU Loss for Binary Segmentation")
+    
     for epoch in range(start_epoch, args['epoch_num'] + 1):
         loss_record = AvgMeter()
         train_confmat = ConfusionMatrix(num_classes=num_classes)
@@ -91,11 +98,23 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
             with torch.no_grad():
                 train_confmat.update(labels.flatten(), predict0.argmax(1).flatten())
 
-            loss_1 = bce_iou_loss(predict_1, labels.unsqueeze(1))
-            loss_2 = structure_loss(predict_2, labels.unsqueeze(1))
-            loss_3 = structure_loss(predict_3, labels.unsqueeze(1))
-            loss_4 = structure_loss(predict_4, labels.unsqueeze(1))
-            loss_0 = last_criterion(predict0, labels.long())
+            # --- Adaptive Loss Calculation ---
+            if is_multiclass:
+                # Use Cross Entropy for all auxiliary outputs for stability in multi-class
+                # Labels are already shape [B, H, W] with indices 0..C, perfect for CrossEntropy
+                loss_1 = last_criterion(predict_1, labels.long())
+                loss_2 = last_criterion(predict_2, labels.long())
+                loss_3 = last_criterion(predict_3, labels.long())
+                loss_4 = last_criterion(predict_4, labels.long())
+                loss_0 = last_criterion(predict0, labels.long())
+            else:
+                # Use Original Binary Losses (Expects unsqueezed labels [B, 1, H, W])
+                labels_expanded = labels.unsqueeze(1)
+                loss_1 = bce_iou_loss(predict_1, labels_expanded)
+                loss_2 = structure_loss(predict_2, labels_expanded)
+                loss_3 = structure_loss(predict_3, labels_expanded)
+                loss_4 = structure_loss(predict_4, labels_expanded)
+                loss_0 = last_criterion(predict0, labels.long())
             
             loss = 1 * loss_1 + 1 * loss_2 + 2 * loss_3 + 4 * loss_4 + 10 * loss_0
             loss.backward()

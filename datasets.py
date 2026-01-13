@@ -96,30 +96,75 @@ def make_dataset(root, dataset_name, split='train', val_size=0.1, test_size=0.1,
         return all_pairs
 
     elif structure == 'Cityscapes':
+        # 1. Try Standard Split Folders
         if split == 'all': splits_to_check = ['train', 'val']
         elif split == 'test': splits_to_check = ['val']
         else: splits_to_check = [split]
-        for s in splits_to_check:
-            img_dir = os.path.join(root, 'leftImg8bit', s)
-            mask_dir = os.path.join(root, 'gtFine', s)
-            if not os.path.exists(img_dir): continue
-            for city in os.listdir(img_dir):
-                c_img_dir = os.path.join(img_dir, city)
-                c_mask_dir = os.path.join(mask_dir, city)
-                if not os.path.isdir(c_img_dir): continue
-                for f in os.listdir(c_img_dir):
+        
+        found_standard = False
+        img_root = os.path.join(root, 'leftImg8bit')
+        mask_root = os.path.join(root, 'gtFine')
+
+        if os.path.exists(img_root) and os.path.exists(mask_root):
+            for s in splits_to_check:
+                img_dir = os.path.join(img_root, s)
+                mask_dir = os.path.join(mask_root, s)
+                if not os.path.exists(img_dir): continue
+                for city in os.listdir(img_dir):
+                    c_img_dir = os.path.join(img_dir, city)
+                    c_mask_dir = os.path.join(mask_dir, city)
+                    if not os.path.isdir(c_img_dir): continue
+                    for f in os.listdir(c_img_dir):
+                        if f.endswith('_leftImg8bit.png'):
+                            img_path = os.path.join(c_img_dir, f)
+                            base = f.replace('_leftImg8bit.png', '')
+                            mask_name = base + '_gtFine_labelIds.png' 
+                            mask_path = os.path.join(c_mask_dir, mask_name)
+                            if os.path.exists(mask_path):
+                                all_pairs.append((img_path, mask_path))
+                                found_standard = True
+                            else:
+                                mask_name_alt = base + '_gtFine_labelTrainIds.png'
+                                mask_path_alt = os.path.join(c_mask_dir, mask_name_alt)
+                                if os.path.exists(mask_path_alt):
+                                    all_pairs.append((img_path, mask_path_alt))
+                                    found_standard = True
+        
+        # 2. Robust Fallback: Recursive Search if standard structure fails
+        if not found_standard:
+            print(f"Standard Cityscapes structure not found in {root}. Attempting recursive search...")
+            for root_dir, _, files in os.walk(root):
+                for f in files:
                     if f.endswith('_leftImg8bit.png'):
-                        img_path = os.path.join(c_img_dir, f)
-                        base = f.replace('_leftImg8bit.png', '')
-                        mask_name = base + '_gtFine_labelIds.png' 
-                        mask_path = os.path.join(c_mask_dir, mask_name)
-                        if os.path.exists(mask_path):
-                            all_pairs.append((img_path, mask_path))
-                        else:
-                            mask_name_alt = base + '_gtFine_labelTrainIds.png'
-                            mask_path_alt = os.path.join(c_mask_dir, mask_name_alt)
-                            if os.path.exists(mask_path_alt):
-                                all_pairs.append((img_path, mask_path_alt))
+                        img_path = os.path.join(root_dir, f)
+                        # Try to find matching mask in parallel directories
+                        base_name = f.replace('_leftImg8bit.png', '')
+                        
+                        # Guess mask path patterns
+                        possible_mask_names = [
+                            base_name + '_gtFine_labelIds.png',
+                            base_name + '_gtFine_labelTrainIds.png'
+                        ]
+                        
+                        # Look in current folder and typical mask folders
+                        search_dirs = [
+                            root_dir, 
+                            root_dir.replace('leftImg8bit', 'gtFine'),
+                            root_dir.replace('images', 'masks'),
+                            root_dir.replace('imgs', 'labels')
+                        ]
+                        
+                        mask_found = False
+                        for d in search_dirs:
+                            if not os.path.exists(d): continue
+                            for m_name in possible_mask_names:
+                                m_path = os.path.join(d, m_name)
+                                if os.path.exists(m_path):
+                                    all_pairs.append((img_path, m_path))
+                                    mask_found = True
+                                    break
+                            if mask_found: break
+                            
         return all_pairs
 
     elif structure == 'COCO-JSON':
