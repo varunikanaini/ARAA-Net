@@ -41,7 +41,7 @@ DATASET_CONFIG = {
         'ignore_index': 255
     },
     'Cityscapes': {
-        'path': os.path.join(DATA_ROOT, 'Cityscapes'),
+        'path': os.path.join(DATA_ROOT, 'cityscapes'),
         'structure': 'Cityscapes',
         'num_classes': 19,
         'ignore_index': 255

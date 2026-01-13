@@ -27,7 +27,6 @@ def setup_logging(log_dir, filename='training.log'):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
                         handlers=[logging.FileHandler(os.path.join(log_dir, filename)), logging.StreamHandler(sys.stdout)])
 
-# Losses
 structure_loss = loss.structure_loss().to(device)
 bce_loss = nn.BCEWithLogitsLoss().to(device)
 iou_loss = loss.IOU().to(device)
@@ -50,8 +49,19 @@ def validate(net, val_loader, epoch, num_classes):
         for data in val_iter:
             if data is None: continue
             inputs, labels = data['image'].to(device), data['label'].to(device)
+            
+            # Clamp validation labels for safety too
+            if num_classes > 2:
+                ignore_mask = labels >= num_classes
+                if ignore_mask.any(): labels[ignore_mask] = 255
+
             *_, predict0 = net(inputs)
-            confmat.update(labels.flatten(), predict0.argmax(1).flatten())
+            pred_mask = predict0.argmax(1).flatten()
+            targets = labels.flatten()
+            
+            mask = targets != 255
+            confmat.update(targets[mask], pred_mask[mask])
+            
     _, _, class_iou, _, mDice = confmat.compute()
     val_miou = np.mean(class_iou.cpu().numpy())
     logging.info(f'--- Validation Results (Epoch {epoch}) --- mIoU: {val_miou:.4f}, Dice: {mDice:.4f}')
@@ -62,8 +72,6 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
     total_iter = args['epoch_num'] * len(train_loader)
     curr_iter = (start_epoch - 1) * len(train_loader) + 1
     
-    # Adaptive Criterion
-    # For binary, use BCE+IoU. For multiclass, use CE.
     is_multiclass = num_classes > 2
     if is_multiclass:
         criterion_ce = nn.CrossEntropyLoss(ignore_index=255).to(device)
@@ -75,27 +83,31 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
         for data in train_iter:
             if data is None: continue
             
-            # LR Scheduler
             base_lr = args['lr'] * (1 - float(curr_iter) / float(total_iter)) ** args['lr_decay']
             optimizer.param_groups[0]['lr'] = 2 * base_lr
             optimizer.param_groups[1]['lr'] = 1 * base_lr
             
             inputs, labels = data['image'].to(device), data['label'].to(device)
-            optimizer.zero_grad()
             
-            preds = net(inputs) # Returns list of predictions (p1, p2, p3, p4, p0)
+            # --- CRITICAL SAFETY CLAMP FOR VOC/CITYSCAPES ---
+            # Forces any label index >= num_classes to be 255 (ignore)
+            # This prevents "Assertion t < n_classes failed" on CUDA
+            if is_multiclass:
+                invalid_mask = labels >= num_classes
+                if invalid_mask.any():
+                    labels[invalid_mask] = 255
+            # ------------------------------------------------
+            
+            optimizer.zero_grad()
+            preds = net(inputs)
             
             if is_multiclass:
-                # Use Cross Entropy for all auxiliary outputs
-                # Labels must be Long Tensor [B, H, W]
                 target = labels.long()
                 loss = 0
                 weights = [1, 1, 2, 4, 10]
                 for pred, w in zip(preds, weights):
                     loss += w * criterion_ce(pred, target)
             else:
-                # Use BCE+IoU and Structure Loss
-                # Labels must be [B, 1, H, W]
                 target = labels.unsqueeze(1)
                 p1, p2, p3, p4, p0 = preds
                 loss = 1*bce_iou_loss(p1, target) + 1*structure_loss(p2, target) + \
@@ -129,7 +141,6 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
 def run_training_process(args, train_loader, val_loader, fold_exp_path, num_classes):
     net = daseg(config.backbone_path, num_classes=num_classes).train().to(device)
     
-    # Optimizer params split
     params_bias = [p for n, p in net.named_parameters() if n.endswith('bias')]
     params_weight = [p for n, p in net.named_parameters() if not n.endswith('bias')]
     
@@ -181,7 +192,6 @@ if __name__ == '__main__':
     dataset_cfg = config.DATASET_CONFIG[args['dataset']]
     num_classes = dataset_cfg.get('num_classes', 2)
     
-    # Data Split
     imgs = np.array(make_dataset(dataset_cfg['path'], args['dataset'], split='all'), dtype=object)
     if len(imgs) == 0: raise ValueError(f"No images found for {args['dataset']}")
     
