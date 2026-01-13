@@ -15,7 +15,6 @@ from torchvision.models import resnet
 from dar import DARConv2d
 import torchvision.models as models
 
-#Deformable Channel Attention ######################
 class CA_Block(nn.Module):
     def __init__(self, in_dim):
         super(CA_Block, self).__init__()
@@ -25,9 +24,6 @@ class CA_Block(nn.Module):
         self.query_conv = DARConv2d(in_dim, in_dim, kernel_size=1)
         self.key_conv = DARConv2d(in_dim, in_dim, kernel_size=1)
         self.value_conv = DARConv2d(in_dim, in_dim, kernel_size=1)
- 
-        
-        
 
     def forward(self, x):
         m_batchsize, C, height, width = x.size()
@@ -43,9 +39,6 @@ class CA_Block(nn.Module):
         out = self.gamma * out + x        
         return out
     
-    
-    
-# ##################Deformable Spatial Attention ######################
 class SA_Block(nn.Module):
     def __init__(self, in_dim):
         super(SA_Block, self).__init__()
@@ -70,7 +63,6 @@ class SA_Block(nn.Module):
         out = self.gamma * out + x
         return out
 
- 
 class Context_Exploration_Block(nn.Module):
     def __init__(self, input_channels):
         super(Context_Exploration_Block, self).__init__()
@@ -142,28 +134,22 @@ class Context_Exploration_Block(nn.Module):
 
         return ce
 
- 
 class Positioning(nn.Module):
-    def __init__(self, channel):
+    def __init__(self, channel, num_classes=2):
         super(Positioning, self).__init__()
         self.channel = channel
         self.cab = CA_Block(self.channel)
         self.sab = SA_Block(self.channel)
-        # self.map = nn.Conv2d(self.channel, 1, 7, 1, 3)
-        
-        self.map = nn.Conv2d(self.channel, 1, 3, 1, 1)
+        self.map = nn.Conv2d(self.channel, num_classes, 3, 1, 1)
 
     def forward(self, x):
         cab = self.cab(x)
         sab = self.sab(cab)
         map = self.map(cab)
-
-        return sab,map
-
- 
+        return sab, map
 
 class Focuslast(nn.Module):
-    def __init__(self, channel1, channel2):
+    def __init__(self, channel1, channel2, num_classes=2):
         super(Focuslast, self).__init__()
         self.channel1 = channel1
         self.channel2 = channel2
@@ -171,8 +157,9 @@ class Focuslast(nn.Module):
         self.up = nn.Sequential(nn.Conv2d(self.channel2, self.channel1, 3, 1, 1),
                                 nn.BatchNorm2d(self.channel1), nn.ReLU(), nn.UpsamplingBilinear2d(scale_factor=2))
 
+        self.map_compress = nn.Conv2d(num_classes, 1, 1)
         self.input_map = nn.Sequential(nn.UpsamplingBilinear2d(scale_factor=2), nn.Sigmoid())
-        self.output_map = nn.Conv2d(self.channel1, 2, 3, 1, 1)
+        self.output_map = nn.Conv2d(self.channel1, num_classes, 3, 1, 1)
 
         self.fp = Context_Exploration_Block(self.channel1)
         self.fn = Context_Exploration_Block(self.channel1)
@@ -185,10 +172,10 @@ class Focuslast(nn.Module):
         self.upsample = nn.UpsamplingNearest2d(scale_factor=2)
 
     def forward(self, x, y, in_map):
- 
         up1 = self.up(y)
 
-        input_map = self.input_map(in_map)
+        compressed_map = self.map_compress(in_map)
+        input_map = self.input_map(compressed_map)
         f_feature = x * input_map
         b_feature = x * (1 - input_map)
 
@@ -202,14 +189,13 @@ class Focuslast(nn.Module):
         refine2 = refine1 + (self.beta * fn)
         refine2 = self.bn2(refine2)
         refine2 = self.relu2(refine2)
-        # refine2 = self.upsample(refine2) 
 
         output_map = self.output_map(refine2)
 
         return refine2, output_map
 
 class Focus(nn.Module):
-    def __init__(self, channel1, channel2):
+    def __init__(self, channel1, channel2, num_classes=2):
         super(Focus, self).__init__()
         self.channel1 = channel1
         self.channel2 = channel2
@@ -217,8 +203,9 @@ class Focus(nn.Module):
         self.up = nn.Sequential(nn.Conv2d(self.channel2, self.channel1, 3, 1, 1),
                                 nn.BatchNorm2d(self.channel1), nn.ReLU(),nn.UpsamplingBilinear2d(scale_factor=2))
 
+        self.map_compress = nn.Conv2d(num_classes, 1, 1)
         self.input_map = nn.Sequential(nn.UpsamplingBilinear2d(scale_factor=2), nn.Sigmoid())
-        self.output_map = nn.Conv2d(self.channel1, 1, 3, 1, 1)
+        self.output_map = nn.Conv2d(self.channel1, num_classes, 3, 1, 1)
 
         self.fp = Context_Exploration_Block(self.channel1)
         self.fn = Context_Exploration_Block(self.channel1)
@@ -233,7 +220,8 @@ class Focus(nn.Module):
     def forward(self, x, y, in_map):
         up1 = self.up(y)
 
-        input_map = self.input_map(in_map)
+        compressed_map = self.map_compress(in_map)
+        input_map = self.input_map(compressed_map)
         f_feature = x * input_map
         b_feature = x * (1 - input_map)
 
@@ -247,47 +235,39 @@ class Focus(nn.Module):
         refine2 = refine1 + (self.beta * fn)
         refine2 = self.bn2(refine2)
         refine2 = self.relu2(refine2)
-        # refine2 = self.upsample(refine2) 
 
         output_map = self.output_map(refine2)
 
         return refine2, output_map
 
- 
-
 class daseg(nn.Module):
-    def __init__(self, backbone_path=None):
+    def __init__(self, backbone_path=None, num_classes=2):
         super(daseg, self).__init__()
-        resnet50 = resnet.resnet50(weights=models.ResNet50_Weights.DEFAULT) # Use recommended weights
+        resnet50 = resnet.resnet50(weights=models.ResNet50_Weights.DEFAULT)
         self.layer0 = nn.Sequential(resnet50.conv1, resnet50.bn1, resnet50.relu)
         self.layer1 = nn.Sequential(resnet50.maxpool, resnet50.layer1)
         self.layer2 = resnet50.layer2
         self.layer3 = resnet50.layer3
         self.layer4 = resnet50.layer4
 
-
         self.upsample = nn.UpsamplingNearest2d(scale_factor=2)
 
-        # positioning
-        self.positioning = Positioning(2048)
-        
-        
-        self.focus3 = Focus(1024, 2048)
-        self.focus2 = Focus(512, 1024)
-        self.focus1 = Focus(256, 512)
-        self.focus0 = Focuslast(64, 256)
+        self.positioning = Positioning(2048, num_classes)
+        self.focus3 = Focus(1024, 2048, num_classes)
+        self.focus2 = Focus(512, 1024, num_classes)
+        self.focus1 = Focus(256, 512, num_classes)
+        self.focus0 = Focuslast(64, 256, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.ReLU):
                 m.inplace = True
 
     def forward(self, x):
-        # x: [batch_size, channel=3, h, w]
-        layer0 = self.layer0(x)  # [-1, 64, h/2, w/2]
-        layer1 = self.layer1(layer0)  # [-1, 256, h/4, w/4]
-        layer2 = self.layer2(layer1)  # [-1, 512, h/8, w/8]
-        layer3 = self.layer3(layer2)  # [-1, 1024, h/16, w/16]
-        layer4 = self.layer4(layer3)  # [-1, 2048, h/32, w/32]
+        layer0 = self.layer0(x)
+        layer1 = self.layer1(layer0)
+        layer2 = self.layer2(layer1)
+        layer3 = self.layer3(layer2)
+        layer4 = self.layer4(layer3)
 
         cr4 = layer4
         cr3 = layer3
@@ -295,16 +275,13 @@ class daseg(nn.Module):
         cr1 = layer1
         cr0 = layer0
 
-        # positioning
         positioning, predict4 = self.positioning(cr4)
     
-        # focus
         focus3, predict3 = self.focus3(cr3, positioning, predict4)
         focus2, predict2 = self.focus2(cr2, focus3, predict3)
         focus1, predict1 = self.focus1(cr1, focus2, predict2)
         focus0, predict0 = self.focus0(cr0, focus1, predict1)
 
-        # rescale
         predict4 = F.interpolate(predict4, size=x.size()[2:], mode='bilinear', align_corners=True)
         predict3 = F.interpolate(predict3, size=x.size()[2:], mode='bilinear', align_corners=True)
         predict2 = F.interpolate(predict2, size=x.size()[2:], mode='bilinear', align_corners=True)
