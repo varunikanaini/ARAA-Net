@@ -58,7 +58,6 @@ def make_dataset(root, dataset_name, split='train', val_size=0.1, test_size=0.1,
                 img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.png')]
                 for name in img_names:
                     all_pairs.append((os.path.join(image_dir, name + '.png'), os.path.join(mask_dir, name + '.png')))
-
         elif dataset_name == 'CVC-ClinicDB':
              image_dir = os.path.join(root, 'Original')
              mask_dir = os.path.join(root, 'Ground Truth')
@@ -66,7 +65,6 @@ def make_dataset(root, dataset_name, split='train', val_size=0.1, test_size=0.1,
                   img_names = [os.path.splitext(f)[0] for f in os.listdir(image_dir) if f.lower().endswith('.tif')]
                   for name in img_names:
                       all_pairs.append((os.path.join(image_dir, name + '.tif'), os.path.join(mask_dir, name + '.tif')))
-
         elif dataset_name == 'MontgomeryCounty':
             image_dir = os.path.join(root, 'CXR_png')
             left_mask_dir = os.path.join(root, 'ManualMask', 'leftMask')

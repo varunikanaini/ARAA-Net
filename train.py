@@ -47,9 +47,9 @@ def custom_collate_fn(batch):
     if not batch: return None
     return torch.utils.data.dataloader.default_collate(batch)
 
-def validate(net, val_loader, epoch):
+def validate(net, val_loader, epoch, num_classes):
     net.eval()
-    confmat = ConfusionMatrix(num_classes=2)
+    confmat = ConfusionMatrix(num_classes=num_classes)
     val_iterator = tqdm(val_loader, total=len(val_loader), desc=f"Epoch {epoch} (Val)")
     with torch.no_grad():
         for data in val_iterator:
@@ -64,14 +64,14 @@ def validate(net, val_loader, epoch):
     net.train()
     return val_miou
 
-def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, initial_best_miou, initial_patience):
+def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, initial_best_miou, initial_patience, num_classes):
     total_iterations = args['epoch_num'] * len(train_loader)
     best_mIoU, patience_counter = initial_best_miou, initial_patience
     curr_iter = (start_epoch - 1) * len(train_loader) + 1
     
     for epoch in range(start_epoch, args['epoch_num'] + 1):
         loss_record = AvgMeter()
-        train_confmat = ConfusionMatrix(num_classes=2)
+        train_confmat = ConfusionMatrix(num_classes=num_classes)
         train_iterator = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch}/{args['epoch_num']} (Train)")
         
         for data in train_iterator:
@@ -108,7 +108,7 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
         train_miou = np.mean(train_iu.cpu().numpy())
         logging.info(f'--- Train Summary (Epoch {epoch}) --- Loss: {loss_record.avg:.4f}, OA: {train_acc_global.item():.4f}, mIoU: {train_miou:.4f}, Dice: {train_mDice:.4f}')
 
-        current_val_mIoU = validate(net, val_loader, epoch)
+        current_val_mIoU = validate(net, val_loader, epoch, num_classes)
         
         if current_val_mIoU > best_mIoU:
             best_mIoU, patience_counter = current_val_mIoU, 0
@@ -127,8 +127,8 @@ def train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_e
             
     return best_mIoU
 
-def run_training_process(args, train_loader, val_loader, fold_exp_path):
-    net = daseg(config.backbone_path).train().to(device)
+def run_training_process(args, train_loader, val_loader, fold_exp_path, num_classes):
+    net = daseg(config.backbone_path, num_classes=num_classes).train().to(device)
     optimizer = optim.Adam([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}]) if args['optimizer'] == 'Adam' else optim.SGD([{'params': [p for n, p in net.named_parameters() if n.endswith('bias')], 'lr': 2 * args['lr']}, {'params': [p for n, p in net.named_parameters() if not n.endswith('bias')], 'lr': args['lr'], 'weight_decay': args['weight_decay']}], momentum=args['momentum'])
     start_epoch, best_mIoU, patience_counter = 1, 0.0, 0
     latest_ckpt_path = os.path.join(fold_exp_path, 'latest_checkpoint.pth')
@@ -142,7 +142,7 @@ def run_training_process(args, train_loader, val_loader, fold_exp_path):
         except Exception as e:
             logging.error(f"Could not load checkpoint: {e}. Starting from scratch.")
     net = nn.DataParallel(net)
-    return train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, best_mIoU, patience_counter)
+    return train(net, optimizer, args, train_loader, val_loader, fold_exp_path, start_epoch, best_mIoU, patience_counter, num_classes)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='DANet Training with K-Fold')
@@ -168,6 +168,8 @@ if __name__ == '__main__':
     
     dataset_cfg = config.DATASET_CONFIG[args['dataset']]
     dataset_path = dataset_cfg['path']
+    num_classes = dataset_cfg.get('num_classes', 2)
+
     if args['k_folds'] > 1:
         logging.info(f"Setting up {args['k_folds']}-fold cross-validation...")
         all_imgs = np.array(make_dataset(dataset_path, args['dataset'], split='all'), dtype=object)
@@ -189,7 +191,7 @@ if __name__ == '__main__':
             with open(kfold_state_path, 'w') as f: json.dump({'next_fold_to_run': fold_idx, 'all_fold_metrics': all_fold_metrics}, f)
             train_loader = DataLoader(ImageFolder(root=None, dataset_name=args['dataset'], split='train', imgs=all_imgs[train_indices].tolist()), batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
             val_loader = DataLoader(ImageFolder(root=None, dataset_name=args['dataset'], split='val', imgs=all_imgs[val_indices].tolist()), batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
-            best_fold_mIoU = run_training_process(args, train_loader, val_loader, fold_exp_path)
+            best_fold_mIoU = run_training_process(args, train_loader, val_loader, fold_exp_path, num_classes)
             all_fold_metrics[f'fold_{fold_idx}'] = best_fold_mIoU
             with open(kfold_state_path, 'w') as f: json.dump({'next_fold_to_run': fold_idx + 1, 'all_fold_metrics': all_fold_metrics}, f)
         logging.info(f"K-Fold training finished. Avg Val mIoU: {np.mean(list(all_fold_metrics.values())):.4f}")
@@ -202,5 +204,5 @@ if __name__ == '__main__':
         val_set = ImageFolder(root=dataset_path, dataset_name=args['dataset'], split='val')
         train_loader = DataLoader(train_set, batch_size=args['train_batch_size'], num_workers=0, shuffle=True, collate_fn=custom_collate_fn)
         val_loader = DataLoader(val_set, batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
-        run_training_process(args, train_loader, val_loader, fold_exp_path)
+        run_training_process(args, train_loader, val_loader, fold_exp_path, num_classes)
     logging.info("Training process completed.")
