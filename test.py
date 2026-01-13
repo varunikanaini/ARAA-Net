@@ -14,14 +14,12 @@ import numpy as np
 from PIL import Image
 from torch.backends import cudnn
 
-# Import the new, robust config and datasets
 import config
 from datasets import ImageFolder
 from misc import check_mkdir
 from daseg import daseg
 from seg_utils import ConfusionMatrix
 
-# --- UNCHANGED SETUP ---
 cudnn.benchmark = True
 torch.manual_seed(2021)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -31,18 +29,26 @@ def custom_collate_fn(batch):
     if not batch: return None
     return torch.utils.data.dataloader.default_collate(batch)
 
-def evaluate_fold(net, test_loader, fold_idx):
+def evaluate_fold(net, test_loader, fold_idx, num_classes, ignore_index=None):
     net.eval()
-    confmat = ConfusionMatrix(num_classes=2)
+    confmat = ConfusionMatrix(num_classes=num_classes)
     test_iterator = tqdm(test_loader, total=len(test_loader), desc=f"Testing Fold {fold_idx}")
+    
     with torch.no_grad():
         for data in test_iterator:
             if data is None: continue
             inputs, labels, _ = data['image'], data['label'], data['name']
             inputs, labels = inputs.to(device), labels.to(device)
             *_, predict0 = net(inputs)
-            pred_mask = predict0.argmax(1)
-            confmat.update(labels.flatten(), pred_mask.flatten())
+            pred_mask = predict0.argmax(1).flatten()
+            targets = labels.flatten()
+            
+            if ignore_index is not None:
+                mask = targets != ignore_index
+                pred_mask = pred_mask[mask]
+                targets = targets[mask]
+
+            confmat.update(targets, pred_mask)
     
     global_acc, _, class_iou, FWIoU, mDice = confmat.compute()
     miou = np.mean(class_iou.cpu().numpy())
@@ -63,9 +69,11 @@ def main():
 
     logging.info(f"Starting final testing for experiment: {args.exp_name}")
     
-    # === Use the new robust data loading method ===
     dataset_cfg = config.DATASET_CONFIG[args.dataset]
     test_root_path = dataset_cfg['path']
+    num_classes = dataset_cfg.get('num_classes', 2)
+    ignore_index = dataset_cfg.get('ignore_index', None)
+
     test_set = ImageFolder(root=test_root_path, dataset_name=args.dataset, split='test')
     test_loader = DataLoader(test_set, batch_size=1, num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
     
@@ -73,8 +81,7 @@ def main():
     
     for fold_idx in range(args.k_folds):
         logging.info("-" * 50)
-        # Use config.backbone_path
-        net = daseg(config.backbone_path).to(device)
+        net = daseg(config.backbone_path, num_classes=num_classes).to(device)
         model_path = os.path.join(base_exp_path, f"fold_{fold_idx}", 'best.pth')
         
         if not os.path.exists(model_path):
@@ -86,11 +93,10 @@ def main():
         new_state_dict = OrderedDict([(k[7:] if k.startswith('module.') else k, v) for k, v in state_dict.items()])
         net.load_state_dict(new_state_dict)
         
-        fold_metrics = evaluate_fold(net, test_loader, fold_idx)
+        fold_metrics = evaluate_fold(net, test_loader, fold_idx, num_classes, ignore_index)
         for key in all_metrics:
             all_metrics[key].append(fold_metrics[key])
 
-    # --- Final Summary Block ---
     if not all_metrics['miou']:
         error_msg = "No models were tested. Cannot compute final metrics."
         logging.error(error_msg)
